@@ -6,14 +6,31 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		75612F8F300928B100C7A71D /* Shared in Frameworks */ = {isa = PBXBuildFile; productRef = 7B0000020000000000000001 /* Shared */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		75612EBF3009150200C7A71D /* World.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = World.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7B0000010000000000000001 /* Shared */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = Shared; path = ../Shared; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		75612FA130092D0900C7A71D /* Exceptions for "World" folder in "World" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 75612EBE3009150200C7A71D /* World */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		75612EC13009150200C7A71D /* World */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				75612FA130092D0900C7A71D /* Exceptions for "World" folder in "World" target */,
+			);
 			path = World;
 			sourceTree = "<group>";
 		};
@@ -24,6 +41,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				75612F8F300928B100C7A71D /* Shared in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -97,6 +115,9 @@
 			);
 			mainGroup = 75612EB63009150200C7A71D;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				7B0000030000000000000001 /* XCLocalSwiftPackageReference "../Shared" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 75612EC03009150200C7A71D /* Products */;
 			projectDirPath = "";
@@ -104,26 +125,8 @@
 			targets = (
 				75612EBE3009150200C7A71D /* World */,
 			);
-			packageReferences = (
-				7B0000030000000000000001 /* XCLocalSwiftPackageReference "Shared" */,
-			);
 		};
 /* End PBXProject section */
-
-/* Begin XCLocalSwiftPackageReference section */
-		7B0000030000000000000001 /* XCLocalSwiftPackageReference "Shared" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../Shared;
-		};
-/* End XCLocalSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		7B0000020000000000000001 /* Shared */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 7B0000030000000000000001 /* XCLocalSwiftPackageReference "Shared" */;
-			productName = Shared;
-		};
-/* End XCSwiftPackageProductDependency section */
 
 /* Begin PBXResourcesBuildPhase section */
 		75612EBD3009150200C7A71D /* Resources */ = {
@@ -277,10 +280,22 @@
 				DEVELOPMENT_TEAM = 4YB3365JZ9;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = World/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Used for connecting both devices.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -309,10 +324,22 @@
 				DEVELOPMENT_TEAM = 4YB3365JZ9;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = World/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Used for connecting both devices.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -352,6 +379,21 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		7B0000030000000000000001 /* XCLocalSwiftPackageReference "../Shared" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../Shared;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		7B0000020000000000000001 /* Shared */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7B0000030000000000000001 /* XCLocalSwiftPackageReference "../Shared" */;
+			productName = Shared;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 75612EB73009150200C7A71D /* Project object */;
 }

@@ -55,14 +55,34 @@ final class WorldViewModel: ObservableObject {
         hasStarted = false
     }
 
-    func makeSceneEntity() -> Entity {
-        let entity = ModelEntity(
-            mesh: .generateBox(size: 0.18),
-            materials: [SimpleMaterial(color: .blue, isMetallic: false)]
-        )
-        entity.position = [0, 0, -0.5]
-        controllerEntity = entity
-        return entity
+    @MainActor
+    func makeSceneEntity() async -> Entity {
+
+        do {
+
+            let entity = try await ModelEntity(named: "Rod")
+
+            entity.scale = .one
+
+            controllerEntity = entity
+
+            return entity
+
+        } catch {
+
+            print("Failed loading Rod.usdz:", error)
+
+            let fallback = ModelEntity(
+                mesh: .generateBox(size: 0.18),
+                materials: [
+                    SimpleMaterial(color: .red, isMetallic: false)
+                ]
+            )
+
+            controllerEntity = fallback
+
+            return fallback
+        }
     }
 
     func updateScene() {

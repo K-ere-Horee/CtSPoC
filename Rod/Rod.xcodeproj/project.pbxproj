@@ -15,9 +15,22 @@
 		7A0000010000000000000001 /* Shared */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = Shared; path = ../Shared; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		75612FA330092D4200C7A71D /* Exceptions for "Rod" folder in "Rod" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 75612ED53009151300C7A71D /* Rod */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		75612ED83009151300C7A71D /* Rod */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				75612FA330092D4200C7A71D /* Exceptions for "Rod" folder in "Rod" target */,
+			);
 			path = Rod;
 			sourceTree = "<group>";
 		};
@@ -271,6 +284,10 @@
 				DEVELOPMENT_TEAM = 4YB3365JZ9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Rod/Info.plist;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Rod uses local network to connect into other device.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Rod uses motion sensors to report controller orientation.";
+				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "Rod uses Nearby Interaction to measure its position relative to World.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -303,6 +320,10 @@
 				DEVELOPMENT_TEAM = 4YB3365JZ9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Rod/Info.plist;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Rod uses local network to connect into other device.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Rod uses motion sensors to report controller orientation.";
+				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "Rod uses Nearby Interaction to measure its position relative to World.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

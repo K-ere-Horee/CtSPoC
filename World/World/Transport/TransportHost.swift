@@ -36,9 +36,12 @@ final class TransportHost: NSObject, TransportProtocol {
 
         session.delegate = self
         advertiser.delegate = self
+        
+        print("[HOST] Initialized")
     }
 
     func connect() async throws {
+        print("[HOST] Start advertising")
         advertiser.startAdvertisingPeer()
         onStateChange?(.searching)
     }
@@ -62,17 +65,30 @@ final class TransportHost: NSObject, TransportProtocol {
 extension TransportHost: MCNearbyServiceAdvertiserDelegate {
 
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
+        print("[HOST] Invitation from \(peerID.displayName)")
         invitationHandler(true, session)
     }
 
-    func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
-        onStateChange?(.failed)
+//    func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
+//        onStateChange?(.failed)
+//    }
+    func advertiser(
+        _ advertiser: MCNearbyServiceAdvertiser,
+        didNotStartAdvertisingPeer error: Error
+    ) {
+        print("========== ADVERTISER FAILED ==========")
+        print(error)
+        let nsError = error as NSError
+        print(nsError.domain)
+        print(nsError.code)
+        print(nsError.userInfo)
     }
 }
 
 extension TransportHost: MCSessionDelegate {
 
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
+        print("[HOST] \(peerID.displayName) -> \(state)")
         switch state {
         case .connected:
             onStateChange?(.ready)

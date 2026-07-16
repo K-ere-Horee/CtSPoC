@@ -23,7 +23,9 @@ struct ContentView: View {
             }
 
             RealityView { content in
-                content.add(viewModel.makeSceneEntity())
+                let rod = await viewModel.makeSceneEntity()
+                content.add(rod)
+
             } update: { _ in
                 viewModel.updateScene()
             }
