@@ -16,39 +16,20 @@ final class WorldViewModel: ObservableObject {
 
     @Published private(set) var rodState = RodState()
     @Published private(set) var connectionState: ConnectionState = .idle
-    @Published private(set) var spatialStatus: SpatialStatus = .unavailable
     @Published private(set) var lastError: String?
 
-    private let spatialManager: NearbyInteractionManager
     private let transport: TransportHost
     private var controllerEntity: ModelEntity?
     private var hasStarted = false
-
+    
     init(
-        spatialManager: NearbyInteractionManager = NearbyInteractionManager(),
         transport: TransportHost = TransportHost()
     ) {
-        self.spatialManager = spatialManager
         self.transport = transport
 
-        spatialManager.onSpatialUpdate = { [weak self] spatial in
-            Task { @MainActor in
-                guard let self else { return }
-                self.rodState = RodState(
-                    spatial: spatial,
-                    pitch: self.rodState.pitch,
-                    roll: self.rodState.roll,
-                    yaw: self.rodState.yaw
-                )
-            }
-        }
-        spatialManager.onStatusChange = { [weak self] status in
-            Task { @MainActor in self?.spatialStatus = status }
-        }
         transport.onStateChange = { [weak self] state in
             Task { @MainActor in
                 self?.connectionState = state
-                if state == .ready { self?.spatialManager.start() }
             }
         }
         transport.onMessage = { [weak self] message in
@@ -104,12 +85,6 @@ final class WorldViewModel: ObservableObject {
         case let .state(state):
             rodState = state
             connectionState = .streaming
-            spatialManager.handle(SpatialState(
-                distance: state.distance,
-                directionX: state.directionX,
-                directionY: state.directionY,
-                directionZ: state.directionZ
-            ))
         case .hello, .motion:
             break
         case .discoveryToken:

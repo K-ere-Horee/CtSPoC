@@ -87,6 +87,18 @@ sends the resulting spatial values inside `RodState`. World consumes those
 values through transport. This is recorded as ADR-014 in
 `ARCHITECTURE_DECISIONS.md` and noted in `Spatial_Controller_Architecture.md`.
 
+### World Architecture Refactor
+
+The World refactor is now complete:
+
+- Deleted `World/World/Spatial/NearbyInteractionManager.swift`.
+- Removed all World Nearby Interaction dependencies and usage descriptions.
+- Removed `spatialManager` and spatial reconstruction from `WorldViewModel`.
+- World now assigns received `RodState` directly and updates RealityKit from
+  that state.
+- Moved Rod sensor files into `Rod/Rod/Sensors/`.
+- Rod is the only target that imports `NearbyInteraction`.
+
 ### Transport
 
 Implemented `TransportHost` using MultipeerConnectivity:
@@ -114,7 +126,9 @@ Added generated Info.plist usage descriptions for:
 
 - Rod motion sensors.
 - Rod Nearby Interaction.
-- World Nearby Interaction context.
+
+World no longer declares Nearby Interaction usage because it has no Nearby
+Interaction dependency.
 
 Removed the default SwiftUI `#Preview` blocks because the preview macro cannot
 run in the current command-line sandbox environment and is not required by the
@@ -150,3 +164,17 @@ Not completed in this environment:
 7. Add haptics only after the spatial controller pipeline is stable.
 
 Gameplay remains deferred until the spatial controller milestone is proven.
+
+## Latest Refactor Verification
+
+Refactor brief: `World_Architecture_Refactor_Remove_Nearby_Interaction.md`
+
+- World has no `NearbyInteractionManager` file.
+- World has no `import NearbyInteraction`.
+- World has no `spatialManager` dependency.
+- World handles `.state(RodState)` directly in `WorldViewModel`.
+- Rod sensor implementations live under `Rod/Rod/Sensors/`.
+- Only Rod imports `NearbyInteraction`.
+- Rod iOS typecheck passed.
+- World macOS typecheck passed.
+- `git diff --check` passed.

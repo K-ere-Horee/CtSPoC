@@ -29,9 +29,9 @@ struct ContentView: View {
             }
             .frame(minHeight: 320)
 
-            GroupBox("Controller State") {
+                GroupBox("Controller State") {
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
-                    row("Nearby Interaction", viewModel.spatialStatus.rawValue)
+                    row("State", viewModel.connectionState.rawValue)
                     row("Distance", format(viewModel.rodState.distance, suffix: " m"))
                     row("Direction", formatDirection(viewModel.rodState))
                     row("Pitch", format(viewModel.rodState.pitch))

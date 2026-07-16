@@ -49,7 +49,7 @@ No gameplay is required.
                        │
                World Simulation
                        │
-         NearbyInteractionManager
+                RodState Receiver
                        │
                 Transport Layer
                        ▲
@@ -57,11 +57,11 @@ No gameplay is required.
                        ▼
                 Transport Layer
                        │
+                    RodState
+                       │
          NearbyInteractionManager
                        │
                CoreMotionManager
-                       │
-              CoreHapticsManager
 
                   Rod (iPhone)
 
@@ -73,9 +73,9 @@ No gameplay is required.
 
 -   Render RealityKit scene
 -   Manage world state
--   Receive controller state
+-   Receive `RodState`
 -   Display debug values
--   Manage Nearby Interaction session
+-   Never import or manage Nearby Interaction
 
 ### Rod
 
@@ -93,8 +93,6 @@ No gameplay is required.
 
     World/
     ├── Reality/
-    ├── Spatial/
-    │   └── NearbyInteractionManager.swift
     ├── Transport/
     │   └── TransportHost.swift
     ├── ViewModels/
@@ -103,9 +101,8 @@ No gameplay is required.
 ### Rod
 
     Rod/
-    ├── Motion/
-    │   └── MotionManager.swift
-    ├── Spatial/
+    ├── Sensors/
+    │   ├── MotionManager.swift
     │   └── NearbyInteractionManager.swift
     ├── Transport/
     │   └── TransportClient.swift
@@ -146,10 +143,10 @@ public struct RodState: Codable {
 
 ### Nearby Interaction
 
--   Session lifecycle
--   Relative distance
--   Relative direction
--   Peer tracking
+-   Rod owns the session lifecycle.
+-   Rod measures relative distance and direction.
+-   Rod tracks the peer and includes spatial data in `RodState`.
+-   World consumes `RodState` and has no Nearby Interaction dependency.
 
 ### CoreMotion
 
@@ -184,13 +181,13 @@ Display on both devices:
 
 -   Project structure
 -   Shared package
--   NearbyInteractionManager skeleton
+-   Rod sensor manager skeleton
 -   Transport abstraction
 
 ### Milestone 2
 
 -   Discovery exchange
--   Establish NI session
+-   Establish NI session on Rod
 -   Verify connection
 
 ### Milestone 3
