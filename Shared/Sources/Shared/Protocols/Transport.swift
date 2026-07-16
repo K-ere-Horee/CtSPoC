@@ -7,7 +7,7 @@
 
 import Foundation
 
-public protocol TransportProtocol: AnyObject, Sendable {
+public protocol TransportProtocol: AnyObject {
 
     var isConnected: Bool { get }
 

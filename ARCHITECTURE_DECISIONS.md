@@ -218,6 +218,21 @@ Status: Accepted
 
 World and Rod communicate only through shared contracts.
 
+------------------------------------------------------------------------
+
+# ADR-014 --- Nearby Interaction Ownership
+
+## Decision
+
+Rod owns the Nearby Interaction session. World receives the resulting spatial
+state through `RodState` over the shared transport contract.
+
+## Rationale
+
+The current macOS SDK marks `NISession` and its peer configuration APIs as
+unavailable on macOS. Keeping the NI implementation on Rod preserves the
+physical-controller model while allowing World to run as a native macOS app.
+
 No project may import the other project.
 
 Status: Accepted

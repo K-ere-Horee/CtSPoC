@@ -23,6 +23,10 @@ controller for a RealityKit application running on macOS.
 -   CoreMotion provides orientation (pitch, roll, yaw).
 -   CoreHaptics is reserved for future feedback.
 
+Implementation note: Nearby Interaction is currently unavailable on macOS.
+The Rod iPhone owns the Nearby Interaction session and includes the resulting
+distance and direction in RodState. World consumes that state over transport.
+
 ------------------------------------------------------------------------
 
 ## Success Criteria
