@@ -7,9 +7,10 @@
 
 import Foundation
 
-public enum NetworkMessage: Codable {
+public enum NetworkMessage: Codable, Sendable {
 
     case hello(String)
     case motion(MotionPacket)
+    case state(RodState)
 
 }
