@@ -31,9 +31,22 @@ struct ContentView: View {
             }
             .frame(minHeight: 320)
 
-                GroupBox("Controller State") {
+//            #if DEBUG
+//            GroupBox("Rod Model Offset") {
+//                VStack(spacing: 10) {
+//                    orientationSlider("Pitch", value: $viewModel.modelPitch)
+//                    orientationSlider("Yaw", value: $viewModel.modelYaw)
+//                    orientationSlider("Roll", value: $viewModel.modelRoll)
+//                }
+//            }
+//            #endif
+
+            GroupBox("Controller State") {
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
                     row("State", viewModel.connectionState.rawValue)
+                    row("Action", viewModel.rodState.action.rawValue)
+                    row("Hook", viewModel.hookPhase.rawValue)
+                    row("Reel Speed", format(viewModel.rodState.reelSpeed))
                     row("Distance", format(viewModel.rodState.distance, suffix: " m"))
                     row("Direction", formatDirection(viewModel.rodState))
                     row("Pitch", format(viewModel.rodState.pitch))
@@ -62,6 +75,27 @@ struct ContentView: View {
     private func format(_ value: Double) -> String {
         String(format: "%.3f", value)
     }
+
+    private func format(_ value: Float) -> String {
+        String(format: "%.3f", value)
+    }
+
+    #if DEBUG
+    private func orientationSlider(_ title: String, value: Binding<Float>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(String(format: "%.0f deg", Double(value.wrappedValue) * 180 / .pi))
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: value, in: -.pi ... .pi)
+                .onChange(of: value.wrappedValue) { _, _ in
+                    viewModel.updateModelOrientation()
+                }
+        }
+    }
+    #endif
 
     private func format(_ value: Float?, suffix: String = "") -> String {
         guard let value else { return "--" }

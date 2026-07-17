@@ -12,7 +12,6 @@
 
 /* Begin PBXFileReference section */
 		75612ED63009151300C7A71D /* Rod.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Rod.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		7A0000010000000000000001 /* Shared */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = Shared; path = ../Shared; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -52,7 +51,6 @@
 			isa = PBXGroup;
 			children = (
 				75612ED83009151300C7A71D /* Rod */,
-				7A0000010000000000000001 /* Shared */,
 				75612ED73009151300C7A71D /* Products */,
 			);
 			sourceTree = "<group>";

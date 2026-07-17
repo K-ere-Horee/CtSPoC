@@ -12,7 +12,6 @@
 
 /* Begin PBXFileReference section */
 		75612EBF3009150200C7A71D /* World.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = World.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		7B0000010000000000000001 /* Shared */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = Shared; path = ../Shared; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -52,7 +51,6 @@
 			isa = PBXGroup;
 			children = (
 				75612EC13009150200C7A71D /* World */,
-				7B0000010000000000000001 /* Shared */,
 				75612EC03009150200C7A71D /* Products */,
 			);
 			sourceTree = "<group>";

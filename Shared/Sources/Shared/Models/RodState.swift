@@ -16,13 +16,17 @@ public struct RodState: Codable, Sendable, Equatable {
     public let pitch: Double
     public let roll: Double
     public let yaw: Double
+    public let action: RodAction
+    public let reelSpeed: Float
 
     public init(
         timestamp: TimeInterval = Date().timeIntervalSince1970,
         spatial: SpatialState = SpatialState(),
         pitch: Double = 0,
         roll: Double = 0,
-        yaw: Double = 0
+        yaw: Double = 0,
+        action: RodAction = .idle,
+        reelSpeed: Float = 0
     ) {
         self.timestamp = timestamp
         distance = spatial.distance
@@ -32,5 +36,7 @@ public struct RodState: Codable, Sendable, Equatable {
         self.pitch = pitch
         self.roll = roll
         self.yaw = yaw
+        self.action = action
+        self.reelSpeed = reelSpeed
     }
 }

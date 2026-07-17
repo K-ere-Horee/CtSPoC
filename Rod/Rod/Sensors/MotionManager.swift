@@ -22,9 +22,16 @@ final class MotionManager {
         manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
             guard let motion else { return }
             self?.onUpdate?(MotionSample(
+                timestamp: motion.timestamp,
                 pitch: motion.attitude.pitch,
                 roll: motion.attitude.roll,
-                yaw: motion.attitude.yaw
+                yaw: motion.attitude.yaw,
+                accelerationZ: motion.userAcceleration.z,
+                rotationRateMagnitude: sqrt(
+                    pow(motion.rotationRate.x, 2) +
+                    pow(motion.rotationRate.y, 2) +
+                    pow(motion.rotationRate.z, 2)
+                )
             ))
         }
     }
@@ -35,7 +42,10 @@ final class MotionManager {
 }
 
 struct MotionSample {
+    let timestamp: TimeInterval
     let pitch: Double
     let roll: Double
     let yaw: Double
+    let accelerationZ: Double
+    let rotationRateMagnitude: Double
 }
