@@ -10,7 +10,9 @@ import Shared
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var viewModel = WorldViewModel()
+    @StateObject private var viewModel = WorldViewModel(
+        transport: TransportHost()
+    )
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

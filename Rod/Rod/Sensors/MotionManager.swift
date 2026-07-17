@@ -5,6 +5,7 @@
 
 import CoreMotion
 
+@MainActor
 final class MotionManager {
 
     private let manager = CMMotionManager()

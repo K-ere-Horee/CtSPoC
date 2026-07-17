@@ -1,3 +1,10 @@
+//
+//  RodMotionInterpreter.swift
+//  Shared
+//
+//  Created by Calzy Akmal Indyramdhani on 15/07/26.
+//
+
 import Foundation
 
 /// Current device motion. Orientation is intentionally kept separate from interpretation.
@@ -99,10 +106,6 @@ public final class RodMotionInterpreter {
     public func interpret(_ input: RodMotionInput) -> RodMotionInterpretation {
         let current = MotionPose(pitch: input.pitch, roll: input.roll, yaw: input.yaw)
         let currentOrientation = RodOrientation.from(pitch: input.pitch, roll: input.roll, yaw: input.yaw)
-        
-        // debug
-        print("CURRENT:", currentOrientation)
-        print("CORRECTED:", correctedOrientation(currentOrientation))
         
         guard hasIdleReference else {
             return result(pose: current, orientation: currentOrientation, phase: .invalid, action: .idle, reelSpeed: 0, debug: emptyDebug)

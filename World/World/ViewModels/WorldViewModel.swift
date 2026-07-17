@@ -35,7 +35,9 @@ final class WorldViewModel: ObservableObject {
     private var simulationTask: Task<Void, Never>?
     private var hasStarted = false
 
-    init(transport: TransportHost = TransportHost()) {
+    init(
+        transport: TransportHost
+    ) {
         self.transport = transport
 
         transport.onStateChange = { [weak self] state in
@@ -224,8 +226,6 @@ final class WorldViewModel: ObservableObject {
             iz: Float(rodState.orientation.z),
             r: Float(rodState.orientation.w)
         )
-        
-        print("WORLD:", rodState.orientation)
     }
 
     private func launchHook() {

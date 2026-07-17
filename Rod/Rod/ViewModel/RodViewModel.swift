@@ -60,11 +60,11 @@ final class RodViewModel: ObservableObject {
     let debugRecorder = MotionDebugRecorder()
 
     init(
-        motionManager: MotionManager = MotionManager(),
-        motionInterpreter: RodMotionInterpreter = RodMotionInterpreter(),
-        spatialManager: NearbyInteractionManager = NearbyInteractionManager(),
-        transport: TransportClient = TransportClient(),
-        fishingHaptics: FishingHaptics = FishingHaptics()
+        motionManager: MotionManager,
+        motionInterpreter: RodMotionInterpreter,
+        spatialManager: NearbyInteractionManager,
+        transport: TransportClient,
+        fishingHaptics: FishingHaptics
     ) {
         self.motionManager = motionManager
         if let storedProfile = Self.loadMotionProfile() {
@@ -224,8 +224,6 @@ final class RodViewModel: ObservableObject {
         )
         pose = interpretation.pose
         orientation = interpretation.orientation
-        
-        print("VIEWMODEL: ", orientation)
         
         action = interpretation.action == .casting && hookPhase != .idle
             ? .idle
