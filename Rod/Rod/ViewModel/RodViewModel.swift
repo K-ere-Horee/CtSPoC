@@ -50,6 +50,7 @@ final class RodViewModel: ObservableObject {
         rotationRateMagnitude: 0
     )
     private var pose = RodMotionPose(pitch: 0, roll: 2, yaw: 0)
+    private var orientation = RodOrientation.identity
     private var spatial = SpatialState()
     private var hasStarted = false
     private var calibrationSamples: [RodMotionInput] = []
@@ -81,7 +82,9 @@ final class RodViewModel: ObservableObject {
                 self?.motion = sample
                 self?.hasMotionSample = true
                 self?.collectCalibrationSample()
+                print("Rod onUpdate")
                 self?.updateAction()
+                print("Entered updateAction")
                 self?.publishState()
             }
         }
@@ -114,6 +117,7 @@ final class RodViewModel: ObservableObject {
         debugRecorder.start()
         print(debugRecorder.sampleCount)
         motionManager.start()
+        print("Motion Update")
         Task {
             do {
                 try await transport.connect()
@@ -135,7 +139,7 @@ final class RodViewModel: ObservableObject {
         switch calibrationStep {
         case .idle:
             guard calibrationSamples.count >= 3 else { return }
-            motionInterpreter.profile.idlePose = averagePose(of: calibrationSamples)
+            motionInterpreter.setIdlePose(averagePose(of: calibrationSamples))
             motionInterpreter.profile.isComplete = false
             calibrationSamples.removeAll(keepingCapacity: true)
             calibrationSampleCount = 0
@@ -197,6 +201,7 @@ final class RodViewModel: ObservableObject {
             pitch: pose.pitch,
             roll: pose.roll,
             yaw: pose.yaw,
+            orientation: orientation,
             action: action,
             reelSpeed: reelSpeed
         )
@@ -218,6 +223,10 @@ final class RodViewModel: ObservableObject {
             )
         )
         pose = interpretation.pose
+        orientation = interpretation.orientation
+        
+        print("VIEWMODEL: ", orientation)
+        
         action = interpretation.action == .casting && hookPhase != .idle
             ? .idle
             : interpretation.action

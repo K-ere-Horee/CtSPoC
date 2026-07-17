@@ -16,6 +16,7 @@ public struct RodState: Codable, Sendable, Equatable {
     public let pitch: Double
     public let roll: Double
     public let yaw: Double
+    public let orientation: RodOrientation
     public let action: RodAction
     public let reelSpeed: Float
 
@@ -25,6 +26,7 @@ public struct RodState: Codable, Sendable, Equatable {
         pitch: Double = 0,
         roll: Double = 0,
         yaw: Double = 0,
+        orientation: RodOrientation = .identity,
         action: RodAction = .idle,
         reelSpeed: Float = 0
     ) {
@@ -36,6 +38,7 @@ public struct RodState: Codable, Sendable, Equatable {
         self.pitch = pitch
         self.roll = roll
         self.yaw = yaw
+        self.orientation = orientation
         self.action = action
         self.reelSpeed = reelSpeed
     }

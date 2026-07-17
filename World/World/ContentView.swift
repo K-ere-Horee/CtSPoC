@@ -31,16 +31,6 @@ struct ContentView: View {
             }
             .frame(minHeight: 320)
 
-//            #if DEBUG
-//            GroupBox("Rod Model Offset") {
-//                VStack(spacing: 10) {
-//                    orientationSlider("Pitch", value: $viewModel.modelPitch)
-//                    orientationSlider("Yaw", value: $viewModel.modelYaw)
-//                    orientationSlider("Roll", value: $viewModel.modelRoll)
-//                }
-//            }
-//            #endif
-
             GroupBox("Controller State") {
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
                     row("State", viewModel.connectionState.rawValue)

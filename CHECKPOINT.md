@@ -631,6 +631,10 @@ Source: `Motion System Refactor Plan` from the attached task document.
   decision model.
 - Existing hook-phase filtering remains downstream in `RodViewModel`, so
   gameplay authority is unchanged.
+- Idle reference installation now happens at the moment the Idle step is
+  captured, before Cast/Reel calibration continues. Preview and post-
+  calibration `RodState` therefore use the same relative frame, preventing
+  the rod from snapping when calibration finishes.
 
 ### Verification
 
@@ -675,3 +679,86 @@ Follow-up implementation for the calibration UX:
 - Rod `xcodebuild` project inspection is blocked by the environment's
   SourcePackages write restriction; device runtime verification remains
   pending.
+
+## Calibration Architecture Compliance Review
+
+Review source: `Calibration_Architecture_Refactor.md`
+
+The review found one architectural gap in the previous implementation:
+calibration had a persistent Idle pose, but the renderer still reconstructed
+orientation from relative Euler values. That made `RodState` ambiguous because
+the same values served gameplay-relative motion and visual orientation.
+
+The gap is now addressed:
+
+- Added `RodOrientation`, a normalized Codable quaternion value type in Shared,
+  including inversion, multiplication, and Euler conversion at the motion
+  boundary.
+- `RodMotionInterpreter` stores `profile.calibrationReference` when Idle is
+  captured and applies `inverse(reference) * current` on every frame.
+- The corrected quaternion is emitted alongside gameplay-relative pose data
+  in `RodMotionInterpretation`.
+- `RodState` now carries `orientation`, which is the renderer-facing source of
+  truth. Existing pitch/roll/yaw fields remain for compatibility and debug
+  display.
+- `WorldViewModel` now consumes only `RodState.orientation` for controller
+  rotation. It does not calculate calibration offsets, inspect the profile, or
+  remember calibration state.
+- Idle reference installation still happens before Cast/Reel calibration, so
+  calibration preview and post-finish runtime use the same corrected pipeline.
+
+### Compliance Result
+
+- Calibration owns reference capture and correction: compliant.
+- Gameplay may consume relative pose: compliant.
+- World is calibration-agnostic: compliant.
+- Renderer consumes corrected orientation from `RodState`: compliant.
+- Motion core targeted compilation and `git diff --check`: passed.
+- Full app/device validation: pending because the local Xcode environment
+  remains blocked by SourcePackages and Observation plugin permissions.
+
+## Runtime Pipeline Investigation
+
+Checkpoint source: `RealityKit Fishing Controller Checkpoint`, 2026-07-17.
+
+This checkpoint validated the complete controller pipeline before continuing
+motion or RealityKit changes:
+
+```text
+CMDeviceMotion -> MotionManager -> RodMotionInterpreter -> RodViewModel
+             -> RodState -> Multipeer Transport -> WorldViewModel -> RealityKit
+```
+
+### Investigation Result
+
+- Temporary logs were added at MotionManager, RodMotionInterpreter,
+  RodViewModel, and WorldViewModel boundaries.
+- An initial run showed only the World log with an identity orientation, which
+  appeared to indicate that the Rod motion pipeline was not executing.
+- That conclusion was discarded after correcting the execution environment:
+  the instrumentation was attached to the wrong execution path/build.
+- Rod-side logs then appeared normally. The issue was not quaternion math,
+  calibration, transport, or RealityKit rendering.
+
+### Current Status
+
+- Motion pipeline executes.
+- World update loop executes.
+- Multiplayer transport is active.
+- Debug infrastructure is working.
+- No architecture regression was found during this investigation.
+
+### Engineering Lesson
+
+Runtime debugging must confirm execution before diagnosing architecture or
+math. The required order is:
+
+1. Confirm the target code is running.
+2. Confirm logs execute.
+3. Confirm values change.
+4. Investigate math, transport, or rendering.
+
+Temporary logs are diagnostic only and must not become a motion-system
+dependency. The next movement priority remains stable Idle orientation,
+relative gameplay pose, and reliable Idle/Cast/Reel action classification while
+World continues to consume orientation independently.

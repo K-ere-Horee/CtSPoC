@@ -228,6 +228,22 @@ Display on both devices:
 
 ------------------------------------------------------------------------
 
+## Orientation and Calibration Ownership
+
+CoreMotion is available only to Rod. Rod converts raw device motion through
+the Shared calibration contract before sending controller state:
+
+```text
+CoreMotion -> Calibration Reference -> RodOrientation -> RodState -> World
+```
+
+`RodState.orientation` is the corrected renderer orientation. World consumes
+it directly and remains calibration-agnostic. Relative pose values may be
+used by the Rod gameplay interpreter for Idle, Cast, and Reel classification,
+but they are not a replacement for renderer orientation.
+
+------------------------------------------------------------------------
+
 ## Long-Term Vision
 
 The controller architecture can later power:

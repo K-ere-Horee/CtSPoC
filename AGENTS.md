@@ -329,3 +329,31 @@ The agent must:
 -   Ask for clarification rather than guessing architectural decisions.
 -   Keep commits small and incremental.
 -   Never introduce gameplay logic before the roadmap allows it.
+
+------------------------------------------------------------------------
+
+# Calibration and Orientation Contract
+
+Calibration is owned by the Rod motion layer and Shared motion models. World
+must remain unaware of calibration state and must never apply a calibration
+offset.
+
+Required pipeline:
+
+    CoreMotion -> MotionManager -> calibration reference
+        -> corrected RodOrientation -> RodState -> Transport -> World
+
+Rules:
+
+-   `MotionPose` contains only raw pitch, roll, and yaw values.
+-   `RodOrientation` is the renderer-facing normalized quaternion contract.
+-   Calibration captures and persists the Idle reference quaternion.
+-   Every runtime frame applies `inverse(reference) * current` in Rod/Shared.
+-   `RodState.orientation` is the single renderer-facing orientation source.
+-   Euler fields may remain for gameplay-relative motion and diagnostics, but
+    World rotation must use `orientation`.
+-   Calibration preview and runtime must consume the same corrected pipeline.
+-   World must not import or call calibration APIs, store calibration state, or
+    reconstruct calibrated orientation from Euler values.
+-   Gameplay may classify relative motion after correction, but must not alter
+    renderer orientation.
