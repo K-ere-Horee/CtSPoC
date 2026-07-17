@@ -543,3 +543,135 @@ CoreMotion -> RodMotionInterpreter -> constrained RodState -> World
 - `git diff --check` passes.
 - Full SwiftPM build remains unavailable in this environment because its
   manifest invocation is blocked by the local Xcode sandbox.
+
+## Hook Phase Synchronization
+
+Design source: `CtSPoC_Hook_Phase_Synchronization_Design.md`
+
+World is now the authority for the hook gameplay lifecycle. The lifecycle is
+shared as `HookPhase` and synchronized to Rod through `NetworkMessage`:
+
+```text
+World hook simulation -> HookPhase -> transport -> RodViewModel casting gate
+```
+
+### Architecture and Flow Changes
+
+- Added `Shared/Sources/Shared/Models/HookPhase.swift` with the shared phases
+  `idle`, `flying`, `hookInWater`, and `reeling`.
+- Extended `NetworkMessage` with `.hookPhase(HookPhase)` so World can publish
+  every authoritative lifecycle transition to Rod.
+- Removed the World-local `HookPhase` enum so both applications use the same
+  Codable shared type.
+- Centralized World lifecycle mutations in `setHookPhase(_:)`; launch, water
+  impact, reeling, and hook completion now broadcast through this helper.
+- Added a `hookPhase` state to `RodViewModel` and handled incoming phase
+  messages from World.
+- Casting gestures remain fully recognized by `RodMotionInterpreter`, but
+  `RodViewModel` now suppresses `.casting` whenever the synchronized phase is
+  not `.idle`.
+- Rod UI now exposes the current hook phase beside the local motion phase for
+  synchronization debugging.
+
+### Verification
+
+- `git diff --check` passes.
+- No direct World hook-phase assignment remains outside
+  `setHookPhase(_:)`.
+- Runtime two-device transport and hook lifecycle verification remain pending
+  because they require the World and Rod applications running together.
+
+## Motion Calibration and Gesture Recognition
+
+Design source: `CtSPoC_Motion_Calibration_and_Gesture_Recognition_Design.md`
+
+The motion pipeline now has a Codable calibration profile between raw
+CoreMotion samples and gesture validation:
+
+```text
+CoreMotion -> MotionProfile -> RodMotionInterpreter -> gameplay gate
+```
+
+- Added `MotionProfile`, `CastProfile`, `ReelProfile`, and `LiftProfile` in
+  Shared with conservative defaults for first launch.
+- `RodMotionInput` now carries forward user acceleration in addition to pose
+  and rotation rate.
+- Cast detection uses the calibrated cast pitch delta, forward acceleration,
+  and calibrated gesture duration; a backward or insufficient swing is
+  rejected before `RodAction.casting` is emitted.
+- Reel detection uses profile-based rotation rate and maximum speed values.
+- The calibrated forward acceleration sign is stored, so the same gesture can
+  be recognized regardless of the device's local Z-axis direction while
+  opposite-direction swings are rejected.
+- The current profile is persisted in Rod `UserDefaults`; recalibrating the
+  home pose updates the stored profile.
+- Rod now blocks all gesture output until the neutral, cast, and reel steps
+  are completed. The calibration screen is the first motion flow shown in the
+  controller UI.
+
+## Motion System Refactor
+
+Source: `Motion System Refactor Plan` from the attached task document.
+
+- Introduced the pure `MotionPose` value type containing only pitch, roll, and
+  yaw. `RodMotionPose` remains as a compatibility typealias for existing state
+  consumers.
+- Rebuilt `MotionProfile` around calibrated `idlePose`, `castPose`, and
+  `reelPose` values. Motion metadata is limited to the calibrated cast
+  acceleration context and reel activity context.
+- Rewrote `RodMotionInterpreter` to classify the current orientation by the
+  closest calibrated pose. It combines that classification with acceleration
+  for casting and rotation rate for reeling; it no longer compares pitch
+  deltas as the primary gesture model.
+- Rebuilt the visible wizard around pose capture: averaged Idle samples,
+  final stable Cast samples, and averaged Reel samples. No action is emitted
+  until all three poses are captured and persisted.
+- Updated the secondary debug output to explain selected pose and distances to
+  Idle, Cast, and Reel instead of presenting threshold checks as the primary
+  decision model.
+- Existing hook-phase filtering remains downstream in `RodViewModel`, so
+  gameplay authority is unchanged.
+
+### Verification
+
+- `git diff --check` passes.
+- Motion gameplay sources and Shared models were reviewed for the new profile
+  contracts.
+- Full SwiftPM/Xcode build remains environment-blocked by the Observation
+  macro/plugin and SourcePackages permission errors; device runtime validation
+  is still pending.
+- Existing hook-phase gameplay validation remains in `RodViewModel`, after
+  motion recognition and before transport.
+
+### Verification
+
+- Shared source typechecks against the macOS SDK.
+- `git diff --check` passes.
+- Full gesture-profile capture for cast, reel, and lift remains a follow-up
+  runtime calibration flow; the profile model and validation pipeline are now
+  in place.
+
+## Motion Calibration First-Run Flow
+
+Follow-up implementation for the calibration UX:
+
+- Added a visible `Motion Calibration` section to the Rod view. It is the
+  first motion flow shown and reports the current step and sample count.
+- Calibration is now sequential: capture neutral pose, perform and capture a
+  natural cast, then perform and capture a natural reel.
+- `RodViewModel` collects live motion samples during the cast and reel steps,
+  derives personalized pitch, acceleration, duration, rotation-rate, and
+  maximum-speed values, then persists the completed profile.
+- `RodMotionInterpreter` emits no casting or reeling action until the profile
+  is complete. Existing profiles restore their home pose on launch.
+- Recalibration resets the profile and returns the user to the neutral step.
+- Forward validation preserves the calibrated acceleration sign, preventing a
+  swing in the opposite direction from being treated as a cast.
+
+### Verification
+
+- Shared source typechecks against the macOS SDK.
+- `git diff --check` passes.
+- Rod `xcodebuild` project inspection is blocked by the environment's
+  SourcePackages write restriction; device runtime verification remains
+  pending.

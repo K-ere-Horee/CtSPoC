@@ -21,10 +21,24 @@ struct ContentView: View {
                     statusRow("Motion", value: viewModel.motionAvailable ? "available" : "unavailable")
                     statusRow("Pose", value: viewModel.isPoseValid ? "valid" : "invalid")
                     statusRow("Motion Phase", value: viewModel.motionPhase.rawValue)
-                    Button { viewModel.calibrateMotion() } label: {
-                        Label("Calibrate Home Orientation", systemImage: "scope")
+                    statusRow("Hook Phase", value: viewModel.hookPhase.rawValue)
+                }
+
+                Section("Motion Calibration") {
+                    Text(calibrationInstruction)
+                        .font(.caption)
+                    statusRow("Step", value: viewModel.calibrationStep.rawValue)
+                    if viewModel.calibrationStep != .complete {
+                        statusRow("Samples", value: String(viewModel.calibrationSampleCount))
+                        Button { viewModel.calibrateMotion() } label: {
+                            Label(calibrationButtonTitle, systemImage: "scope")
+                        }
+                        .disabled(!viewModel.hasMotionSample)
+                    } else {
+                        Button { viewModel.calibrateMotion() } label: {
+                            Label("Recalibrate Motion", systemImage: "arrow.clockwise")
+                        }
                     }
-                    .disabled(!viewModel.hasMotionSample)
                 }
 
                 Section("Rod State") {
@@ -38,6 +52,10 @@ struct ContentView: View {
                     valueRow("Acceleration Z", value: format(viewModel.motionAccelerationZ))
                     valueRow("Rotation Rate", value: format(viewModel.motionRotationRate))
                     valueRow("Timestamp", value: String(format: "%.3f", viewModel.rodState.timestamp))
+                }
+
+                Section("Motion Debug") {
+                    MotionDebugView(recorder: viewModel.debugRecorder)
                 }
 
                 if let lastError = viewModel.lastError {
@@ -74,5 +92,23 @@ struct ContentView: View {
     private func formatDirection(_ state: RodState) -> String {
         guard let x = state.directionX, let y = state.directionY, let z = state.directionZ else { return "--" }
         return String(format: "%.2f, %.2f, %.2f", x, y, z)
+    }
+
+    private var calibrationInstruction: String {
+        switch viewModel.calibrationStep {
+        case .idle: return "Hold the rod naturally for a few seconds, then capture your idle pose."
+        case .cast: return "Perform one natural forward cast, then capture it."
+        case .reel: return "Reel naturally for a moment, then capture it."
+        case .complete: return "Motion calibration complete."
+        }
+    }
+
+    private var calibrationButtonTitle: String {
+        switch viewModel.calibrationStep {
+        case .idle: return "Capture Idle Pose"
+        case .cast: return "Capture Cast Gesture"
+        case .reel: return "Capture Reel Gesture"
+        case .complete: return "Recalibrate Motion"
+        }
     }
 }

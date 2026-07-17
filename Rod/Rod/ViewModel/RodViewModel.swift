@@ -9,6 +9,13 @@ import SwiftUI
 import Shared
 import Combine
 
+enum MotionCalibrationStep: String {
+    case idle
+    case cast
+    case reel
+    case complete
+}
+
 @MainActor
 final class RodViewModel: ObservableObject {
 
@@ -21,9 +28,12 @@ final class RodViewModel: ObservableObject {
     @Published private(set) var reelSpeed: Float = 0
     @Published private(set) var motionPhase: RodMotionPhase = .invalid
     @Published private(set) var isPoseValid = false
+    @Published private(set) var hookPhase: HookPhase = .idle
     @Published private(set) var motionAccelerationZ: Double = 0
     @Published private(set) var motionRotationRate: Double = 0
     @Published private(set) var lastError: String?
+    @Published private(set) var calibrationStep: MotionCalibrationStep = .idle
+    @Published private(set) var calibrationSampleCount = 0
 
     private let motionManager: MotionManager
     private let motionInterpreter: RodMotionInterpreter
@@ -35,13 +45,18 @@ final class RodViewModel: ObservableObject {
         timestamp: 0,
         pitch: 0,
         roll: 0,
-        yaw: 0,
-        accelerationZ: 0,
+            yaw: 0,
+            accelerationZ: 0,
         rotationRateMagnitude: 0
     )
     private var pose = RodMotionPose(pitch: 0, roll: 2, yaw: 0)
     private var spatial = SpatialState()
     private var hasStarted = false
+    private var calibrationSamples: [RodMotionInput] = []
+
+    private static let motionProfileKey = "rod.motionProfile"
+
+    let debugRecorder = MotionDebugRecorder()
 
     init(
         motionManager: MotionManager = MotionManager(),
@@ -51,6 +66,10 @@ final class RodViewModel: ObservableObject {
         fishingHaptics: FishingHaptics = FishingHaptics()
     ) {
         self.motionManager = motionManager
+        if let storedProfile = Self.loadMotionProfile() {
+            motionInterpreter.updateProfile(storedProfile)
+            calibrationStep = storedProfile.isComplete ? .complete : .idle
+        }
         self.motionInterpreter = motionInterpreter
         self.spatialManager = spatialManager
         self.transport = transport
@@ -61,6 +80,7 @@ final class RodViewModel: ObservableObject {
             Task { @MainActor in
                 self?.motion = sample
                 self?.hasMotionSample = true
+                self?.collectCalibrationSample()
                 self?.updateAction()
                 self?.publishState()
             }
@@ -91,6 +111,8 @@ final class RodViewModel: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
+        debugRecorder.start()
+        print(debugRecorder.sampleCount)
         motionManager.start()
         Task {
             do {
@@ -110,7 +132,44 @@ final class RodViewModel: ObservableObject {
 
     func calibrateMotion() {
         guard hasMotionSample else { return }
-        motionInterpreter.calibrate(to: motionInput)
+        switch calibrationStep {
+        case .idle:
+            guard calibrationSamples.count >= 3 else { return }
+            motionInterpreter.profile.idlePose = averagePose(of: calibrationSamples)
+            motionInterpreter.profile.isComplete = false
+            calibrationSamples.removeAll(keepingCapacity: true)
+            calibrationSampleCount = 0
+            calibrationStep = .cast
+        case .cast:
+            let samples = calibrationSamples
+            guard samples.count >= 3 else { return }
+            motionInterpreter.profile.castPose = averagePose(of: Array(samples.suffix(10)))
+            let peakAccelerationSample = samples.max { abs($0.accelerationZ) < abs($1.accelerationZ) }
+            let peakAcceleration = abs(peakAccelerationSample?.accelerationZ ?? 0.08)
+            let duration = max(0.15, (samples.last?.timestamp ?? 0) - (samples.first?.timestamp ?? 0))
+            motionInterpreter.profile.castAcceleration = max(0.01, peakAcceleration * 0.2)
+            motionInterpreter.profile.castAccelerationSign = (peakAccelerationSample?.accelerationZ ?? 1) >= 0 ? 1 : -1
+            motionInterpreter.profile.castDuration = min(0.8, duration)
+            calibrationSamples.removeAll(keepingCapacity: true)
+            calibrationSampleCount = 0
+            calibrationStep = .reel
+        case .reel:
+            let samples = calibrationSamples
+            guard samples.count >= 3 else { return }
+            motionInterpreter.profile.reelPose = averagePose(of: samples)
+            let rates = samples.map(\.rotationRateMagnitude)
+            let averageRate = rates.reduce(0, +) / Double(rates.count)
+            motionInterpreter.profile.reelRotationRate = max(0.2, averageRate * 0.45)
+            motionInterpreter.profile.isComplete = true
+            calibrationSamples.removeAll(keepingCapacity: true)
+            calibrationSampleCount = 0
+            calibrationStep = .complete
+            Self.saveMotionProfile(motionInterpreter.profile)
+        case .complete:
+            calibrationStep = .idle
+            motionInterpreter.profile.isComplete = false
+            Self.saveMotionProfile(motionInterpreter.profile)
+        }
         updateAction()
         publishState()
     }
@@ -125,6 +184,8 @@ final class RodViewModel: ObservableObject {
             spatialManager.handleDiscoveryToken(data)
         case let .fishingEvent(event):
             fishingHaptics.handle(event)
+        case let .hookPhase(phase):
+            hookPhase = phase
         case .hello, .motion, .state:
             break
         }
@@ -149,8 +210,17 @@ final class RodViewModel: ObservableObject {
         motionAccelerationZ = motion.accelerationZ
         motionRotationRate = motion.rotationRateMagnitude
         let interpretation = motionInterpreter.interpret(motionInput)
+        debugRecorder.append(
+            MotionDebugSample(
+                input: motionInput,
+                interpretation: interpretation,
+                decision: interpretation.debug
+            )
+        )
         pose = interpretation.pose
-        action = interpretation.action
+        action = interpretation.action == .casting && hookPhase != .idle
+            ? .idle
+            : interpretation.action
         reelSpeed = interpretation.reelSpeed
         motionPhase = interpretation.phase
         isPoseValid = interpretation.isPoseValid
@@ -169,7 +239,24 @@ final class RodViewModel: ObservableObject {
             pitch: motion.pitch,
             roll: motion.roll,
             yaw: motion.yaw,
-            rotationRateMagnitude: motion.rotationRateMagnitude
+            rotationRateMagnitude: motion.rotationRateMagnitude,
+            accelerationZ: motion.accelerationZ
+        )
+    }
+
+    private func collectCalibrationSample() {
+        guard calibrationStep != .complete else { return }
+        calibrationSamples.append(motionInput)
+        if calibrationSamples.count > 180 { calibrationSamples.removeFirst() }
+        calibrationSampleCount = calibrationSamples.count
+    }
+
+    private func averagePose(of samples: [RodMotionInput]) -> MotionPose {
+        let count = Double(samples.count)
+        return MotionPose(
+            pitch: samples.map(\.pitch).reduce(0, +) / count,
+            roll: samples.map(\.roll).reduce(0, +) / count,
+            yaw: samples.map(\.yaw).reduce(0, +) / count
         )
     }
 
@@ -179,5 +266,15 @@ final class RodViewModel: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    private static func loadMotionProfile() -> MotionProfile? {
+        guard let data = UserDefaults.standard.data(forKey: motionProfileKey) else { return nil }
+        return try? JSONDecoder().decode(MotionProfile.self, from: data)
+    }
+
+    private static func saveMotionProfile(_ profile: MotionProfile) {
+        guard let data = try? JSONEncoder().encode(profile) else { return }
+        UserDefaults.standard.set(data, forKey: motionProfileKey)
     }
 }

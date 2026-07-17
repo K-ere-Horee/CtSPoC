@@ -9,13 +9,6 @@ import SwiftUI
 import Combine
 import simd
 
-enum HookPhase: String {
-    case idle
-    case flying
-    case hookInWater
-    case reeling
-}
-
 @MainActor
 final class WorldViewModel: ObservableObject {
 
@@ -117,6 +110,12 @@ final class WorldViewModel: ObservableObject {
         updateRodPose()
     }
 
+    private func setHookPhase(_ phase: HookPhase) {
+        guard hookPhase != phase else { return }
+        hookPhase = phase
+        Task { await send(.hookPhase(phase)) }
+    }
+
     private func loadRodEntity() async -> Entity {
         do {
             let entity = try await ModelEntity(named: "Rod")
@@ -159,7 +158,7 @@ final class WorldViewModel: ObservableObject {
             if rodState.action == .reeling {
                 reelHook(deltaTime: deltaTime)
             } else {
-                hookPhase = .hookInWater
+                setHookPhase(.hookInWater)
             }
         }
     }
@@ -189,7 +188,7 @@ final class WorldViewModel: ObservableObject {
         hookEntity.isEnabled = true
         hookEntity.position = controllerEntity.position + forward * 0.18
         hookVelocity = forward * castSpeed + SIMD3<Float>(0, 0.9, 0)
-        hookPhase = .flying
+        setHookPhase(.flying)
     }
 
     private func simulateFlyingHook(deltaTime: Float) {
@@ -201,7 +200,7 @@ final class WorldViewModel: ObservableObject {
         guard hookEntity.position.y <= waterHeight else { return }
         hookEntity.position.y = waterHeight
         hookVelocity = .zero
-        hookPhase = .hookInWater
+        setHookPhase(.hookInWater)
         Task { await send(.fishingEvent(.hookSplash)) }
     }
 
@@ -212,14 +211,14 @@ final class WorldViewModel: ObservableObject {
         let distance = simd_length(directionToRod)
         guard distance > 0.12 else {
             hookEntity.isEnabled = false
-            hookPhase = .idle
+            setHookPhase(.idle)
             return
         }
 
         let speed = max(0.35, rodState.reelSpeed * reelSpeed)
         let step = min(distance, speed * deltaTime)
         hookEntity.position += simd_normalize(directionToRod) * step
-        hookPhase = .reeling
+        setHookPhase(.reeling)
     }
 
     private func handle(_ message: NetworkMessage) {

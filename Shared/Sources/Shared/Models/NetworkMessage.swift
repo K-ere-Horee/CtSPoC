@@ -14,5 +14,5 @@ public enum NetworkMessage: Codable, Sendable {
     case state(RodState)
     case discoveryToken(Data)
     case fishingEvent(FishingEvent)
-
+    case hookPhase(HookPhase)
 }
