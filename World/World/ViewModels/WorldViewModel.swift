@@ -2,6 +2,8 @@
 //  WorldViewModel.swift
 //  World
 //
+//  Created by Calzy Akmal Indyramdhani on 15/07/26.
+//
 
 import RealityKit
 import Shared
@@ -32,10 +34,13 @@ final class WorldViewModel: ObservableObject {
     private var controllerEntity: Entity?
     private var hookEntity: ModelEntity?
     private var hookVelocity = SIMD3<Float>.zero
+    private var pendingCastSolution: CastSolution?
     private var simulationTask: Task<Void, Never>?
     private var hasStarted = false
 
-    init(transport: TransportHost = TransportHost()) {
+    init(
+        transport: TransportHost
+    ) {
         self.transport = transport
 
         transport.onStateChange = { [weak self] state in
@@ -68,31 +73,77 @@ final class WorldViewModel: ObservableObject {
         hasStarted = false
     }
 
-    func makeSceneEntity() async -> Entity {
+    private func makeArrow() -> Entity {
+
         let root = Entity()
+
+        let shaft = ModelEntity(
+            mesh: .generateBox(size: [0.1, 0.1, 1.0]),
+            materials: [
+                SimpleMaterial(color: .green, isMetallic: false)
+            ]
+        )
+
+        shaft.position = [0, 0, -0.175]
+
+        let head = ModelEntity(
+            mesh: .generateCone(
+                height: 0.08,
+                radius: 0.04
+            ),
+            materials: [
+                SimpleMaterial(color: .red, isMetallic: false)
+            ]
+        )
+
+        // cone RealityKit default menghadap +Y
+        head.orientation = simd_quatf(
+            angle: -.pi / 2,
+            axis: [1,0,0]
+        )
+
+        let tip = Entity()
+        tip.name = "Tip"
+
+        head.position = [0, 0, -0.72]
+        tip.position = [0, 0, -0.76]
+
+        root.addChild(shaft)
+        root.addChild(head)
+        root.addChild(tip)
+
+        return root
+    }
+
+    func makeSceneEntity() async -> Entity {
 
         let water = ModelEntity(
             mesh: .generatePlane(width: 6, depth: 6),
             materials: [SimpleMaterial(color: .blue, isMetallic: false)]
         )
         water.position = [0, waterHeight, 0]
-        root.addChild(water)
 
+        let root = Entity()
         let rodRoot = Entity()
-        let rod = await loadRodEntity()
-        rodRoot.addChild(rod)
-        root.addChild(rodRoot)
-        controllerEntity = rodRoot
-        rodModel = rod
-        updateModelOrientation()
+        let rod = makeArrow()
+        rod.position = [0, 0, -1]
 
         let hook = ModelEntity(
             mesh: .generateSphere(radius: 0.035),
             materials: [SimpleMaterial(color: .yellow, isMetallic: false)]
         )
         hook.isEnabled = false
-        root.addChild(hook)
+
+        controllerEntity = rodRoot
+        rodModel = rod
+        updateModelOrientation()
         hookEntity = hook
+
+        rodRoot.addChild(rod)
+
+        root.addChild(rodRoot)
+        root.addChild(hook)
+        root.addChild(water)
 
         return root
     }
@@ -146,7 +197,10 @@ final class WorldViewModel: ObservableObject {
         switch hookPhase {
         case .idle:
             if rodState.action == .casting {
-                launchHook()
+                if let solution = pendingCastSolution {
+                    launchHook(solution: solution)
+                    pendingCastSolution = nil
+                }
             }
         case .flying:
             simulateFlyingHook(deltaTime: deltaTime)
@@ -172,22 +226,35 @@ final class WorldViewModel: ObservableObject {
         let distance = rodState.distance ?? 0.5
         controllerEntity.position = [x * distance, y * distance, -abs(z * distance)]
 
-        let yaw = simd_quatf(angle: Float(rodState.yaw), axis: [0, 1, 0])
-        let pitch = simd_quatf(angle: Float(rodState.pitch), axis: [1, 0, 0])
-        let roll = simd_quatf(angle: Float(rodState.roll), axis: [0, 0, 1])
-        controllerEntity.orientation = yaw * pitch * roll
+        controllerEntity.orientation = simd_quatf(
+            ix: Float(rodState.orientation.x),
+            iy: Float(rodState.orientation.y),
+            iz: Float(rodState.orientation.z),
+            r: Float(rodState.orientation.w)
+        )
     }
 
-    private func launchHook() {
-        guard let controllerEntity, let hookEntity else { return }
+    private func launchHook(solution: CastSolution) {
+        guard
+            let controllerEntity,
+            let rodModel,
+            let hookEntity,
+            let tip = rodModel.findEntity(named: "Tip")
+        else {
+            return
+        }
 
-        let forward = simd_normalize(simd_act(
-            controllerEntity.orientation,
-            SIMD3<Float>(0, 0, -1)
-        ))
+        let tipPosition = tip.position(relativeTo: nil)
+        let rodOrigin = controllerEntity.position(relativeTo: nil)
+
         hookEntity.isEnabled = true
-        hookEntity.position = controllerEntity.position + forward * 0.18
-        hookVelocity = forward * castSpeed + SIMD3<Float>(0, 0.9, 0)
+        hookEntity.position = tipPosition
+        let angle = solution.launchAngle
+        let horizontal = SIMD3<Float>(solution.direction.x, 0, solution.direction.z)
+        let speed = castSpeed * (0.5 + (solution.power * 1.5))
+        hookVelocity = horizontal * (cos(angle) * speed)
+            + SIMD3<Float>(0, sin(angle) * speed, 0)
+
         setHookPhase(.flying)
     }
 
@@ -224,6 +291,9 @@ final class WorldViewModel: ObservableObject {
     private func handle(_ message: NetworkMessage) {
         guard case let .state(state) = message else { return }
         rodState = state
+        if let solution = state.castSolution, state.action == .casting {
+            pendingCastSolution = solution
+        }
         connectionState = .streaming
     }
 

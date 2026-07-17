@@ -10,7 +10,8 @@ import Shared
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var viewModel = RodViewModel()
+    @ObservedObject
+    var viewModel: RodViewModel
 
     var body: some View {
         NavigationStack {
@@ -54,9 +55,13 @@ struct ContentView: View {
                     valueRow("Timestamp", value: String(format: "%.3f", viewModel.rodState.timestamp))
                 }
 
+                /*
+                #if DEBUG
                 Section("Motion Debug") {
                     MotionDebugView(recorder: viewModel.debugRecorder)
                 }
+                #endif
+                 */
 
                 if let lastError = viewModel.lastError {
                     Section("Error") { Text(lastError).foregroundStyle(.red) }

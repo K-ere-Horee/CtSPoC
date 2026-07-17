@@ -35,6 +35,28 @@ Status: Accepted
 
 ------------------------------------------------------------------------
 
+# ADR-017 --- Cast Resolver Boundary
+
+## Decision
+
+Cast motion is captured once as an immutable `CastSnapshot` containing the
+corrected orientation, angular velocity vector, and timestamp. `CastResolver`
+converts that snapshot into a `CastSolution` containing normalized power,
+horizontal direction, and launch angle.
+
+The motion interpreter detects the release but does not perform gameplay
+balancing. World/gameplay consumes the solution and never reads CoreMotion.
+
+## Rationale
+
+Separating motion interpretation from gameplay translation allows cast power,
+distance, arc, VFX, audio, and haptics to be balanced without changing the
+controller sensor pipeline.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
 # ADR-002 --- Shared Swift Package
 
 ## Decision
@@ -289,3 +311,29 @@ Any modification to these decisions should:
 
 Architectural consistency takes priority over short-term implementation
 convenience.
+
+------------------------------------------------------------------------
+
+# ADR-016 --- Calibration-Owned Orientation
+
+## Decision
+
+Calibration belongs to the Rod/Shared motion pipeline. The calibration layer
+captures and persists an Idle reference quaternion, applies its inverse to each
+current device orientation, and publishes the corrected orientation in
+`RodState.orientation`.
+
+World consumes that orientation as-is. World does not know whether a
+calibration reference exists and does not apply offsets or reconstruct the
+calibrated orientation from Euler angles.
+
+Gameplay-relative pose may be derived separately from corrected motion, but it
+must not become the renderer's orientation source.
+
+## Rationale
+
+Using relative Euler values for both gameplay and rendering caused the rod to
+appear to snap when calibration ended. A normalized quaternion contract keeps
+the visual pipeline stable and makes the ownership boundary explicit.
+
+Status: Accepted

@@ -10,7 +10,9 @@ import Shared
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var viewModel = WorldViewModel()
+    @StateObject private var viewModel = WorldViewModel(
+        transport: TransportHost()
+    )
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -31,16 +33,6 @@ struct ContentView: View {
             }
             .frame(minHeight: 320)
 
-//            #if DEBUG
-//            GroupBox("Rod Model Offset") {
-//                VStack(spacing: 10) {
-//                    orientationSlider("Pitch", value: $viewModel.modelPitch)
-//                    orientationSlider("Yaw", value: $viewModel.modelYaw)
-//                    orientationSlider("Roll", value: $viewModel.modelRoll)
-//                }
-//            }
-//            #endif
-
             GroupBox("Controller State") {
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
                     row("State", viewModel.connectionState.rawValue)
@@ -55,6 +47,8 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            CastMeterView(castSolution: viewModel.rodState.castSolution)
 
             if let lastError = viewModel.lastError {
                 Text(lastError).foregroundStyle(.red)

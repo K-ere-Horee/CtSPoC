@@ -5,6 +5,7 @@
 
 import CoreMotion
 
+@MainActor
 final class MotionManager {
 
     private let manager = CMMotionManager()
@@ -31,7 +32,10 @@ final class MotionManager {
                     pow(motion.rotationRate.x, 2) +
                     pow(motion.rotationRate.y, 2) +
                     pow(motion.rotationRate.z, 2)
-                )
+                ),
+                rotationRateX: motion.rotationRate.x,
+                rotationRateY: motion.rotationRate.y,
+                rotationRateZ: motion.rotationRate.z
             ))
         }
     }
@@ -48,4 +52,7 @@ struct MotionSample {
     let yaw: Double
     let accelerationZ: Double
     let rotationRateMagnitude: Double
+    let rotationRateX: Double
+    let rotationRateY: Double
+    let rotationRateZ: Double
 }

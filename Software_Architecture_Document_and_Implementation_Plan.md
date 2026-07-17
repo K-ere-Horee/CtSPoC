@@ -339,6 +339,40 @@ The implementation agent must follow these rules:
 9.  Keep ViewModels free from rendering code.
 10. Treat RodState as the single source of truth for controller state.
 
+------------------------------------------------------------------------
+
+## Calibration Orientation Pipeline
+
+The motion system has two related outputs with separate responsibilities:
+
+```text
+Raw Device Orientation -> Calibration Reference -> Corrected RodOrientation
+                                      -> RodState.orientation -> World
+                                      -> Relative Motion Pose -> Gameplay
+```
+
+Rod captures and persists the Idle reference, applies
+`inverse(reference) * current` on every frame, and sends the corrected result
+in `RodState.orientation`. World only renders that value and must not calculate
+calibration, apply offsets, remember an Idle reference, or use relative pose
+for visual rotation.
+
+------------------------------------------------------------------------
+
+## Cast Resolver Pipeline
+
+Cast release follows a separate gameplay translation boundary:
+
+```text
+RodMotionInterpreter -> CastSnapshot -> RodState -> CastResolver
+                    -> CastSolution -> Gameplay/World Physics
+```
+
+`CastSnapshot` is immutable and contains corrected orientation, angular
+velocity, and timestamp. `CastResolver` computes horizontal direction,
+normalized power, and launch angle. Raw angular velocity is never exposed to
+gameplay as a balancing value.
+
 Definition of Done for each sprint:
 
 -   Builds successfully.
