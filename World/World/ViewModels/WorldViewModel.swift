@@ -2,6 +2,8 @@
 //  WorldViewModel.swift
 //  World
 //
+//  Created by Calzy Akmal Indyramdhani on 15/07/26.
+//
 
 import RealityKit
 import Shared
@@ -32,6 +34,7 @@ final class WorldViewModel: ObservableObject {
     private var controllerEntity: Entity?
     private var hookEntity: ModelEntity?
     private var hookVelocity = SIMD3<Float>.zero
+    private var pendingCastSolution: CastSolution?
     private var simulationTask: Task<Void, Never>?
     private var hasStarted = false
 
@@ -93,8 +96,6 @@ final class WorldViewModel: ObservableObject {
             ]
         )
 
-        head.position = [0, 0, -0.39]
-
         // cone RealityKit default menghadap +Y
         head.orientation = simd_quatf(
             angle: -.pi / 2,
@@ -103,7 +104,9 @@ final class WorldViewModel: ObservableObject {
 
         let tip = Entity()
         tip.name = "Tip"
-        tip.position = [0,0,-0.43]
+
+        head.position = [0, 0, -0.72]
+        tip.position = [0, 0, -0.76]
 
         root.addChild(shaft)
         root.addChild(head)
@@ -194,7 +197,10 @@ final class WorldViewModel: ObservableObject {
         switch hookPhase {
         case .idle:
             if rodState.action == .casting {
-                launchHook()
+                if let solution = pendingCastSolution {
+                    launchHook(solution: solution)
+                    pendingCastSolution = nil
+                }
             }
         case .flying:
             simulateFlyingHook(deltaTime: deltaTime)
@@ -228,7 +234,7 @@ final class WorldViewModel: ObservableObject {
         )
     }
 
-    private func launchHook() {
+    private func launchHook(solution: CastSolution) {
         guard
             let controllerEntity,
             let rodModel,
@@ -241,11 +247,13 @@ final class WorldViewModel: ObservableObject {
         let tipPosition = tip.position(relativeTo: nil)
         let rodOrigin = controllerEntity.position(relativeTo: nil)
 
-        let forward = simd_normalize(tipPosition - rodOrigin)
-
         hookEntity.isEnabled = true
         hookEntity.position = tipPosition
-        hookVelocity = forward * castSpeed + SIMD3<Float>(0, 0.9, 0)
+        let angle = solution.launchAngle
+        let horizontal = SIMD3<Float>(solution.direction.x, 0, solution.direction.z)
+        let speed = castSpeed * (0.5 + (solution.power * 1.5))
+        hookVelocity = horizontal * (cos(angle) * speed)
+            + SIMD3<Float>(0, sin(angle) * speed, 0)
 
         setHookPhase(.flying)
     }
@@ -283,6 +291,9 @@ final class WorldViewModel: ObservableObject {
     private func handle(_ message: NetworkMessage) {
         guard case let .state(state) = message else { return }
         rodState = state
+        if let solution = state.castSolution, state.action == .casting {
+            pendingCastSolution = solution
+        }
         connectionState = .streaming
     }
 

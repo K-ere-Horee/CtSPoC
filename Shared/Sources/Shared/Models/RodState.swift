@@ -21,6 +21,7 @@ public struct RodState: Codable, Sendable, Equatable {
     public let orientation: RodOrientation
     public let action: RodAction
     public let reelSpeed: Float
+    public let castSolution: CastSolution?
 
     public init(
         timestamp: TimeInterval = Date().timeIntervalSince1970,
@@ -31,17 +32,19 @@ public struct RodState: Codable, Sendable, Equatable {
         orientation: RodOrientation = .identity,
         action: RodAction = .idle,
         reelSpeed: Float = 0
+        , castSolution: CastSolution? = nil
     ) {
         self.timestamp = timestamp
-        distance = spatial.distance
-        directionX = spatial.directionX
-        directionY = spatial.directionY
-        directionZ = spatial.directionZ
+        distance = castSolution?.distance ?? spatial.distance
+        directionX = castSolution?.direction.x ?? spatial.directionX
+        directionY = castSolution?.direction.y ?? spatial.directionY
+        directionZ = castSolution?.direction.z ?? spatial.directionZ
         self.pitch = pitch
         self.roll = roll
         self.yaw = yaw
         self.orientation = orientation
         self.action = action
         self.reelSpeed = reelSpeed
+        self.castSolution = castSolution
     }
 }

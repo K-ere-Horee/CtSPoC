@@ -15,6 +15,9 @@ public struct RodMotionInput: Sendable, Equatable {
     public let yaw: Double
     public let accelerationZ: Double
     public let rotationRateMagnitude: Double
+    public let rotationRateX: Double
+    public let rotationRateY: Double
+    public let rotationRateZ: Double
 
     public init(
         timestamp: TimeInterval,
@@ -22,7 +25,10 @@ public struct RodMotionInput: Sendable, Equatable {
         roll: Double,
         yaw: Double,
         rotationRateMagnitude: Double,
-        accelerationZ: Double = 0
+        accelerationZ: Double = 0,
+        rotationRateX: Double = 0,
+        rotationRateY: Double = 0,
+        rotationRateZ: Double = 0
     ) {
         self.timestamp = timestamp
         self.pitch = pitch
@@ -30,6 +36,9 @@ public struct RodMotionInput: Sendable, Equatable {
         self.yaw = yaw
         self.accelerationZ = accelerationZ
         self.rotationRateMagnitude = rotationRateMagnitude
+        self.rotationRateX = rotationRateX
+        self.rotationRateY = rotationRateY
+        self.rotationRateZ = rotationRateZ
     }
 }
 
@@ -48,6 +57,7 @@ public struct RodMotionInterpretation: Sendable, Equatable {
     public let action: RodAction
     public let reelSpeed: Float
     public let debug: MotionDebugDecision
+    public let castSnapshot: CastSnapshot?
 
     public init(
         pose: RodMotionPose,
@@ -57,6 +67,7 @@ public struct RodMotionInterpretation: Sendable, Equatable {
         action: RodAction,
         reelSpeed: Float,
         debug: MotionDebugDecision
+        , castSnapshot: CastSnapshot? = nil
     ) {
         self.pose = pose
         self.orientation = orientation
@@ -65,6 +76,7 @@ public struct RodMotionInterpretation: Sendable, Equatable {
         self.action = action
         self.reelSpeed = reelSpeed
         self.debug = debug
+        self.castSnapshot = castSnapshot
     }
 }
 
@@ -143,7 +155,7 @@ public final class RodMotionInterpreter {
             previousClassification = classification
             if forwardMotion && enteredCast {
                 castEndsAt = input.timestamp + profile.castDuration
-                return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .casting, action: .casting, reelSpeed: 0, debug: debug)
+                return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .casting, action: .casting, reelSpeed: 0, debug: debug, castSnapshot: snapshot(input: input, orientation: correctedOrientation(currentOrientation)))
             }
         case .reel:
             previousClassification = classification
@@ -219,7 +231,16 @@ public final class RodMotionInterpreter {
         action: RodAction,
         reelSpeed: Float,
         debug: MotionDebugDecision
+        , castSnapshot: CastSnapshot? = nil
     ) -> RodMotionInterpretation {
-        RodMotionInterpretation(pose: pose, orientation: orientation, isPoseValid: profile.isComplete, phase: phase, action: action, reelSpeed: reelSpeed, debug: debug)
+        RodMotionInterpretation(pose: pose, orientation: orientation, isPoseValid: profile.isComplete, phase: phase, action: action, reelSpeed: reelSpeed, debug: debug, castSnapshot: castSnapshot)
+    }
+
+    private func snapshot(input: RodMotionInput, orientation: RodOrientation) -> CastSnapshot {
+        CastSnapshot(
+            orientation: orientation,
+            angularVelocity: CastVector3(x: Float(input.rotationRateX), y: Float(input.rotationRateY), z: Float(input.rotationRateZ)),
+            timestamp: input.timestamp
+        )
     }
 }

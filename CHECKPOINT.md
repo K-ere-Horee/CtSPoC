@@ -762,3 +762,126 @@ Temporary logs are diagnostic only and must not become a motion-system
 dependency. The next movement priority remains stable Idle orientation,
 relative gameplay pose, and reliable Idle/Cast/Reel action classification while
 World continues to consume orientation independently.
+
+## Cast Resolver Architecture
+
+Design source: `Cast Resolver Architecture`, 2026-07-17.
+
+The cast flow now separates physical motion interpretation from gameplay
+translation:
+
+```text
+MotionManager -> RodMotionInterpreter -> CastSnapshot -> RodState
+             -> CastResolver -> CastSolution -> World hook physics
+```
+
+### Implementation
+
+- Added `CastVector3`, `CastSnapshot`, `CastConfig`, `CastSolution`, and
+  `CastResolver` to Shared.
+- Extended motion samples with angular velocity components so a cast snapshot
+  contains the complete release state rather than only a magnitude.
+- `RodMotionInterpreter` emits one immutable `CastSnapshot` when entering the
+  casting phase. It remains responsible for motion interpretation and
+  calibration, not gameplay balancing.
+- `RodState` transports the optional cast snapshot to World.
+- `CastResolver` derives horizontal direction from corrected orientation,
+  projects away vertical aiming from direction, normalizes angular speed into
+  power from `0...1`, and computes a launch angle from `CastConfig`.
+- World resolves the snapshot once and uses `CastSolution` to construct the
+  hook's initial horizontal and vertical velocity. World does not read
+  CoreMotion or raw angular velocity.
+
+### Verification
+
+- Shared cast/motion core targeted compilation passed.
+- `git diff --check` passes.
+- Runtime two-device trajectory tuning remains pending.
+
+## Cast Resolver Integration and Hook State Gating
+
+Design source: `Pending Sprint Instructions - Cast Resolver Integration & Hook State Gating`, 2026-07-17.
+
+### Cast Resolver Bridge
+
+- `RodMotionInterpreter` still owns motion interpretation and emits an
+  immutable `CastSnapshot` only when a cast is entered.
+- `RodViewModel` now owns the `CastResolver` call and converts the snapshot to
+  a `CastSolution` before publishing `RodState`.
+- `RodState` carries the one-shot `CastSolution` and immediately populates
+  `directionX`, `directionY`, `directionZ`, and normalized cast `distance` for
+  the existing Controller State UI.
+- World consumes the solution and no longer resolves snapshots or reads raw
+  motion data. It only applies the gameplay-ready launch values to hook
+  physics.
+
+### Hook State Gating
+
+- Added `HookPhase.allowsCasting` and `HookPhase.allowsReeling` as the single
+  centralized gameplay permission rules.
+- Rod casting is allowed only during `.idle`.
+- Rod reeling is allowed only during `.hookInWater` or `.reeling`.
+- `RodViewModel` suppresses invalid actions through these properties, so the
+  controller cannot report `.reeling` while the hook phase is `.idle`.
+- Existing World hook lifecycle remains authoritative and unchanged.
+
+### Verification
+
+- Shared sprint contracts compile with targeted `swiftc` verification.
+- `git diff --check` passes.
+- Controller State direction and distance now have a resolver-backed path.
+- Runtime two-device cast and hook gating verification remains pending.
+
+## Debug Cast Meter and Persistent Cast Solution
+
+Design source: `Feature Proposal - Debug Cast Meter & Persistent Cast Solution`, 2026-07-17.
+
+- Added `CastMeterConfig` with configurable short, medium, and long distance
+  zones (`6m`, `12m`, and `18m` defaults).
+- `RodViewModel` now maps resolved normalized cast power to a deterministic
+  meter distance instead of deriving distance directly from raw physics.
+- Added a visible Rod Cast Meter with green, yellow, and red zones plus a
+  current-power indicator.
+- The latest `CastSolution` is retained in `RodViewModel` and continuously
+  published through `RodState`, so direction and distance remain visible after
+  the one-frame cast event.
+- Cast state resets only when a new cast replaces it or World reports the hook
+  has returned to `.idle`.
+- `RodState.distance` now uses the resolver/meter distance, while spatial
+  distance remains the fallback when no cast solution is active.
+- World continues to consume the persistent solution and does not calculate
+  cast power, direction, or distance.
+
+### Verification
+
+- Shared cast/meter contracts compile with targeted `swiftc` verification.
+- `git diff --check` passes.
+- Runtime UI persistence and two-device meter/trajectory behavior remain
+  pending hardware validation.
+
+## Cast Meter Architecture Refactor
+
+Design source: `Cast Meter Architecture Refactor - Single Source of Truth & World HUD`, 2026-07-17.
+
+- Removed Cast Meter presentation and cast power/distance presentation state
+  from the Rod UI.
+- `CastSolution` is now the authoritative cast state carried by `RodState`.
+  Rod retains no duplicate `castPower`, `castDistance`, or latest-solution
+  storage outside the state it publishes.
+- Added `World/World/Views/CastMeterView.swift`; World now owns the green,
+  yellow, and red meter presentation and reads only
+  `viewModel.rodState.castSolution`.
+- The World meter performs no gameplay calculations. It displays the power and
+  distance already present in `CastSolution`.
+- Rod remains responsible for sensing, calibration, gesture recognition,
+  CastResolver integration, and transport. World owns gameplay presentation.
+- `CastSolution` remains persistent in `RodState` until a new cast replaces it
+  or the hook returns to `.idle`.
+
+### Verification
+
+- Rod no longer references `CastMeterView`, `castPower`, `castDistance`, or a
+  duplicate latest cast solution property.
+- World HUD reads the single `CastSolution` state from `RodState`.
+- Shared cast contracts compile with targeted `swiftc` verification.
+- `git diff --check` passes.

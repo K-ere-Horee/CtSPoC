@@ -357,3 +357,16 @@ Rules:
     reconstruct calibrated orientation from Euler values.
 -   Gameplay may classify relative motion after correction, but must not alter
     renderer orientation.
+
+# Cast Resolver Contract
+
+`RodMotionInterpreter` detects and snapshots a cast. It must not compute
+distance, physics, or gameplay balancing.
+
+`CastResolver` consumes only the immutable `CastSnapshot` from `RodState` and
+produces `CastSolution` values containing direction, normalized power, and
+launch angle. Gameplay and World physics must not read CoreMotion or raw
+angular velocity directly.
+
+Power is normalized through `CastConfig`; raw angular velocity never crosses
+the motion-to-gameplay boundary as a gameplay value.

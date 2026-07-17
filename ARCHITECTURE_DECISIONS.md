@@ -35,6 +35,28 @@ Status: Accepted
 
 ------------------------------------------------------------------------
 
+# ADR-017 --- Cast Resolver Boundary
+
+## Decision
+
+Cast motion is captured once as an immutable `CastSnapshot` containing the
+corrected orientation, angular velocity vector, and timestamp. `CastResolver`
+converts that snapshot into a `CastSolution` containing normalized power,
+horizontal direction, and launch angle.
+
+The motion interpreter detects the release but does not perform gameplay
+balancing. World/gameplay consumes the solution and never reads CoreMotion.
+
+## Rationale
+
+Separating motion interpretation from gameplay translation allows cast power,
+distance, arc, VFX, audio, and haptics to be balanced without changing the
+controller sensor pipeline.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
 # ADR-002 --- Shared Swift Package
 
 ## Decision

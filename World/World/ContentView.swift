@@ -48,6 +48,8 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
+            CastMeterView(castSolution: viewModel.rodState.castSolution)
+
             if let lastError = viewModel.lastError {
                 Text(lastError).foregroundStyle(.red)
             }

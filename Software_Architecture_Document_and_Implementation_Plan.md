@@ -357,6 +357,22 @@ in `RodState.orientation`. World only renders that value and must not calculate
 calibration, apply offsets, remember an Idle reference, or use relative pose
 for visual rotation.
 
+------------------------------------------------------------------------
+
+## Cast Resolver Pipeline
+
+Cast release follows a separate gameplay translation boundary:
+
+```text
+RodMotionInterpreter -> CastSnapshot -> RodState -> CastResolver
+                    -> CastSolution -> Gameplay/World Physics
+```
+
+`CastSnapshot` is immutable and contains corrected orientation, angular
+velocity, and timestamp. `CastResolver` computes horizontal direction,
+normalized power, and launch angle. Raw angular velocity is never exposed to
+gameplay as a balancing value.
+
 Definition of Done for each sprint:
 
 -   Builds successfully.
