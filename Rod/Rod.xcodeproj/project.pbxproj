@@ -6,13 +6,30 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		75612F0D30091E3E00C7A71D /* Shared in Frameworks */ = {isa = PBXBuildFile; productRef = 7A0000020000000000000001 /* Shared */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		75612ED63009151300C7A71D /* Rod.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Rod.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		75612FA330092D4200C7A71D /* Exceptions for "Rod" folder in "Rod" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 75612ED53009151300C7A71D /* Rod */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		75612ED83009151300C7A71D /* Rod */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				75612FA330092D4200C7A71D /* Exceptions for "Rod" folder in "Rod" target */,
+			);
 			path = Rod;
 			sourceTree = "<group>";
 		};
@@ -23,6 +40,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				75612F0D30091E3E00C7A71D /* Shared in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +83,7 @@
 			);
 			name = Rod;
 			packageProductDependencies = (
+				7A0000020000000000000001 /* Shared */,
 			);
 			productName = Rod;
 			productReference = 75612ED63009151300C7A71D /* Rod.app */;
@@ -94,6 +113,9 @@
 			);
 			mainGroup = 75612ECD3009151300C7A71D;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				7A0000030000000000000001 /* XCLocalSwiftPackageReference "../Shared" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 75612ED73009151300C7A71D /* Products */;
 			projectDirPath = "";
@@ -178,6 +200,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				INFOPLIST_KEY_NSMotionUsageDescription = "Rod uses motion sensors to report controller orientation.";
+				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "Rod uses Nearby Interaction to measure its position relative to World.";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
@@ -236,6 +260,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				INFOPLIST_KEY_NSMotionUsageDescription = "Rod uses motion sensors to report controller orientation.";
+				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "Rod uses Nearby Interaction to measure its position relative to World.";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
@@ -256,6 +282,10 @@
 				DEVELOPMENT_TEAM = 4YB3365JZ9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Rod/Info.plist;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Rod uses local network to connect into other device.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Rod uses motion sensors to report controller orientation.";
+				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "Rod uses Nearby Interaction to measure its position relative to World.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -288,6 +318,10 @@
 				DEVELOPMENT_TEAM = 4YB3365JZ9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Rod/Info.plist;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Rod uses local network to connect into other device.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Rod uses motion sensors to report controller orientation.";
+				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "Rod uses Nearby Interaction to measure its position relative to World.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -332,6 +366,21 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		7A0000030000000000000001 /* XCLocalSwiftPackageReference "../Shared" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../Shared;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		7A0000020000000000000001 /* Shared */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7A0000030000000000000001 /* XCLocalSwiftPackageReference "../Shared" */;
+			productName = Shared;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 75612ECE3009151300C7A71D /* Project object */;
 }
