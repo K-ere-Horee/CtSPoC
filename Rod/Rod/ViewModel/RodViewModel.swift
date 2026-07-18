@@ -87,9 +87,13 @@ final class RodViewModel: ObservableObject {
                 self?.motion = sample
                 self?.hasMotionSample = true
                 self?.collectCalibrationSample()
+                #if DEBUG
                 print("Rod onUpdate")
+                #endif
                 self?.updateAction()
+                #if DEBUG
                 print("Entered updateAction")
+                #endif
                 self?.publishState()
             }
         }
@@ -120,9 +124,10 @@ final class RodViewModel: ObservableObject {
         guard !hasStarted else { return }
         hasStarted = true
         debugRecorder.start()
-        print(debugRecorder.sampleCount)
         motionManager.start()
-        print("Motion Update")
+        #if DEBUG
+        print("Motion Update, sample count: \(debugRecorder.sampleCount)")
+        #endif
         Task {
             do {
                 try await transport.connect()
@@ -208,7 +213,7 @@ final class RodViewModel: ObservableObject {
                 )
                 publishState()
             }
-        case .hello, .motion, .state:
+        case .state:
             break
         }
     }
@@ -221,8 +226,10 @@ final class RodViewModel: ObservableObject {
             yaw: pose.yaw,
             orientation: orientation,
             action: action,
-            reelSpeed: reelSpeed
-            , castSolution: rodState.castSolution
+            reelSpeed: reelSpeed,
+            castSolution: rodState.castSolution,
+            motionPhase: rodState.motionPhase,
+            castPower: rodState.castPower
         )
         guard connectionState == .ready || connectionState == .streaming else { return }
         connectionState = .streaming
@@ -267,7 +274,9 @@ final class RodViewModel: ObservableObject {
             orientation: orientation,
             action: action,
             reelSpeed: reelSpeed,
-            castSolution: resolvedCastSolution
+            castSolution: resolvedCastSolution,
+            motionPhase: motionPhase,
+            castPower: interpretation.castPower
         )
 
         if action == .casting, previousAction != .casting {

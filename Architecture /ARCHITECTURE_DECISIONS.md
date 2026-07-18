@@ -35,6 +35,32 @@ Status: Accepted
 
 ------------------------------------------------------------------------
 
+# ADR-020 --- Rod as Controller, World as Game
+
+## Decision
+
+Catch the Scott is a two-device experience with a strict product boundary:
+Rod is a physical input device and World is the complete game. World owns
+menus, tutorials, calibration instructions, HUD, hook/fish simulation,
+results, and progression. Rod owns motion, calibration capture, cast/reel
+intent, buttons, connection status, and haptic output.
+
+No gameplay information may be rendered on Rod in V1. World is the sole owner
+of gameplay state and player-facing feedback. Rod receives only the input
+commands and typed feedback events required to operate the physical
+controller.
+
+## Rationale
+
+Keeping the iPhone visually quiet preserves the intended illusion that the
+player is holding a fishing rod rather than using a second game screen. It
+also prevents gameplay rules, fish state, and presentation logic from being
+duplicated across devices.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
 # ADR-017 --- Cast Resolver Boundary
 
 ## Decision
@@ -261,7 +287,7 @@ Status: Accepted
 
 ------------------------------------------------------------------------
 
-# ADR-014 --- Debug First
+# ADR-021 --- Debug First
 
 Every subsystem should expose observable debug information before
 gameplay is implemented.
@@ -311,6 +337,52 @@ Any modification to these decisions should:
 
 Architectural consistency takes priority over short-term implementation
 convenience.
+
+------------------------------------------------------------------------
+
+# ADR-019 --- Controller Root and Hook Simulation Separation
+
+## Decision
+
+World keeps `RodRoot` at a fixed camera-relative offset and applies only
+`RodState.orientation` to its orientation. Cast direction, power, and distance
+are consumed exclusively by hook launch and simulation. Reeling updates the
+hook position and never repositions the rod root.
+
+## Rationale
+
+The controller is the player's hand representation, while the hook is the
+gameplay projectile. Coupling the rod root to cast distance caused the rod to
+move forward during casting and snap back after reeling. Separate entity
+ownership keeps the controller attached to the player and makes future fishing
+line rendering independent of controller movement.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-018 --- Gesture Charging and Transform Separation
+
+## Decision
+
+The Rod/Shared motion layer owns gesture phases (`Idle`, `Backswing`,
+`Charging`, `Forward Swing`, `Release`, and `Follow Through`) and publishes
+live normalized `castPower` in `RodState`. A release is resolved once into a
+persistent `CastSolution`; World consumes that solution for hook physics and
+HUD presentation.
+
+Rod spatial state and cast gameplay state are separate contracts. Nearby
+Interaction distance/direction control the rod root. Cast direction, power,
+and distance control only the hook trajectory and cast HUD. World must not
+reconstruct cast values from raw motion or use cast distance to move the rod.
+
+## Rationale
+
+Mixing cast output into the rod transform made the controller visibly translate
+when a cast was released. Keeping the rod root spatial and the hook dynamic
+preserves stable controller rendering while allowing the cast to travel.
+
+Status: Accepted
 
 ------------------------------------------------------------------------
 

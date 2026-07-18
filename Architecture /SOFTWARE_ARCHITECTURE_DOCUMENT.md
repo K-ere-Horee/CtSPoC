@@ -380,3 +380,52 @@ Definition of Done for each sprint:
 -   No warnings.
 -   Code reviewed for architecture.
 -   Ready for the next sprint.
+
+------------------------------------------------------------------------
+
+## Gesture Charging and Cast Presentation
+
+The Rod motion pipeline also publishes a charging state machine and live
+normalized power. The current phase and power travel in `RodState`, allowing
+World to render a live cast meter without reading CoreMotion. On release,
+`CastResolver` converts the immutable snapshot into the single authoritative
+`CastSolution`, which remains available for hook simulation and the release
+summary.
+
+The controller transform is spatial-only: Nearby Interaction distance and
+direction position the rod root, while cast direction, power, and distance
+drive the hook trajectory. World must keep the rod root stable during a cast
+and move only the hook entity for cast motion.
+
+## World Controller and Hook Separation
+
+`WorldViewModel.updateRodPose()` is controller-only. It applies a fixed
+camera-relative `controllerOffset` and the corrected `RodState.orientation`.
+It does not inspect cast direction, cast distance, or hook phase.
+
+Hook launch and simulation own all gameplay translation. The hook starts from
+the rod tip, receives velocity from `CastSolution`, falls under gravity, and
+reels toward the controller. The rod root remains unchanged throughout these
+phases.
+
+------------------------------------------------------------------------
+
+## Gameplay Architecture V1
+
+The product contract is documented in `GAMEPLAY_ARCHITECTURE_V1.md`.
+World owns the complete player-facing game loop:
+
+```text
+Connect -> Calibration -> Ready -> Cast -> Hook Flying -> Splash
+  -> Searching -> Interested -> Bite -> Fight -> Catch/Escape
+  -> Result -> Continue/Menu
+```
+
+Rod is a minimal physical controller. It reports intent and state through
+shared contracts and renders haptics requested by World. Rod must not own
+gameplay HUD, fish information, tutorials, progression, or catch results.
+
+The V1 fight mechanic is line tension, driven by rod movement, reeling, fish
+resistance, and haptic rhythm. It is not a quick-time event or a generic fish
+health bar. Fish selection and progression are data-driven through biome,
+water type, equipment, bait, difficulty, and probability tables.

@@ -414,6 +414,23 @@ the existing pose values.
 - Shared remains platform independent.
 - `git diff --check` passes.
 
+## Casting Architecture Documentation Audit
+
+Added the follow-up contract to the project guidance and architecture docs:
+
+- `AGENTS.md` now requires charging phase/power ownership in Rod/Shared,
+  World-owned HUD presentation, and strict separation between spatial rod
+  transforms and cast gameplay values.
+- `ARCHITECTURE_DECISIONS.md` records ADR-018 for gesture charging and the
+  stationary rod root/hook-only cast movement decision.
+- `Software_Architecture_Document_and_Implementation_Plan.md` documents the
+  live charging pipeline, persistent `CastSolution`, and transform boundary.
+- `SESSION_MEMORY.md` records the same contracts for terminal-based session
+  handoff.
+
+Verification: targeted Shared compilation and `git diff --check` pass. Full
+Xcode/device validation remains pending local build dependencies and hardware.
+
 ## Rod Orientation Refactor
 
 Roadmap source: `CtSPoC_Rod_Orientation_Refactor.md`
@@ -859,6 +876,69 @@ Design source: `Feature Proposal - Debug Cast Meter & Persistent Cast Solution`,
 - Runtime UI persistence and two-device meter/trajectory behavior remain
   pending hardware validation.
 
+## Casting Architecture Follow-up
+
+Design source: `Casting Architecture Follow-up - Gesture Charging, World HUD, and Rod Transform Separation`, 2026-07-18.
+
+### Gesture Charging
+
+- Added motion phases for `backswing`, `charging`, `forwardSwing`, `release`,
+  and `followThrough`.
+- `RodMotionInterpreter` reports live normalized cast power during the casting
+  gesture and freezes release power during FollowThrough.
+- `RodState` transports `motionPhase` and `castPower` so World can animate a
+  live HUD without reading CoreMotion.
+- `CastSolution` remains created only at release and remains the frozen
+  gameplay cast state.
+
+### World HUD
+
+- World Cast Meter consumes `RodState.motionPhase`, `RodState.castPower`, and
+  `RodState.castSolution`.
+- The meter is visible during charging/release phases and displays frozen
+  solution values during release/follow-through.
+- Rod remains free of gameplay HUD presentation.
+
+### Rod Transform Separation
+
+- `RodState.directionX/Y/Z` and `distance` now remain spatial-only.
+- World positions the rod from spatial state, while hook physics uses only
+  `CastSolution` direction, power, distance, and launch angle.
+- Hook and rod remain separate scene entities; casting/reeling changes only
+  hook position and velocity.
+
+### Verification
+
+- Shared charging/cast contracts compile with targeted `swiftc` verification.
+- `git diff --check` passes.
+- Full two-device charging HUD and stationary-rod runtime validation remains
+  pending hardware execution.
+
+## Session Memory Restoration
+
+Restored `SESSION_MEMORY.md` after it was absent from the working tree. The
+memory now includes the complete project structure, tech stack, gesture
+charging phases, corrected calibration pipeline, CastSolution ownership,
+World HUD ownership, stationary-rod invariant, documentation rules, and
+targeted verification commands.
+
+## Terminal Session Memory
+
+Added `SESSION_MEMORY.md` as the compact handoff document for local
+terminal-based AI sessions. It summarizes project boundaries, source-of-truth
+contracts, calibration and CastResolver flow, HookPhase rules, UI ownership,
+verification commands, current feature state, and documentation entry points.
+
+The memory file now also documents the technology stack and complete project
+structure, including the responsibilities of SwiftUI, RealityKit, CoreMotion,
+Nearby Interaction, MultipeerConnectivity, Core Haptics, and the Shared local
+Swift package.
+
+The session workflow now explicitly requires every task to update the proper
+architecture/design documentation and append a new `CHECKPOINT.md` entry in a
+git-commit-like format covering scope, file/flow changes, verification, and
+remaining limitations. Previous checkpoint history must remain intact.
+
 ## Cast Meter Architecture Refactor
 
 Design source: `Cast Meter Architecture Refactor - Single Source of Truth & World HUD`, 2026-07-17.
@@ -885,3 +965,112 @@ Design source: `Cast Meter Architecture Refactor - Single Source of Truth & Worl
 - World HUD reads the single `CastSolution` state from `RodState`.
 - Shared cast contracts compile with targeted `swiftc` verification.
 - `git diff --check` passes.
+
+## Gameplay Architecture V1 Documentation Update
+
+Design source: `Catch the Scott - Gameplay Architecture V1`, 2026-07-18.
+
+Documentation-only update. No Swift, Xcode project, asset, or runtime
+structure was modified.
+
+- Added `GAMEPLAY_ARCHITECTURE_V1.md` as the product and gameplay source of
+  truth.
+- Documented the core principle: Rod is an input device and World is the game.
+- Defined World ownership of menus, tutorials, calibration guidance, HUD,
+  hook/fish simulation, line tension, results, and progression.
+- Defined Rod's minimal V1 surface: motion, calibration, cast/reel intent,
+  buttons, connection status, and haptic output.
+- Documented the complete gameplay loop from connection through catch/escape,
+  result, and continuing fishing.
+- Added the fish-interest, bite, fight, line-tension, haptic-rhythm, fish
+  selection, and equipment progression contracts.
+- Updated AGENTS, architecture decisions, software architecture, spatial
+  controller architecture, and terminal session memory to reference the V1
+  contract and documentation-only workflow.
+
+Verification: confirmed the change set contains Markdown files only and
+`git diff --check` passes. Code compilation was intentionally not run because
+this task explicitly requested documentation changes only.
+
+## World Controller and Hook Architecture Refactor
+
+Design source: `World Controller & Hook Architecture Refactor`, 2026-07-18.
+
+Investigation found `WorldViewModel.updateRodPose()` positioning `RodRoot`
+with `RodState.direction * distance`, which made the controller behave like a
+cast projectile. The implementation now:
+
+- keeps `RodRoot` at a fixed camera-relative offset;
+- applies only `RodState.orientation` in `updateRodPose()`;
+- removes controller dependence on cast direction and cast distance;
+- keeps `CastSolution` consumption inside hook launch velocity calculation;
+- preserves hook-only movement for flight, splash, reeling, and reset;
+- removes the unused rod-origin calculation from hook launch.
+
+Architecture documentation now records ADR-019 and updates AGENTS, the
+implementation plan, and session memory with the controller/hook ownership
+boundary.
+
+Verification: `git diff --check` and targeted Shared compilation pass. Full
+Xcode/device runtime validation remains pending because local package
+resolution and simulator services are unavailable in this environment.
+
+## Documentation Errata and Dead Code Cleanup
+
+Date: 2026-07-18.
+
+Follow-up housekeeping after a full-repository review. Content under
+`Architecture /` is treated as a development log and is not required to track
+current implementation state; only a genuine indexing error was corrected
+there. The remaining work removed code paths with no live callers.
+
+### Documentation
+
+- Renumbered the duplicate `ADR-014 --- Debug First` to `ADR-021` in
+  `ARCHITECTURE_DECISIONS.md` (it collided with the existing
+  `ADR-014 --- Nearby Interaction Ownership`). No other content in that file,
+  `SOFTWARE_ARCHITECTURE_DOCUMENT.md`, or `SPATIAL_CONTROLLER_DOCUMENT.md` was
+  changed; their drift against the current `RodState` shape and folder layout
+  is accepted as historical log content.
+
+### Dead Code Removed
+
+- Deleted `Shared/Sources/Shared/Models/PeerInfo.swift` and
+  `Shared/Sources/Shared/Models/MotionPacket.swift`: neither type had any
+  remaining reference outside their own declaration.
+- Deleted `Shared/Sources/Shared/Debug/MotionRecording.swift`: the file
+  contained only a header comment, no implementation.
+- Removed `NetworkMessage.hello` and `NetworkMessage.motion` cases; both were
+  never constructed anywhere in Rod or World, and `RodViewModel`'s message
+  switch only ever discarded them. `RodViewModel.handle(_:)` now matches only
+  the remaining unhandled case, `.state`.
+- Removed `WorldViewModel.loadRodEntity()`: an alternate Rod.usdz loading path
+  superseded by `makeArrow()`/`makeSceneEntity()`, never called.
+- Removed `WorldViewModel.modelPitch/modelYaw/modelRoll` and
+  `updateModelOrientation()`, and the `#if DEBUG` `orientationSlider(_:value:)`
+  helper in `World/ContentView.swift` that only existed to drive those
+  properties. None of this was reachable from the current view body.
+- Gated remaining development `print()` diagnostics behind `#if DEBUG` in
+  `Rod/Rod/Transport/TransportClient.swift`,
+  `World/World/Transport/TransportHost.swift`, and
+  `Rod/Rod/ViewModel/RodViewModel.swift`, so they no longer compile into
+  release builds. Also removed a stale commented-out alternate
+  `didNotStartAdvertisingPeer` implementation in `TransportHost.swift`.
+
+### Explicitly Out of Scope
+
+Per direction, the commented-out `MotionDebugView` section in
+`Rod/ContentView.swift` and the commented-out `CastMeterView` section in
+`World/ContentView.swift` were left untouched — both are fully implemented
+and considered intentionally disabled rather than dead.
+
+### Verification
+
+- Targeted Shared compilation (`swiftc -parse-as-library`, full model set
+  including `NetworkMessage`) passes with no errors or warnings.
+- `git diff --check` passes.
+- `grep` confirms no remaining references to `PeerInfo`, `MotionPacket`,
+  `MotionRecording`, `loadRodEntity`, `updateModelOrientation`,
+  `modelPitch`/`modelYaw`/`modelRoll`, or `orientationSlider` anywhere in the
+  Swift sources.
+- Full Xcode/device build remains environment-blocked as in prior checkpoints.

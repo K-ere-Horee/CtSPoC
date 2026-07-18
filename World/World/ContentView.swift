@@ -48,7 +48,13 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            CastMeterView(castSolution: viewModel.rodState.castSolution)
+            /*
+            CastMeterView(
+                castSolution: viewModel.rodState.castSolution,
+                power: viewModel.rodState.castPower,
+                phase: viewModel.rodState.motionPhase
+            )
+             */
 
             if let lastError = viewModel.lastError {
                 Text(lastError).foregroundStyle(.red)
@@ -73,23 +79,6 @@ struct ContentView: View {
     private func format(_ value: Float) -> String {
         String(format: "%.3f", value)
     }
-
-    #if DEBUG
-    private func orientationSlider(_ title: String, value: Binding<Float>) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(String(format: "%.0f deg", Double(value.wrappedValue) * 180 / .pi))
-                    .foregroundStyle(.secondary)
-            }
-            Slider(value: value, in: -.pi ... .pi)
-                .onChange(of: value.wrappedValue) { _, _ in
-                    viewModel.updateModelOrientation()
-                }
-        }
-    }
-    #endif
 
     private func format(_ value: Float?, suffix: String = "") -> String {
         guard let value else { return "--" }

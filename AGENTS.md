@@ -358,6 +358,28 @@ Rules:
 -   Gameplay may classify relative motion after correction, but must not alter
     renderer orientation.
 
+# Casting State and Transform Contract
+
+Gesture charging is owned by the Rod/Shared motion pipeline. The interpreter
+publishes the current `RodMotionPhase` and normalized `castPower` on
+`RodState`; a release produces the immutable `CastSnapshot` that becomes the
+authoritative `CastSolution` through `CastResolver`.
+
+Rules:
+
+-   World owns the cast HUD and renders live power from `RodState.castPower`.
+-   `RodState.castSolution` is the only cross-process cast result; World must
+    not re-resolve a cast from sensor input.
+-   Nearby Interaction spatial distance/direction remain the rod's spatial
+    transform source.
+-   Cast direction, power, and distance must never overwrite rod spatial
+    position or orientation.
+-   The rod root remains fixed relative to the controller pose while the hook
+    entity owns cast trajectory and movement.
+-   `WorldViewModel.updateRodPose()` may update only the fixed controller
+    offset and `RodState.orientation`; it must not read cast distance or cast
+    direction.
+
 # Cast Resolver Contract
 
 `RodMotionInterpreter` detects and snapshots a cast. It must not compute
@@ -370,3 +392,48 @@ angular velocity directly.
 
 Power is normalized through `CastConfig`; raw angular velocity never crosses
 the motion-to-gameplay boundary as a gameplay value.
+
+# Gameplay Architecture V1 Contract
+
+The V1 product principle is:
+
+> Rod is an input device. World is the game.
+
+World owns the complete player-facing experience: menu, tutorial,
+calibration instructions, fishing HUD, hook and fish simulation, results,
+progression, and future inventory/shop/collection systems. Rod remains a
+minimal physical controller for motion input, calibration capture, cast/reel
+intent, buttons, connection status, and haptic output.
+
+Rules:
+
+-   Rod must not display gameplay HUD, fish information, tutorials,
+    progression, or catch results.
+-   World is the only owner of gameplay state, gameplay visuals, and gameplay
+    feedback.
+-   The World gameplay state machine is Connect -> Calibration -> Ready ->
+    Cast -> Hook Flying -> Splash -> Searching -> Interested -> Bite ->
+    Fight -> Catch/Escape -> Result -> Continue/Menu.
+-   Cast Meter and Line Tension Meter are World HUD components. They consume
+    shared state and gameplay state; they never read CoreMotion directly.
+-   Fish selection is data-driven through biome, water type, equipment, bait,
+    difficulty, and probability tables.
+-   Fish resistance is expressed through line tension and Rod haptics, not a
+    generic health bar or quick-time-event loop.
+-   Rod haptics are output feedback only. World decides the gameplay event and
+    sends a typed feedback/event contract to Rod.
+
+The full V1 vision and state definitions live in
+`GAMEPLAY_ARCHITECTURE_V1.md`. Documentation-only tasks must not modify Swift,
+project files, or runtime structure, and must still be recorded in
+`CHECKPOINT.md`.
+
+When a task concerns product behavior, use `GAMEPLAY_ARCHITECTURE_V1.md` as
+the source of truth. World owns gameplay state, gameplay visuals, tutorials,
+fish systems, progression, and player feedback. Rod may expose only controller
+actions, connection state, calibration controls, and haptic output.
+
+For documentation-only requests, update the relevant `.md` files and create a
+dedicated design document when the subject does not have an existing owner.
+Do not modify Swift, Xcode projects, assets, or folder structure as part of a
+documentation-only task.
