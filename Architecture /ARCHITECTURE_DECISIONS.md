@@ -11,6 +11,168 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-031 --- Cast Distance, Fight Distance, and Search-Phase Reel State Fixes
+
+## Decision
+
+Four related fixes to the cast/bite pipeline:
+
+**Real measured cast distance.** `WorldViewModel` now tracks
+`castLaunchPosition` (the hook's tip position at `launchHook(solution:)`)
+and, when the hook splashes in `simulateFlyingHook(deltaTime:)`, computes
+the horizontal distance actually traveled
+(`simd_distance` between launch and splash `xz` position) and passes it to
+`FishFightController.resetForNewCast(castDistance:)` — replacing the
+previous no-argument call. This is the *actual* physics-simulated
+distance, not `CastSolution.distance` (Rod's meter-config estimate shown
+during charging, still unwired to launch physics and left as-is for that
+preview use). `FishFightController` publishes it back as
+`lastCastDistance: Float`, shown in `ContentView`'s Controller State grid
+as "Last Cast Distance."
+
+**Cast distance caps rollable fish size.** `FishFightController` gained
+`sizeCeilingRatio: Float` (`0.3 + 0.7 * clamp01(currentCastDistance /
+maxExpectedCastDistance)`, `maxExpectedCastDistance = 10.0`, an estimate
+from the launch physics at full charge/level release) and
+`biasedRoll(in:ceilingRatio:)`, a static helper that rolls a
+`FishSpeciesRange` value capped at `range.min + span * ceilingRatio`
+instead of the full range. `updateSearching(deltaTime:)`'s bite branch now
+rolls `currentWeight`/`currentLength` through this instead of
+`FishSpeciesRange.randomValue()`'s uniform roll. A short cast can still
+land a small-to-modest fish (the 0.3 floor); only a cast near
+`maxExpectedCastDistance` can roll near the species' max. Because
+`sizeRatio`/`resistance` (ADR-030) already derive from
+`currentWeight`/`currentLength`, a far cast landing a big fish is
+automatically also a tougher fight — no separate wiring needed.
+
+**Guaranteed minimum fight distance on bite.** `FishFightController`
+gained `minimumFightDistance: Float = 0.4` (hook-to-rod meters).
+`WorldViewModel.ensureFightDistance()`, called right after
+`setHookPhase(.fishOnHook)` in the `.bite` branch of `tick()`'s
+`.hookInWater` case, pushes the hook entity outward along the existing
+rod-to-hook axis to at least this distance if it's already closer.
+
+**Search-phase reeling no longer fakes a hooked fish.** `reelHook
+(deltaTime:)`'s unconditional trailing `setHookPhase(.reeling)` is now
+`if fishFight.hasFishOnHook { setHookPhase(.reeling) }`. Reeling in
+during `.hookInWater` before any bite now moves the hook and, if it
+reaches the rod, resolves the existing empty-retrieve path
+(`hookEntity.isEnabled = false`, `setHookPhase(.idle)`) — but no longer
+sets `hookPhase` to `.reeling` along the way, so `hookPhase` stays
+`.hookInWater` for the entire retrieve unless a fish actually bites.
+
+## Rationale
+
+**Distance gating fish size** was requested directly: "semakin jauh
+casting, harusnya semakin gede ikan yang bisa ditangkap. juga, distance
+belum ke reflect" (the farther you cast, the bigger the fish that should
+be catchable; also, distance isn't reflected anywhere yet). Two problems
+existed together: `CastSolution.distance` (the value Rod's cast meter
+computes and displays) was never actually consumed by
+`launchHook(solution:)` — hook speed came from `power` alone — so no
+"distance" concept was wired to anything, gameplay or otherwise; and fish
+weight/length rolled uniformly across each species' full range regardless
+of how the cast that hooked it went. Measuring the real simulated flight
+distance (rather than trying to retrofit the disconnected meter estimate)
+and using it to cap the roll ceiling fixes both: a value now exists,
+is shown, and has a gameplay consequence.
+
+**The minimum fight distance** fixes a reported bug: "ketika hook inwater
+tapi udah aku reel duluan, ketika fishonhook, meteran line tension ga
+muncul" (when the hook is in water but I already started reeling first,
+the tension meter doesn't appear once it becomes fishOnHook). Root cause:
+`tick()`'s `.hookInWater` case still calls `reelHook(deltaTime:)` in the
+same tick a bite just occurred (the `switch hookPhase` at the top of
+`tick()` captured `.hookInWater` before `setHookPhase(.fishOnHook)` ran,
+so the case body keeps executing). If the player had already been
+reeling in during the search phase, the hook could already be within
+`reelHook`'s catch-distance threshold (`0.12`) the instant the bite
+landed — `reelHook` would then resolve the catch in that same tick,
+flipping `fishFight.hasFishOnHook` `true` then `false` before SwiftUI
+ever rendered a frame with it `true`. `LineTensionView` is gated on
+`hasFishOnHook`, so it never appeared. Pushing the hook back out to a
+guaranteed minimum distance the instant a bite lands (mirroring
+`initialTension`'s existing "buffer" idea from ADR-028) guarantees a real,
+visible fight instead of an instant, invisible catch.
+
+**Search-phase reeling** fixes a second, related bug reported right after
+the fight-distance fix above: "ketika hook InWater terus langsung aku
+reel, status nya berubah ke fishInHook, seharusnya engga kan. Kalo
+reflect mancing dunia nyata, kita bisa reel sampai batas tertentu sebelum
+hook nya diangkat dari air" (when the hook is InWater and I immediately
+reel, the status changes to fishOnHook — it shouldn't. To reflect real
+fishing, we should be able to reel up to a point before the hook is
+lifted from the water). Root cause: `reelHook(deltaTime:)` set
+`hookPhase` to `.reeling` on every step that moved the hook, with no
+check for whether a fish was actually attached — so reeling during
+`.hookInWater` (an intentional, pre-existing "empty retrieve" action)
+left `hookPhase == .reeling` the moment the player stopped reeling.
+`tick()`'s `case .fishOnHook, .reeling:` branch assumes reaching it means
+a fish is hooked, and its not-reeling `else` branch unconditionally calls
+`setHookPhase(.fishOnHook)` — so the very next tick after releasing the
+reel gesture (with no bite ever having happened) flipped `hookPhase` to
+`.fishOnHook`. Gating the `.reeling` transition on `hasFishOnHook`
+restores that invariant: `.reeling`/`.fishOnHook` are now only ever
+reached with a real fish attached, and reeling in an empty line behaves
+exactly like the real-world retrieve the player described — the hook
+approaches the rod and, once close enough, comes out of the water
+(`.idle`), with no phase change in between. As a side effect this also
+fixes a related haptic glitch: `RodViewModel.handle(_:)` stops the fish-
+interested haptic pulse whenever `hookPhase != .hookInWater`, so the
+same bug was prematurely killing that pulse the instant a player reeled
+during search, even if no bite had happened yet.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-030 --- Resistance Scales With Rolled Size, Not Just Species
+
+## Decision
+
+`FishSpecies.resistance` is now a per-species *ceiling*, not the value
+used directly in the fight. `FishFightController` computes a private
+`sizeRatio: Float` (0...1) from where this catch's rolled
+`currentWeight * currentLength` falls between the species' min and max
+weight*length product:
+
+```text
+minProduct = species.weightRange.min * species.lengthRange.min
+maxProduct = species.weightRange.max * species.lengthRange.max
+sizeRatio = clamp01((currentWeight * currentLength - minProduct)
+                     / (maxProduct - minProduct))
+
+resistance = species.resistance * sizeRatio
+```
+
+`resistance` still feeds `effectiveFishPullRate` and `fishPullSpeed`
+exactly as ADR-026/028 defined; only how `resistance` itself is derived
+changed. `FishSpecies.resistance` and `FishCatalog` are unaffected — no
+data model or catalog change was needed, since this is purely a
+fight-controller computation over the already-existing weight/length
+ranges.
+
+## Rationale
+
+Requested directly: two different rolls of the same species (a puny
+`Fish A` and a near-max `Fish A`) fought identically, because
+`resistance` read `currentSpecies?.resistance` straight off the species
+regardless of which weight/length this particular catch happened to roll
+— "tension belom corespond dengan fish weight ... seharusnya, semakin
+fish weight * length mendekati angka max, maka nilai resistance juga
+mengikuti" (tension doesn't yet correspond to fish weight — as the fish's
+weight*length approaches the max, resistance should follow). Scaling by
+`sizeRatio` makes big individual catches within a species meaningfully
+harder to land than small ones of the same species, matching the
+weight/length roll players already see reflected in the result screen's
+star rating (`FishFightController.stars(forWeight:in:)`), which used the
+same weight-proximity idea for scoring but never fed it back into the
+fight itself.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
 # ADR-029 --- Result Screen, Rod's Minimal V1 Interface, Fish Interest
 
 ## Decision

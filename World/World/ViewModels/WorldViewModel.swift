@@ -31,6 +31,7 @@ final class WorldViewModel: ObservableObject {
     private var controllerEntity: Entity?
     private var hookEntity: ModelEntity?
     private var hookVelocity = SIMD3<Float>.zero
+    private var castLaunchPosition = SIMD3<Float>.zero
     private var pendingCastSolution: CastSolution?
     private var simulationTask: Task<Void, Never>?
     private var hasStarted = false
@@ -191,6 +192,7 @@ final class WorldViewModel: ObservableObject {
                 Task { await send(.fishingEvent(.fishInterested)) }
             case .bite:
                 setHookPhase(.fishOnHook)
+                ensureFightDistance()
                 Task { await send(.fishingEvent(.fishBite)) }
             case nil:
                 break
@@ -228,6 +230,24 @@ final class WorldViewModel: ObservableObject {
             setHookPhase(.idle)
             Task { await send(.fishingEvent(.lineBreak)) }
         }
+    }
+
+    /// Called right when a fish bites. If the player was already reeling in
+    /// during the search phase, the hook may already be within reeling's
+    /// catch-distance threshold — without this, the very next `reelHook`
+    /// call in the same tick would resolve an instant catch, so `hasFishOnHook`
+    /// flips true then false before SwiftUI ever renders a frame and the
+    /// tension meter never visibly appears. Pushes the hook back out to
+    /// `fishFight.minimumFightDistance` so a real fight always happens.
+    private func ensureFightDistance() {
+        guard let controllerEntity, let hookEntity else { return }
+
+        let directionToRod = controllerEntity.position - hookEntity.position
+        let distance = simd_length(directionToRod)
+        guard distance < fishFight.minimumFightDistance else { return }
+
+        let awayDirection = distance > 0.0001 ? -simd_normalize(directionToRod) : SIMD3<Float>(0, 0, -1)
+        hookEntity.position += awayDirection * (fishFight.minimumFightDistance - distance)
     }
 
     private func driftHookAway(deltaTime: Float) {
@@ -270,6 +290,7 @@ final class WorldViewModel: ObservableObject {
         let tipPosition = tip.position(relativeTo: nil)
         hookEntity.isEnabled = true
         hookEntity.position = tipPosition
+        castLaunchPosition = tipPosition
         let angle = solution.launchAngle
         let horizontal = SIMD3<Float>(solution.direction.x, 0, solution.direction.z)
         let speed = castSpeed * (0.5 + (solution.power * 1.5))
@@ -288,7 +309,11 @@ final class WorldViewModel: ObservableObject {
         guard hookEntity.position.y <= waterHeight else { return }
         hookEntity.position.y = waterHeight
         hookVelocity = .zero
-        fishFight.resetForNewCast()
+        let castDistance = simd_distance(
+            SIMD3(hookEntity.position.x, 0, hookEntity.position.z),
+            SIMD3(castLaunchPosition.x, 0, castLaunchPosition.z)
+        )
+        fishFight.resetForNewCast(castDistance: castDistance)
         setHookPhase(.hookInWater)
         Task { await send(.fishingEvent(.hookSplash)) }
     }
@@ -314,7 +339,14 @@ final class WorldViewModel: ObservableObject {
         let speed = max(0.35, rodState.reelSpeed * reelSpeed)
         let step = min(distance, speed * deltaTime)
         hookEntity.position += simd_normalize(directionToRod) * step
-        setHookPhase(.reeling)
+
+        // Only a hooked fish makes this a "fight" reel. Retrieving an empty
+        // line during `.hookInWater` must stay `.hookInWater` — otherwise
+        // `.reeling` here trips the `.fishOnHook`/`.reeling` tick case, whose
+        // not-reeling branch unconditionally sets `.fishOnHook` next tick.
+        if fishFight.hasFishOnHook {
+            setHookPhase(.reeling)
+        }
     }
 
     private func handle(_ message: NetworkMessage) {

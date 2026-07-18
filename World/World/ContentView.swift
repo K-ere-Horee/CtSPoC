@@ -57,6 +57,7 @@ struct ContentView: View {
                     row("Hook", viewModel.hookPhase.rawValue)
                     row("Reel Speed", format(viewModel.rodState.reelSpeed))
                     row("Distance", format(viewModel.rodState.distance, suffix: " m"))
+                    row("Last Cast Distance", String(format: "%.2f m", fishFight.lastCastDistance))
                     row("Direction", formatDirection(viewModel.rodState))
                     row("Pitch", format(viewModel.rodState.pitch))
                     row("Roll", format(viewModel.rodState.roll))

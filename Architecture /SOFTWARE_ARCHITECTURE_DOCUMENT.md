@@ -514,6 +514,68 @@ Species `resistance` scales `effectiveFishPullRate` and `fishPullSpeed`
 together, so a tougher fish both drains tension faster and drags the hook
 away faster when not countered.
 
+`resistance` itself (ADR-030) is not read straight off the species — it is
+scaled by how big *this* catch rolled within the species' own range, so two
+fish of the same species do not fight identically:
+
+```text
+sizeRatio = clamp01((currentWeight * currentLength - minProduct)
+                     / (maxProduct - minProduct))
+resistance = species.resistance * sizeRatio
+```
+
+where `minProduct`/`maxProduct` are `species.weightRange.min/max *
+species.lengthRange.min/max`. A catch that rolled near the species' min
+weight/length fights close to the base rate; one near the max fights at
+the full species `resistance`.
+
+**Cast distance caps how big a fish can roll (ADR-031).**
+`WorldViewModel` measures the real horizontal distance a cast traveled —
+`simd_distance` between the hook's launch position (captured in
+`launchHook(solution:)`) and its splash position (in
+`simulateFlyingHook(deltaTime:)`) — and passes it to
+`FishFightController.resetForNewCast(castDistance:)`. This is distinct
+from `CastSolution.distance`, Rod's cast-meter estimate shown during
+charging, which is not wired to launch physics. `FishFightController`
+publishes it as `lastCastDistance` (shown in `ContentView`'s Controller
+State grid) and uses it to cap the bite roll:
+
+```text
+sizeCeilingRatio = 0.3 + 0.7 * clamp01(castDistance / maxExpectedCastDistance)
+rolledWeight/Length = random(min, min + span * sizeCeilingRatio)
+```
+
+`maxExpectedCastDistance` (10.0) is an estimate of the physics' own max
+range at full charge, level release. A short cast still floors at 30% of
+each range so it isn't hopeless; only a cast near max range can roll near
+the species' max weight/length — and since `sizeRatio`/`resistance`
+above already derive from the rolled weight/length, a far cast landing a
+big fish is automatically a tougher fight too.
+
+**Guaranteed fight distance on bite (ADR-031).** If the player was
+already reeling in during the search phase, the hook can already be
+within `reelHook`'s catch-distance threshold the instant a fish bites —
+without a guard, the very next `reelHook` call in the same tick would
+resolve an instant catch, and `hasFishOnHook` would flip `true` then
+`false` before SwiftUI renders a frame, so `LineTensionView` (gated on
+`hasFishOnHook`) never visibly appears. `WorldViewModel.
+ensureFightDistance()`, called immediately after entering `.fishOnHook`,
+pushes the hook back out to `FishFightController.minimumFightDistance`
+(0.4 m) along the existing rod-to-hook axis if it's already closer,
+mirroring `initialTension`'s buffer idea from ADR-028.
+
+**Reeling with no fish stays `.hookInWater` (ADR-031).** `reelHook
+(deltaTime:)` only calls `setHookPhase(.reeling)` when `fishFight.
+hasFishOnHook` is true. Reeling in during `.hookInWater` before any bite
+(an intentional empty-retrieve action) moves the hook and, once it's
+close enough to the rod, resolves through the existing no-catch path
+straight to `.idle` — it never passes through `.reeling`/`.fishOnHook`.
+This matters because `tick()`'s `case .fishOnHook, .reeling:` branch
+assumes a fish is attached whenever it's reached, and its not-reeling
+`else` branch unconditionally sets `.fishOnHook` — without the guard,
+releasing the reel gesture mid-retrieve (no bite yet) would flip
+`hookPhase` to `.fishOnHook` with nothing on the line.
+
 **HUD.** `World/World/Views/LineTensionView.swift` renders `lineTension` on
 a bar with a shaded safe zone (`0.3...0.7`, green) and two failure
 directions: below `0.15` shows `"LOSING FISH"`, above `0.85` shows

@@ -1683,3 +1683,190 @@ Recorded as ADR-029 in `ARCHITECTURE_DECISIONS.md`.
 - Full Xcode/device build remains environment-blocked. None of the new
   UI (Rod's minimal buttons, the result screen, the interested haptic
   pulse) has been observed running on hardware yet.
+
+## Gameplay V1 - Resistance Scales With Rolled Fish Size
+
+Date: 2026-07-18.
+
+Reported directly after the previous entry: "tension belom corespond
+dengan fish weight (alias masih linear untuk semua fish weight).
+seharusnya, semakin fish weight * length mendekati angka max, maka nilai
+resistance juga mengikuti. berarti resistance." (tension doesn't yet
+correspond to fish weight — same/flat for every fish weight. As fish
+weight*length approaches the max, resistance should follow.) Recorded as
+ADR-030 in `ARCHITECTURE_DECISIONS.md`.
+
+### World
+
+- `World/World/Gameplay/FishFightController.swift`: `resistance` no
+  longer reads `currentSpecies?.resistance` directly. Added a private
+  `sizeRatio: Float` (0...1) from where this catch's rolled
+  `currentWeight * currentLength` falls between the species' min and max
+  weight*length product (`species.weightRange.min/max *
+  species.lengthRange.min/max`), clamped 0...1 the same way
+  `stars(forWeight:in:)` already clamps its own ratio. `resistance` is
+  now `species.resistance * sizeRatio` — a ceiling scaled by how big this
+  specific catch rolled, not a flat per-species constant. Feeds into
+  `effectiveFishPullRate` and `fishPullSpeed` unchanged (ADR-026/028's
+  formulas).
+- `FishSpecies`, `FishCatalog`, and every other fight-controller
+  computation are unaffected — this is purely how `resistance` derives
+  its value, not a data model change.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-030.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the tension safe zone
+  section with the `sizeRatio` formula, right after the existing
+  `resistance` scaling note.
+
+### Verification
+
+- Rebuilt Shared as a macOS module directly from
+  `find Sources/Shared -name "*.swift"` and used it to
+  `xcrun swiftc -typecheck` the same World file list as the previous
+  entry (`WorldViewModel.swift`, `ContentView.swift`, `FishCatalog.swift`,
+  `FishCatchResult.swift`, `FishFightController.swift`,
+  `FishRecordStore.swift`, `LineTensionView.swift`, `ResultView.swift`,
+  `CastMeterView.swift`, `TransportHost.swift`) — no errors, same
+  pre-existing unrelated `controllerEntity` unused-binding warning.
+- Only one species (`fish_a`) exists in `FishCatalog` today, so this
+  change is currently unverifiable by playtest variety beyond "small
+  fish_a fights softer than large fish_a" — not confirmed on hardware.
+
+## Gameplay V1 - Cast Distance, Fight Distance, and Search-Phase Reel State Fixes
+
+Date: 2026-07-18.
+
+Reported directly, three related issues in one message: "semakin jauh
+casting, harusnya semakin gede ikan yang bisa ditangkap. juga, distance
+belum ke reflect. juga, ketika hook inwater tapi udah aku reel duluan,
+ketika fishonhook, meteran line tension ga muncul (masih bug disitu)"
+(the farther you cast, the bigger the fish that should be catchable;
+also, distance isn't reflected yet; also, when the hook is in water but I
+already started reeling first, once it becomes fishOnHook the tension
+meter doesn't appear — still a bug there). Recorded as ADR-031 in
+`ARCHITECTURE_DECISIONS.md`.
+
+A fourth, related bug surfaced immediately after verifying the fight-
+distance fix below, in a follow-up message: "masalahnya masih ada, ketika
+hook InWater terus langsung aku reel, status nya berubah ke fishInHook,
+seharusnya engga kan. Kalo reflect mancing dunia nyata, kita bisa reel
+sampai batas tertentu sebelum hook nya diangkat dari air" (the problem is
+still there — when the hook is InWater and I immediately reel, the status
+changes to fishOnHook, which shouldn't happen; to reflect real fishing, we
+should be able to reel up to a point before the hook is lifted from the
+water). Folded into this same entry/ADR rather than a new one, since it
+was found while still working the same uncommitted fix and is part of the
+same reel-during-search scenario.
+
+### World: Real Cast Distance
+
+- `World/World/ViewModels/WorldViewModel.swift`: added
+  `castLaunchPosition: SIMD3<Float>`, captured in `launchHook(solution:)`
+  from the same `tipPosition` already used to place the hook.
+  `simulateFlyingHook(deltaTime:)` now computes the horizontal splash
+  distance (`simd_distance` between launch and splash `xz` position) and
+  calls `fishFight.resetForNewCast(castDistance:)` (was the no-argument
+  `resetForNewCast()`) with it. This is deliberately separate from
+  `CastSolution.distance` (Rod's cast-meter preview value, computed from
+  `CastMeterConfig` during charging) — that value was never wired to
+  `launchHook`'s physics (only `power`/`launchAngle` fed hook velocity),
+  so it never corresponded to what actually happened; left untouched for
+  its own preview purpose, not repurposed.
+- `World/World/Gameplay/FishFightController.swift`: `resetForNewCast()`
+  gained a `castDistance: Float = 0` parameter, stored as
+  `currentCastDistance` and published as `lastCastDistance: Float` for
+  HUD display.
+- `World/World/ContentView.swift`: Controller State grid gained a "Last
+  Cast Distance" row bound to `fishFight.lastCastDistance`.
+
+### World: Distance Caps Fish Size
+
+- `FishFightController.swift`: added `sizeCeilingRatio: Float` (`0.3 +
+  0.7 * clamp01(currentCastDistance / maxExpectedCastDistance)`,
+  `maxExpectedCastDistance = 10.0`, a physics estimate at full
+  charge/level release) and a static `biasedRoll(in:ceilingRatio:)` that
+  rolls a `FishSpeciesRange` value capped at `min + span * ceilingRatio`
+  instead of the full range. `updateSearching(deltaTime:)`'s bite branch
+  now rolls `currentWeight`/`currentLength` through this instead of
+  `FishSpeciesRange.randomValue()`'s uniform roll. Since the previous
+  entry's `sizeRatio`/`resistance` (ADR-030) already derive from
+  `currentWeight`/`currentLength`, a far cast landing a big fish
+  automatically also fights harder — no additional wiring needed.
+
+### World: Guaranteed Fight Distance on Bite
+
+- `FishFightController.swift`: added `minimumFightDistance: Float = 0.4`
+  (hook-to-rod meters).
+- `WorldViewModel.swift`: added `ensureFightDistance()`, called
+  immediately after `setHookPhase(.fishOnHook)` in `tick()`'s
+  `.hookInWater`/`.bite` branch. Pushes the hook entity outward along the
+  existing rod-to-hook axis to at least `minimumFightDistance` if it's
+  already closer. Root cause this fixes: `tick()`'s `.hookInWater` case
+  still runs `reelHook(deltaTime:)` in the same tick a bite just
+  happened (the `switch hookPhase` snapshot predates
+  `setHookPhase(.fishOnHook)`), and if the player had already been
+  reeling in during the search phase the hook could already be within
+  `reelHook`'s catch-distance threshold (`0.12`) the instant the bite
+  landed — resolving the catch in that same tick and flipping
+  `fishFight.hasFishOnHook` `true` then `false` before SwiftUI ever
+  rendered a frame with it `true`, so `LineTensionView` (gated on
+  `hasFishOnHook`) never appeared.
+
+### World: Search-Phase Reeling No Longer Fakes fishOnHook
+
+- `WorldViewModel.swift`'s `reelHook(deltaTime:)`: the trailing
+  `setHookPhase(.reeling)` (previously unconditional on every step that
+  moved the hook) is now `if fishFight.hasFishOnHook { setHookPhase
+  (.reeling) }`. Root cause: reeling during `.hookInWater` before any
+  bite — an intentional, pre-existing "empty retrieve" action — called
+  this same `reelHook` function, which set `hookPhase = .reeling`
+  regardless of whether a fish was attached. `tick()`'s `case
+  .fishOnHook, .reeling:` branch assumes reaching it means a fish is
+  hooked, and its not-reeling `else` branch unconditionally calls
+  `setHookPhase(.fishOnHook)` — so the tick after the player released the
+  reel gesture mid-retrieve (no bite ever having happened), `hookPhase`
+  flipped to `.fishOnHook` with nothing on the line. Gating the
+  `.reeling` transition on `hasFishOnHook` restores the invariant that
+  `.reeling`/`.fishOnHook` are only reached with a real fish attached;
+  reeling in an empty line now stays `.hookInWater` the whole retrieve
+  and only leaves it via a real bite or the existing empty-retrieve path
+  to `.idle` once the hook reaches the rod — matching the real-fishing
+  behavior described in the report (reel up to a limit before the hook
+  comes out of the water, no status change along the way).
+- Side effect fixed for free: `RodViewModel.handle(_:)` stops the fish-
+  interested haptic pulse whenever `hookPhase != .hookInWater`
+  (`Rod/Rod/ViewModel/RodViewModel.swift:221`); the same bug was
+  prematurely killing that pulse the instant a player reeled during
+  search, even before any bite. Not a separate code change — fixed by
+  the same gate.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: ADR-031, retitled to cover all four
+  fixes; added the search-phase-reeling decision and rationale
+  subsections.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the tension safe zone
+  section with the cast-distance-caps-size, guaranteed-fight-distance,
+  and search-phase-reeling subsections, after the existing
+  `sizeRatio`/`resistance` note.
+
+### Verification
+
+- Rebuilt Shared as a macOS module directly from
+  `find Sources/Shared -name "*.swift"` and used it to
+  `xcrun swiftc -typecheck` the same World file list as the previous two
+  entries (`WorldViewModel.swift`, `ContentView.swift`,
+  `FishCatalog.swift`, `FishCatchResult.swift`,
+  `FishFightController.swift`, `FishRecordStore.swift`,
+  `LineTensionView.swift`, `ResultView.swift`, `CastMeterView.swift`,
+  `TransportHost.swift`) — no errors, same pre-existing unrelated
+  `controllerEntity` unused-binding warning. Re-ran after the
+  search-phase-reeling fix; same result.
+- `git diff --check` passes.
+- Not confirmed on hardware: the `maxExpectedCastDistance` (10.0)
+  normalization constant is a hand-derived estimate from the launch
+  physics formula (not measured on-device), and none of this entry's
+  fixes (fight-distance buffer, search-phase reel state) have been
+  played through their exact repros on a real device/simulator pair.
