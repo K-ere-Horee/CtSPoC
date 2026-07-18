@@ -10,6 +10,10 @@ final class FishingHaptics {
 
     private let haptics: HapticManager
     private var lastReelTick = Date.distantPast
+    private var lastInterestPulse = Date.distantPast
+    private(set) var isFishInterested = false
+
+    private let interestPulseInterval: TimeInterval = 1.1
 
     init(haptics: HapticManager = HapticManager()) {
         self.haptics = haptics
@@ -23,11 +27,21 @@ final class FishingHaptics {
             haptics.splash()
         case .reelTick:
             haptics.reelTick()
+        case .fishInterested:
+            isFishInterested = true
+            lastInterestPulse = Date()
+            haptics.fishInterested()
         case .fishBite:
+            isFishInterested = false
             haptics.fishBite()
-        case .fishEscaped, .lineBreak:
+        case .fishEscaped:
+            isFishInterested = false
+            haptics.fishEscaped()
+        case .lineBreak:
+            isFishInterested = false
             haptics.lineBreak()
         case .catchFish:
+            isFishInterested = false
             haptics.catchFish()
         }
     }
@@ -40,5 +54,22 @@ final class FishingHaptics {
 
         lastReelTick = now
         haptics.reelTick()
+    }
+
+    /// Call every motion sample; throttles itself to `interestPulseInterval`
+    /// and no-ops unless a `.fishInterested` event is currently active.
+    func interestPulse(now: Date = Date()) {
+        guard isFishInterested else { return }
+        guard now.timeIntervalSince(lastInterestPulse) >= interestPulseInterval else { return }
+
+        lastInterestPulse = now
+        haptics.fishInterested()
+    }
+
+    /// Call when `HookPhase` leaves `.hookInWater`, so a stale interest
+    /// signal can't keep pulsing after the fish bit, escaped, or a new cast
+    /// began.
+    func stopInterest() {
+        isFishInterested = false
     }
 }

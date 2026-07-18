@@ -34,12 +34,18 @@ final class RodViewModel: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var calibrationStep: MotionCalibrationStep = .idle
     @Published private(set) var calibrationSampleCount = 0
+    /// Gates cast/reel gesture reporting. The player must explicitly
+    /// "Start Fishing" (after calibrating) before physical motion is
+    /// interpreted as gameplay intent; "End Fishing" clears it again.
+    @Published private(set) var isFishing = false
 
     private let motionManager: MotionManager
     private let motionInterpreter: RodMotionInterpreter
     private let spatialManager: NearbyInteractionManager
     private let transport: TransportClient
     private let fishingHaptics: FishingHaptics
+    private let castResolver = CastResolver()
+    private let castMeterConfig = CastMeterConfig()
 
     private var motion = MotionSample(
         timestamp: 0,
@@ -48,8 +54,12 @@ final class RodViewModel: ObservableObject {
             yaw: 0,
             accelerationZ: 0,
         rotationRateMagnitude: 0
+        , rotationRateX: 0
+        , rotationRateY: 0
+        , rotationRateZ: 0
     )
     private var pose = RodMotionPose(pitch: 0, roll: 2, yaw: 0)
+    private var orientation = RodOrientation.identity
     private var spatial = SpatialState()
     private var hasStarted = false
     private var calibrationSamples: [RodMotionInput] = []
@@ -59,11 +69,11 @@ final class RodViewModel: ObservableObject {
     let debugRecorder = MotionDebugRecorder()
 
     init(
-        motionManager: MotionManager = MotionManager(),
-        motionInterpreter: RodMotionInterpreter = RodMotionInterpreter(),
-        spatialManager: NearbyInteractionManager = NearbyInteractionManager(),
-        transport: TransportClient = TransportClient(),
-        fishingHaptics: FishingHaptics = FishingHaptics()
+        motionManager: MotionManager,
+        motionInterpreter: RodMotionInterpreter,
+        spatialManager: NearbyInteractionManager,
+        transport: TransportClient,
+        fishingHaptics: FishingHaptics
     ) {
         self.motionManager = motionManager
         if let storedProfile = Self.loadMotionProfile() {
@@ -81,7 +91,13 @@ final class RodViewModel: ObservableObject {
                 self?.motion = sample
                 self?.hasMotionSample = true
                 self?.collectCalibrationSample()
+                #if DEBUG
+                print("Rod onUpdate")
+                #endif
                 self?.updateAction()
+                #if DEBUG
+                print("Entered updateAction")
+                #endif
                 self?.publishState()
             }
         }
@@ -112,8 +128,10 @@ final class RodViewModel: ObservableObject {
         guard !hasStarted else { return }
         hasStarted = true
         debugRecorder.start()
-        print(debugRecorder.sampleCount)
         motionManager.start()
+        #if DEBUG
+        print("Motion Update, sample count: \(debugRecorder.sampleCount)")
+        #endif
         Task {
             do {
                 try await transport.connect()
@@ -130,12 +148,21 @@ final class RodViewModel: ObservableObject {
         hasStarted = false
     }
 
+    func startFishing() {
+        guard calibrationStep == .complete else { return }
+        isFishing = true
+    }
+
+    func endFishing() {
+        isFishing = false
+    }
+
     func calibrateMotion() {
         guard hasMotionSample else { return }
         switch calibrationStep {
         case .idle:
             guard calibrationSamples.count >= 3 else { return }
-            motionInterpreter.profile.idlePose = averagePose(of: calibrationSamples)
+            motionInterpreter.setIdlePose(averagePose(of: calibrationSamples))
             motionInterpreter.profile.isComplete = false
             calibrationSamples.removeAll(keepingCapacity: true)
             calibrationSampleCount = 0
@@ -159,7 +186,12 @@ final class RodViewModel: ObservableObject {
             motionInterpreter.profile.reelPose = averagePose(of: samples)
             let rates = samples.map(\.rotationRateMagnitude)
             let averageRate = rates.reduce(0, +) / Double(rates.count)
+            let peakRate = rates.max() ?? averageRate
             motionInterpreter.profile.reelRotationRate = max(0.2, averageRate * 0.45)
+            motionInterpreter.profile.reelFullRotationRate = max(
+                motionInterpreter.profile.reelRotationRate + 0.3,
+                peakRate
+            )
             motionInterpreter.profile.isComplete = true
             calibrationSamples.removeAll(keepingCapacity: true)
             calibrationSampleCount = 0
@@ -186,7 +218,23 @@ final class RodViewModel: ObservableObject {
             fishingHaptics.handle(event)
         case let .hookPhase(phase):
             hookPhase = phase
-        case .hello, .motion, .state:
+            if phase != .hookInWater {
+                fishingHaptics.stopInterest()
+            }
+            if phase == .idle {
+                rodState = RodState(
+                    spatial: spatial,
+                    pitch: pose.pitch,
+                    roll: pose.roll,
+                    yaw: pose.yaw,
+                    orientation: orientation,
+                    action: action,
+                    reelSpeed: reelSpeed,
+                    castSolution: nil
+                )
+                publishState()
+            }
+        case .state:
             break
         }
     }
@@ -197,8 +245,12 @@ final class RodViewModel: ObservableObject {
             pitch: pose.pitch,
             roll: pose.roll,
             yaw: pose.yaw,
+            orientation: orientation,
             action: action,
-            reelSpeed: reelSpeed
+            reelSpeed: reelSpeed,
+            castSolution: rodState.castSolution,
+            motionPhase: rodState.motionPhase,
+            castPower: rodState.castPower
         )
         guard connectionState == .ready || connectionState == .streaming else { return }
         connectionState = .streaming
@@ -218,12 +270,37 @@ final class RodViewModel: ObservableObject {
             )
         )
         pose = interpretation.pose
-        action = interpretation.action == .casting && hookPhase != .idle
+        orientation = interpretation.orientation
+        let resolvedCastSolution: CastSolution?
+        if let snapshot = interpretation.castSnapshot {
+            let resolved = castResolver.resolve(snapshot)
+            resolvedCastSolution = resolved.with(distance: castMeterConfig.distance(for: resolved.power))
+        } else {
+            resolvedCastSolution = rodState.castSolution
+        }
+        
+        action = !isFishing
+            ? .idle
+            : interpretation.action == .casting && !hookPhase.allowsCasting
+            ? .idle
+            : interpretation.action == .reeling && !hookPhase.allowsReeling
             ? .idle
             : interpretation.action
         reelSpeed = interpretation.reelSpeed
         motionPhase = interpretation.phase
         isPoseValid = interpretation.isPoseValid
+        rodState = RodState(
+            spatial: spatial,
+            pitch: pose.pitch,
+            roll: pose.roll,
+            yaw: pose.yaw,
+            orientation: orientation,
+            action: action,
+            reelSpeed: reelSpeed,
+            castSolution: resolvedCastSolution,
+            motionPhase: motionPhase,
+            castPower: interpretation.castPower
+        )
 
         if action == .casting, previousAction != .casting {
             fishingHaptics.handle(.cast)
@@ -231,6 +308,7 @@ final class RodViewModel: ObservableObject {
         if action == .reeling {
             fishingHaptics.reelTick(reelSpeed: reelSpeed)
         }
+        fishingHaptics.interestPulse()
     }
 
     private var motionInput: RodMotionInput {
@@ -241,6 +319,9 @@ final class RodViewModel: ObservableObject {
             yaw: motion.yaw,
             rotationRateMagnitude: motion.rotationRateMagnitude,
             accelerationZ: motion.accelerationZ
+            , rotationRateX: motion.rotationRateX
+            , rotationRateY: motion.rotationRateY
+            , rotationRateZ: motion.rotationRateZ
         )
     }
 

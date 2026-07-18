@@ -82,6 +82,10 @@ struct RodRigController {
     private static let maxLineSagAnglePerJoint: Float = 0.35
 
     let root: Entity
+    /// World-space marker pinned to the Tip joint's head (zero offset, unlike the line's
+    /// tail-offset attach point) — used by gameplay to launch the hook from the rod's actual tip
+    /// rather than duplicating the skeletal-pin math at the call site.
+    let tipEntity: Entity?
     private let rodModel: ModelEntity?
     private let lineModel: ModelEntity?
 
@@ -113,7 +117,20 @@ struct RodRigController {
             }
         }
 
-        return RodRigController(root: root, rodModel: rodModel, lineModel: lineModel)
+        var tipEntity: Entity?
+        if let rodModel {
+            let marker = Entity()
+            marker.name = "Tip"
+            let tipMarkerPin = rodModel.pins.set(
+                named: "TipMarkerPin",
+                skeletalJointName: tipJointPath,
+                position: .zero
+            )
+            marker.attach(to: tipMarkerPin)
+            tipEntity = marker
+        }
+
+        return RodRigController(root: root, tipEntity: tipEntity, rodModel: rodModel, lineModel: lineModel)
     }
 
     /// Bends Rod_01...Tip with amplitude increasing toward the tip, driven by how far the

@@ -230,6 +230,22 @@ Display on both devices:
 
 ------------------------------------------------------------------------
 
+## Orientation and Calibration Ownership
+
+CoreMotion is available only to Rod. Rod converts raw device motion through
+the Shared calibration contract before sending controller state:
+
+```text
+CoreMotion -> Calibration Reference -> RodOrientation -> RodState -> World
+```
+
+`RodState.orientation` is the corrected renderer orientation. World consumes
+it directly and remains calibration-agnostic. Relative pose values may be
+used by the Rod gameplay interpreter for Idle, Cast, and Reel classification,
+but they are not a replacement for renderer orientation.
+
+------------------------------------------------------------------------
+
 ## Long-Term Vision
 
 The controller architecture can later power:
@@ -240,3 +256,20 @@ The controller architecture can later power:
 -   Golf club
 -   Sword
 -   Other spatial interaction experiences
+
+------------------------------------------------------------------------
+
+## Product Boundary: Gameplay Architecture V1
+
+The spatial controller is a reusable input framework, not the owner of the
+fishing game. For Catch the Scott V1, Rod answers what the player is trying to
+do: calibrate, cast, reel, hold, or press a button. World decides what those
+intentions mean in the game.
+
+World owns tutorials, HUD, hook and fish simulation, line tension, results,
+progression, and visual feedback. Rod owns motion input, calibration capture,
+connection status, and haptic output. No gameplay state should be duplicated
+as a Rod UI feature.
+
+The full gameplay state machine and V1 success criteria are maintained in
+`GAMEPLAY_ARCHITECTURE_V1.md`.

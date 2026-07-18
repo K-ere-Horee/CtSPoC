@@ -2,6 +2,8 @@
 //  WorldViewModel.swift
 //  World
 //
+//  Created by Calzy Akmal Indyramdhani on 15/07/26.
+//
 
 import RealityKit
 import Shared
@@ -67,37 +69,25 @@ final class WorldViewModel: ObservableObject {
     /// with local offset (0.22, -0.45, -0.60) (x=right, y=up, z=forward). Applied here as a
     /// world-space offset from `playerCameraPosition`: world = (0, 2.4, -1.5) + (0.22, -0.45, -0.60)
     /// = (0.22, 1.95, -2.1).
+    ///
+    /// Kept as a fixed constant rather than driven by live Nearby Interaction distance/direction —
+    /// per ADR-019/ADR-018, the rod root stays at a stable camera-relative offset; only the hook
+    /// receives cast trajectory and moves through the scene.
     private let dockAnchorPosition: SIMD3<Float> = [0.22, 1.95, -2.1]
-
-    /// Exponential smoothing factor (0 = frozen, 1 = no smoothing) applied to every live field of
-    /// `RodState` before it drives the rod's pose. Raw CoreMotion attitude/NI distance-direction
-    /// data carries small per-sample sensor noise; applying it directly to the rig every frame
-    /// made the rod visibly tremble ("tingle"), most noticeably at the tip, where `applyBend`
-    /// amplifies pitch/roll up to full weight. Blending a fraction of each new sample into a
-    /// running average removes that high-frequency jitter while still tracking real motion within
-    /// a handful of frames (~5 frames to settle at 60 fps).
-    private let motionSmoothing: Float = 0.2
-    private var smoothedRodPose = SmoothedRodPose()
-
-    /// Hard cap (radians) on how far the whole rod rig visually tilts/turns from its resting
-    /// pose. `RodMotionInterpreter.interpret()` (Shared/Gameplay/RodMotionInterpreter.swift) only
-    /// returns pitch/roll/yaw *relative to the calibrated idle pose* once `MotionProfile.isComplete`
-    /// — which defaults to `false` until the Rod app's 3-step idle/cast/reel calibration flow has
-    /// been run (`Shared/Sources/Shared/Gameplay/MotionProfile.swift`). Until then it falls back to
-    /// the *raw, absolute* device attitude, which can be any value depending on how the phone
-    /// happens to be oriented in space — nothing like a natural rod-holding gesture. Clamping the
-    /// rig's total tilt keeps the held rod on-screen and visually sane in both cases, rather than
-    /// snapping to an arbitrary, uncontrolled orientation when the controller isn't calibrated.
-    private let maxRigTiltAngle: Float = 0.6
 
     private var rodRig: RodRigController?
     private var controllerEntity: Entity?
     private var hookEntity: ModelEntity?
     private var hookVelocity = SIMD3<Float>.zero
+    private var pendingCastSolution: CastSolution?
     private var simulationTask: Task<Void, Never>?
     private var hasStarted = false
 
-    init(transport: TransportHost = TransportHost()) {
+    let fishFight = FishFightController()
+
+    init(
+        transport: TransportHost
+    ) {
         self.transport = transport
 
         transport.onStateChange = { [weak self] state in
@@ -148,8 +138,8 @@ final class WorldViewModel: ObservableObject {
             materials: [SimpleMaterial(color: .yellow, isMetallic: false)]
         )
         hook.isEnabled = false
-        root.addChild(hook)
         hookEntity = hook
+        root.addChild(hook)
 
         return root
     }
@@ -186,6 +176,13 @@ final class WorldViewModel: ObservableObject {
         return camera
     }
 
+    /// Called by World's result screen when the player dismisses it after a
+    /// catch, allowing the next cast.
+    func continueFishing() {
+        guard hookPhase == .result else { return }
+        setHookPhase(.idle)
+    }
+
     private func setHookPhase(_ phase: HookPhase) {
         guard hookPhase != phase else { return }
         hookPhase = phase
@@ -208,49 +205,90 @@ final class WorldViewModel: ObservableObject {
         switch hookPhase {
         case .idle:
             if rodState.action == .casting {
-                launchHook()
+                if let solution = pendingCastSolution {
+                    launchHook(solution: solution)
+                    pendingCastSolution = nil
+                }
             }
         case .flying:
             simulateFlyingHook(deltaTime: deltaTime)
         case .hookInWater:
+            switch fishFight.updateSearching(deltaTime: deltaTime) {
+            case .interested:
+                Task { await send(.fishingEvent(.fishInterested)) }
+            case .bite:
+                setHookPhase(.fishOnHook)
+                Task { await send(.fishingEvent(.fishBite)) }
+            case nil:
+                break
+            }
             if rodState.action == .reeling {
                 reelHook(deltaTime: deltaTime)
             }
-        case .reeling:
+        case .result:
+            break
+        case .fishOnHook, .reeling:
             if rodState.action == .reeling {
                 reelHook(deltaTime: deltaTime)
             } else {
-                setHookPhase(.hookInWater)
+                driftHookAway(deltaTime: deltaTime)
+                setHookPhase(.fishOnHook)
+            }
+
+            if let failure = fishFight.updateFight(
+                deltaTime: deltaTime,
+                isReeling: rodState.action == .reeling,
+                reelSpeed: rodState.reelSpeed
+            ) {
+                resolveFightFailure(failure)
             }
         }
     }
 
+    private func resolveFightFailure(_ failure: FishFightController.FightFailure) {
+        switch failure {
+        case .escaped:
+            setHookPhase(.hookInWater)
+            Task { await send(.fishingEvent(.fishEscaped)) }
+        case .lineBreak:
+            hookEntity?.isEnabled = false
+            setHookPhase(.idle)
+            Task { await send(.fishingEvent(.lineBreak)) }
+        }
+    }
+
+    private func driftHookAway(deltaTime: Float) {
+        guard let controllerEntity, let hookEntity else { return }
+
+        let directionToRod = controllerEntity.position - hookEntity.position
+        let distance = simd_length(directionToRod)
+        guard distance > 0.0001 else { return }
+
+        let awayDirection = -simd_normalize(directionToRod)
+        let step = fishFight.fishPullSpeed * deltaTime
+        hookEntity.position += awayDirection * step
+    }
+
+    /// Per ADR-018/ADR-019 and the calibration contract in `AGENTS.md`: the rod root stays at a
+    /// fixed camera-relative offset (`dockAnchorPosition`) — Nearby Interaction distance/direction
+    /// must never move it, only the hook receives cast trajectory. Orientation comes directly from
+    /// `RodState.orientation`, the single renderer-facing quaternion already corrected by the
+    /// Rod/Shared calibration pipeline; World must not reconstruct it from raw Euler angles or add
+    /// its own smoothing/clamping on top. Raw `pitch`/`roll` remain available for the rod rig's own
+    /// secondary bend visualization (`RodRigController.applyBend`), which is a supplementary flex
+    /// effect layered on top of the whole-rig orientation, not the renderer orientation itself.
     private func updateRodPose() {
         guard let controllerEntity else { return }
 
-        smoothedRodPose.update(toward: rodState, factor: motionSmoothing)
-
-        let distance = smoothedRodPose.distance
-        controllerEntity.position = dockAnchorPosition + SIMD3<Float>(
-            smoothedRodPose.directionX * distance,
-            smoothedRodPose.directionY * distance,
-            -abs(smoothedRodPose.directionZ * distance)
+        controllerEntity.position = dockAnchorPosition
+        controllerEntity.orientation = simd_quatf(
+            ix: Float(rodState.orientation.x),
+            iy: Float(rodState.orientation.y),
+            iz: Float(rodState.orientation.z),
+            r: Float(rodState.orientation.w)
         )
 
-        let clampedPitch = clampedRigAngle(Float(smoothedRodPose.pitch))
-        let clampedRoll = clampedRigAngle(Float(smoothedRodPose.roll))
-        let clampedYaw = clampedRigAngle(Float(smoothedRodPose.yaw))
-
-        let yaw = simd_quatf(angle: clampedYaw, axis: [0, 1, 0])
-        let pitch = simd_quatf(angle: clampedPitch, axis: [1, 0, 0])
-        let roll = simd_quatf(angle: clampedRoll, axis: [0, 0, 1])
-        controllerEntity.orientation = yaw * pitch * roll
-
-        rodRig?.applyBend(pitch: Double(clampedPitch), roll: Double(clampedRoll))
-    }
-
-    private func clampedRigAngle(_ angle: Float) -> Float {
-        max(-maxRigTiltAngle, min(maxRigTiltAngle, angle))
+        rodRig?.applyBend(pitch: rodState.pitch, roll: rodState.roll)
     }
 
     private func lineTension(for phase: HookPhase) -> Float {
@@ -258,20 +296,28 @@ final class WorldViewModel: ObservableObject {
         case .idle: return 0
         case .flying: return 0.9
         case .hookInWater: return 0.3
-        case .reeling: return 0.8
+        case .fishOnHook, .reeling: return 0.8
+        case .result: return 0
         }
     }
 
-    private func launchHook() {
-        guard let controllerEntity, let hookEntity else { return }
+    private func launchHook(solution: CastSolution) {
+        guard
+            let hookEntity,
+            let tipEntity = rodRig?.tipEntity
+        else {
+            return
+        }
 
-        let forward = simd_normalize(simd_act(
-            controllerEntity.orientation,
-            SIMD3<Float>(0, 0, -1)
-        ))
+        let tipPosition = tipEntity.position(relativeTo: nil)
         hookEntity.isEnabled = true
-        hookEntity.position = controllerEntity.position + forward * 0.18
-        hookVelocity = forward * castSpeed + SIMD3<Float>(0, 0.9, 0)
+        hookEntity.position = tipPosition
+        let angle = solution.launchAngle
+        let horizontal = SIMD3<Float>(solution.direction.x, 0, solution.direction.z)
+        let speed = castSpeed * (0.5 + (solution.power * 1.5))
+        hookVelocity = horizontal * (cos(angle) * speed)
+            + SIMD3<Float>(0, sin(angle) * speed, 0)
+
         setHookPhase(.flying)
     }
 
@@ -284,6 +330,7 @@ final class WorldViewModel: ObservableObject {
         guard hookEntity.position.y <= waterHeight else { return }
         hookEntity.position.y = waterHeight
         hookVelocity = .zero
+        fishFight.resetForNewCast()
         setHookPhase(.hookInWater)
         Task { await send(.fishingEvent(.hookSplash)) }
     }
@@ -295,7 +342,14 @@ final class WorldViewModel: ObservableObject {
         let distance = simd_length(directionToRod)
         guard distance > 0.12 else {
             hookEntity.isEnabled = false
-            setHookPhase(.idle)
+            let caughtFish = fishFight.hasFishOnHook
+            if caughtFish {
+                fishFight.resolveCatch()
+            }
+            setHookPhase(caughtFish ? .result : .idle)
+            if caughtFish {
+                Task { await send(.fishingEvent(.catchFish)) }
+            }
             return
         }
 
@@ -308,6 +362,9 @@ final class WorldViewModel: ObservableObject {
     private func handle(_ message: NetworkMessage) {
         guard case let .state(state) = message else { return }
         rodState = state
+        if let solution = state.castSolution, state.action == .casting {
+            pendingCastSolution = solution
+        }
         connectionState = .streaming
     }
 
@@ -317,31 +374,5 @@ final class WorldViewModel: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
-    }
-}
-
-/// Running exponential-smoothed copy of `RodState`'s live-streamed pose fields. Defaults match
-/// `RodState`'s own fallback values so the first frame (before any smoothing has accumulated)
-/// behaves the same as reading `rodState` directly.
-private struct SmoothedRodPose {
-    var pitch: Double = 0
-    var roll: Double = 0
-    var yaw: Double = 0
-    var directionX: Float = 0
-    var directionY: Float = 0
-    var directionZ: Float = -0.5
-    var distance: Float = 0.5
-
-    /// Blends a `factor` fraction of `state`'s current values into the running average — a
-    /// standard one-pole low-pass filter, applied once per frame regardless of packet rate.
-    mutating func update(toward state: RodState, factor: Float) {
-        let doubleFactor = Double(factor)
-        pitch += (state.pitch - pitch) * doubleFactor
-        roll += (state.roll - roll) * doubleFactor
-        yaw += (state.yaw - yaw) * doubleFactor
-        directionX += ((state.directionX ?? 0) - directionX) * factor
-        directionY += ((state.directionY ?? 0) - directionY) * factor
-        directionZ += ((state.directionZ ?? -0.5) - directionZ) * factor
-        distance += ((state.distance ?? 0.5) - distance) * factor
     }
 }

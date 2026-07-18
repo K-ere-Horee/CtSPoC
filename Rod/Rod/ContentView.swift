@@ -9,71 +9,142 @@ import Foundation
 import Shared
 import SwiftUI
 
+/// The V1 controller surface per `GAMEPLAY_ARCHITECTURE_V1.md`: title,
+/// connection status, and exactly three actions. Raw sensor/debug values
+/// are development-only and live behind "Developer Details", collapsed by
+/// default, rather than in the primary experience.
 struct ContentView: View {
-    @StateObject private var viewModel = RodViewModel()
+    @ObservedObject
+    var viewModel: RodViewModel
+
+    @State private var showDeveloperDetails = false
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("Connection") {
-                    statusRow("Transport", value: viewModel.connectionState.rawValue)
-                    statusRow("Nearby Interaction", value: viewModel.spatialStatus.rawValue)
-                    statusRow("Motion", value: viewModel.motionAvailable ? "available" : "unavailable")
-                    statusRow("Pose", value: viewModel.isPoseValid ? "valid" : "invalid")
-                    statusRow("Motion Phase", value: viewModel.motionPhase.rawValue)
-                    statusRow("Hook Phase", value: viewModel.hookPhase.rawValue)
+            VStack(spacing: 28) {
+                Spacer()
+
+                VStack(spacing: 6) {
+                    Text("Catch the Scott")
+                        .font(.largeTitle.bold())
+                    Text(viewModel.connectionState.rawValue.uppercased())
+                        .font(.subheadline.bold())
+                        .foregroundStyle(viewModel.connectionState == .streaming ? .green : .secondary)
                 }
 
-                Section("Motion Calibration") {
+                VStack(spacing: 12) {
+                    Button {
+                        viewModel.startFishing()
+                    } label: {
+                        Label("Start Fishing", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(viewModel.isFishing || viewModel.calibrationStep != .complete)
+
+                    Button {
+                        viewModel.calibrateMotion()
+                    } label: {
+                        Label(calibrationButtonTitle, systemImage: "scope")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(!viewModel.hasMotionSample || viewModel.isFishing)
+
+                    Button {
+                        viewModel.endFishing()
+                    } label: {
+                        Label("End Fishing", systemImage: "stop.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(!viewModel.isFishing)
+                }
+                .padding(.horizontal, 32)
+
+                if viewModel.calibrationStep != .complete {
                     Text(calibrationInstruction)
                         .font(.caption)
-                    statusRow("Step", value: viewModel.calibrationStep.rawValue)
-                    if viewModel.calibrationStep != .complete {
-                        statusRow("Samples", value: String(viewModel.calibrationSampleCount))
-                        Button { viewModel.calibrateMotion() } label: {
-                            Label(calibrationButtonTitle, systemImage: "scope")
-                        }
-                        .disabled(!viewModel.hasMotionSample)
-                    } else {
-                        Button { viewModel.calibrateMotion() } label: {
-                            Label("Recalibrate Motion", systemImage: "arrow.clockwise")
-                        }
-                    }
-                }
-
-                Section("Rod State") {
-                    valueRow("Action", value: viewModel.action.rawValue)
-                    valueRow("Reel Speed", value: format(viewModel.reelSpeed))
-                    valueRow("Distance", value: format(viewModel.rodState.distance, suffix: " m"))
-                    valueRow("Direction", value: formatDirection(viewModel.rodState))
-                    valueRow("Pitch", value: format(viewModel.rodState.pitch))
-                    valueRow("Roll", value: format(viewModel.rodState.roll))
-                    valueRow("Yaw", value: format(viewModel.rodState.yaw))
-                    valueRow("Acceleration Z", value: format(viewModel.motionAccelerationZ))
-                    valueRow("Rotation Rate", value: format(viewModel.motionRotationRate))
-                    valueRow("Timestamp", value: String(format: "%.3f", viewModel.rodState.timestamp))
-                }
-
-                Section("Motion Debug") {
-                    MotionDebugView(recorder: viewModel.debugRecorder)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 40)
                 }
 
                 if let lastError = viewModel.lastError {
-                    Section("Error") { Text(lastError).foregroundStyle(.red) }
+                    Text(lastError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 40)
                 }
+
+                Spacer()
+
+                DisclosureGroup("Developer Details", isExpanded: $showDeveloperDetails) {
+                    developerDetails
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 12)
             }
-            .navigationTitle("Rod Controller")
+            .navigationBarTitleDisplayMode(.inline)
         }
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
     }
 
+    private var developerDetails: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Group {
+                Text("Connection").font(.caption.bold()).foregroundStyle(.secondary)
+                statusRow("Transport", value: viewModel.connectionState.rawValue)
+                statusRow("Nearby Interaction", value: viewModel.spatialStatus.rawValue)
+                statusRow("Motion", value: viewModel.motionAvailable ? "available" : "unavailable")
+                statusRow("Pose", value: viewModel.isPoseValid ? "valid" : "invalid")
+                statusRow("Motion Phase", value: viewModel.motionPhase.rawValue)
+                statusRow("Hook Phase", value: viewModel.hookPhase.rawValue)
+                statusRow("Fishing", value: viewModel.isFishing ? "active" : "inactive")
+            }
+
+            Group {
+                Text("Calibration").font(.caption.bold()).foregroundStyle(.secondary)
+                statusRow("Step", value: viewModel.calibrationStep.rawValue)
+                statusRow("Samples", value: String(viewModel.calibrationSampleCount))
+            }
+
+            Group {
+                Text("Rod State").font(.caption.bold()).foregroundStyle(.secondary)
+                valueRow("Action", value: viewModel.action.rawValue)
+                valueRow("Reel Speed", value: format(viewModel.reelSpeed))
+                valueRow("Distance", value: format(viewModel.rodState.distance, suffix: " m"))
+                valueRow("Direction", value: formatDirection(viewModel.rodState))
+                valueRow("Pitch", value: format(viewModel.rodState.pitch))
+                valueRow("Roll", value: format(viewModel.rodState.roll))
+                valueRow("Yaw", value: format(viewModel.rodState.yaw))
+                valueRow("Acceleration Z", value: format(viewModel.motionAccelerationZ))
+                valueRow("Rotation Rate", value: format(viewModel.motionRotationRate))
+                valueRow("Timestamp", value: String(format: "%.3f", viewModel.rodState.timestamp))
+            }
+
+            /*
+            #if DEBUG
+            MotionDebugView(recorder: viewModel.debugRecorder)
+            #endif
+             */
+        }
+        .padding(.top, 8)
+    }
+
     private func statusRow(_ title: String, value: String) -> some View {
         LabeledContent(title, value: value.capitalized)
+            .font(.caption)
     }
 
     private func valueRow(_ title: String, value: String) -> some View {
         LabeledContent(title, value: value)
+            .font(.caption)
     }
 
     private func format(_ value: Double) -> String {

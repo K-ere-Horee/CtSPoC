@@ -9,8 +9,6 @@ import Foundation
 
 public enum NetworkMessage: Codable, Sendable {
 
-    case hello(String)
-    case motion(MotionPacket)
     case state(RodState)
     case discoveryToken(Data)
     case fishingEvent(FishingEvent)

@@ -1,3 +1,10 @@
+//
+//  RodMotionInterpreter.swift
+//  Shared
+//
+//  Created by Calzy Akmal Indyramdhani on 15/07/26.
+//
+
 import Foundation
 
 /// Current device motion. Orientation is intentionally kept separate from interpretation.
@@ -8,6 +15,9 @@ public struct RodMotionInput: Sendable, Equatable {
     public let yaw: Double
     public let accelerationZ: Double
     public let rotationRateMagnitude: Double
+    public let rotationRateX: Double
+    public let rotationRateY: Double
+    public let rotationRateZ: Double
 
     public init(
         timestamp: TimeInterval,
@@ -15,7 +25,10 @@ public struct RodMotionInput: Sendable, Equatable {
         roll: Double,
         yaw: Double,
         rotationRateMagnitude: Double,
-        accelerationZ: Double = 0
+        accelerationZ: Double = 0,
+        rotationRateX: Double = 0,
+        rotationRateY: Double = 0,
+        rotationRateZ: Double = 0
     ) {
         self.timestamp = timestamp
         self.pitch = pitch
@@ -23,38 +36,55 @@ public struct RodMotionInput: Sendable, Equatable {
         self.yaw = yaw
         self.accelerationZ = accelerationZ
         self.rotationRateMagnitude = rotationRateMagnitude
+        self.rotationRateX = rotationRateX
+        self.rotationRateY = rotationRateY
+        self.rotationRateZ = rotationRateZ
     }
 }
 
-public enum RodMotionPhase: String, Sendable, Equatable {
+public enum RodMotionPhase: String, Codable, Sendable, Equatable {
     case invalid
     case idle
+    case backswing
+    case charging
+    case forwardSwing
+    case release
+    case followThrough
     case casting
     case reeling
 }
 
 public struct RodMotionInterpretation: Sendable, Equatable {
     public let pose: RodMotionPose
+    public let orientation: RodOrientation
     public let isPoseValid: Bool
     public let phase: RodMotionPhase
     public let action: RodAction
     public let reelSpeed: Float
+    public let castPower: Float
     public let debug: MotionDebugDecision
+    public let castSnapshot: CastSnapshot?
 
     public init(
         pose: RodMotionPose,
+        orientation: RodOrientation,
         isPoseValid: Bool,
         phase: RodMotionPhase,
         action: RodAction,
         reelSpeed: Float,
+        castPower: Float = 0,
         debug: MotionDebugDecision
+        , castSnapshot: CastSnapshot? = nil
     ) {
         self.pose = pose
+        self.orientation = orientation
         self.isPoseValid = isPoseValid
         self.phase = phase
         self.action = action
         self.reelSpeed = reelSpeed
+        self.castPower = castPower
         self.debug = debug
+        self.castSnapshot = castSnapshot
     }
 }
 
@@ -64,6 +94,9 @@ public final class RodMotionInterpreter {
 
     private var previousClassification: Classification = .idle
     private var castEndsAt: TimeInterval = 0
+    private var hasIdleReference = false
+    private var previousCastPhase: RodMotionPhase = .idle
+    private var releasedCastPower: Float = 0
 
     private enum Classification: String {
         case idle
@@ -79,12 +112,33 @@ public final class RodMotionInterpreter {
         self.profile = profile
         previousClassification = .idle
         castEndsAt = 0
+        previousCastPhase = .idle
+        releasedCastPower = 0
+        hasIdleReference = profile.isComplete
+    }
+
+    /// Installs the idle frame immediately so calibration preview and runtime
+    /// rendering consume the same corrected orientation.
+    public func setIdlePose(_ pose: MotionPose) {
+        profile.idlePose = pose
+        profile.calibrationReference = RodOrientation.from(pitch: pose.pitch, roll: pose.roll, yaw: pose.yaw)
+        hasIdleReference = true
+        previousClassification = .idle
+        castEndsAt = 0
+        previousCastPhase = .idle
+        releasedCastPower = 0
     }
 
     public func interpret(_ input: RodMotionInput) -> RodMotionInterpretation {
         let current = MotionPose(pitch: input.pitch, roll: input.roll, yaw: input.yaw)
+        let currentOrientation = RodOrientation.from(pitch: input.pitch, roll: input.roll, yaw: input.yaw)
+        
+        guard hasIdleReference else {
+            return result(pose: current, orientation: currentOrientation, phase: .invalid, action: .idle, reelSpeed: 0, castPower: 0, debug: emptyDebug)
+        }
+
         guard profile.isComplete else {
-            return result(pose: current, phase: .invalid, action: .idle, reelSpeed: 0, debug: emptyDebug)
+            return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .invalid, action: .idle, reelSpeed: 0, castPower: 0, debug: emptyDebug)
         }
 
         let distances = distances(from: current)
@@ -105,32 +159,46 @@ public final class RodMotionInterpreter {
         )
 
         if input.timestamp < castEndsAt {
-            return result(pose: relativePose(from: current), phase: .casting, action: .casting, reelSpeed: 0, debug: debug)
+            return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .followThrough, action: .casting, reelSpeed: 0, castPower: releasedCastPower, debug: debug)
         }
 
         switch classification {
         case .cast:
+            let castPower = Float(min(1, max(0, input.rotationRateMagnitude / 5)))
             let forwardMotion = input.accelerationZ * profile.castAccelerationSign >= profile.castAcceleration
+            let backswing = input.accelerationZ * profile.castAccelerationSign < -profile.castAcceleration
+            let wasReleased = previousCastPhase == .release
+            let phase: RodMotionPhase = backswing
+                ? .backswing
+                : forwardMotion ? .release : (castPower > 0.05 ? .charging : .forwardSwing)
             let enteredCast = previousClassification != .cast
             previousClassification = classification
-            if forwardMotion && enteredCast {
+            previousCastPhase = phase
+            if forwardMotion && (enteredCast || !wasReleased) {
                 castEndsAt = input.timestamp + profile.castDuration
-                return result(pose: relativePose(from: current), phase: .casting, action: .casting, reelSpeed: 0, debug: debug)
+                releasedCastPower = castPower
+                return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .release, action: .casting, reelSpeed: 0, castPower: castPower, debug: debug, castSnapshot: snapshot(input: input, orientation: correctedOrientation(currentOrientation)))
             }
+            return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: phase, action: .idle, reelSpeed: 0, castPower: castPower, debug: debug)
         case .reel:
             previousClassification = classification
             guard input.rotationRateMagnitude >= profile.reelRotationRate else { break }
-            let speed = Float(min(1, input.rotationRateMagnitude / max(profile.reelRotationRate, 1)))
-            return result(pose: relativePose(from: current), phase: .reeling, action: .reeling, reelSpeed: speed, debug: debug)
+            let minRate = profile.reelRotationRate
+            let maxRate = max(profile.reelFullRotationRate, minRate + 0.05)
+            let speed = Float(min(1, max(0, (input.rotationRateMagnitude - minRate) / (maxRate - minRate))))
+            previousCastPhase = .idle
+            return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .reeling, action: .reeling, reelSpeed: speed, castPower: 0, debug: debug)
         case .idle:
             previousClassification = classification
         }
 
         return result(
             pose: relativePose(from: current),
+            orientation: correctedOrientation(currentOrientation),
             phase: classification == .idle ? .idle : .invalid,
             action: .idle,
             reelSpeed: 0,
+            castPower: 0,
             debug: debug
         )
     }
@@ -172,6 +240,10 @@ public final class RodMotionInterpreter {
         )
     }
 
+    private func correctedOrientation(_ current: RodOrientation) -> RodOrientation {
+        profile.calibrationReference.inverted() * current
+    }
+
     private func wrapped(_ angle: Double) -> Double {
         var value = angle.truncatingRemainder(dividingBy: .pi * 2)
         if value > .pi { value -= .pi * 2 }
@@ -181,11 +253,22 @@ public final class RodMotionInterpreter {
 
     private func result(
         pose: MotionPose,
+        orientation: RodOrientation,
         phase: RodMotionPhase,
         action: RodAction,
         reelSpeed: Float,
+        castPower: Float = 0,
         debug: MotionDebugDecision
+        , castSnapshot: CastSnapshot? = nil
     ) -> RodMotionInterpretation {
-        RodMotionInterpretation(pose: pose, isPoseValid: profile.isComplete, phase: phase, action: action, reelSpeed: reelSpeed, debug: debug)
+        RodMotionInterpretation(pose: pose, orientation: orientation, isPoseValid: profile.isComplete, phase: phase, action: action, reelSpeed: reelSpeed, castPower: castPower, debug: debug, castSnapshot: castSnapshot)
+    }
+
+    private func snapshot(input: RodMotionInput, orientation: RodOrientation) -> CastSnapshot {
+        CastSnapshot(
+            orientation: orientation,
+            angularVelocity: CastVector3(x: Float(input.rotationRateX), y: Float(input.rotationRateY), z: Float(input.rotationRateZ)),
+            timestamp: input.timestamp
+        )
     }
 }
