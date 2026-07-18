@@ -34,6 +34,10 @@ final class RodViewModel: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var calibrationStep: MotionCalibrationStep = .idle
     @Published private(set) var calibrationSampleCount = 0
+    /// Gates cast/reel gesture reporting. The player must explicitly
+    /// "Start Fishing" (after calibrating) before physical motion is
+    /// interpreted as gameplay intent; "End Fishing" clears it again.
+    @Published private(set) var isFishing = false
 
     private let motionManager: MotionManager
     private let motionInterpreter: RodMotionInterpreter
@@ -144,6 +148,15 @@ final class RodViewModel: ObservableObject {
         hasStarted = false
     }
 
+    func startFishing() {
+        guard calibrationStep == .complete else { return }
+        isFishing = true
+    }
+
+    func endFishing() {
+        isFishing = false
+    }
+
     func calibrateMotion() {
         guard hasMotionSample else { return }
         switch calibrationStep {
@@ -205,6 +218,9 @@ final class RodViewModel: ObservableObject {
             fishingHaptics.handle(event)
         case let .hookPhase(phase):
             hookPhase = phase
+            if phase != .hookInWater {
+                fishingHaptics.stopInterest()
+            }
             if phase == .idle {
                 rodState = RodState(
                     spatial: spatial,
@@ -263,7 +279,9 @@ final class RodViewModel: ObservableObject {
             resolvedCastSolution = rodState.castSolution
         }
         
-        action = interpretation.action == .casting && !hookPhase.allowsCasting
+        action = !isFishing
+            ? .idle
+            : interpretation.action == .casting && !hookPhase.allowsCasting
             ? .idle
             : interpretation.action == .reeling && !hookPhase.allowsReeling
             ? .idle
@@ -290,6 +308,7 @@ final class RodViewModel: ObservableObject {
         if action == .reeling {
             fishingHaptics.reelTick(reelSpeed: reelSpeed)
         }
+        fishingHaptics.interestPulse()
     }
 
     private var motionInput: RodMotionInput {

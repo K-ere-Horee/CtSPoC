@@ -20,6 +20,18 @@ struct ContentView: View {
     }
 
     var body: some View {
+        ZStack {
+            content
+
+            if viewModel.hookPhase == .result, let result = fishFight.lastCatchResult {
+                ResultView(result: result) {
+                    viewModel.continueFishing()
+                }
+            }
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("World")

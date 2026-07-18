@@ -11,6 +11,138 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-029 --- Result Screen, Rod's Minimal V1 Interface, Fish Interest
+
+## Decision
+
+This sprint closes three of the gaps identified against
+`GAMEPLAY_ARCHITECTURE_V1.md`: no result screen, Rod still showing its full
+debug UI as the primary experience, and no "Fish Interested" phase before
+a bite. All three are additive to the existing `HookPhase`/
+`FishFightController`/`FishingEvent` contracts from ADR-023/026/028; none
+of those contracts changed shape, only grew one case each.
+
+### Result Screen
+
+`HookPhase` gains `.result`: entered only when `reelHook()` closes the
+distance to the rod with a fish attached (`resolveCatch()`), instead of
+going straight to `.idle`. `.result` is deliberately excluded from both
+`allowsCasting` and `allowsReeling`, so a physical cast gesture cannot race
+the result screen off the rod display before the player has seen it — this
+is why the state has to live in `HookPhase` (shared, network-synced)
+rather than as World-local UI state. `WorldViewModel.continueFishing()` is
+the only way out, called by World's new `ResultView` "Continue Fishing"
+button; it guards `hookPhase == .result` and returns to `.idle`.
+
+Escape and line-break do **not** enter `.result` — they keep their prior
+direct transitions (`.hookInWater` / `.idle`) from ADR-028. This is a
+deliberate, narrower reading of `GAMEPLAY_ARCHITECTURE_V1.md`'s "Catch or
+Escape -> Result" loop diagram: the doc's detailed result content (name,
+weight, length, stars, coins, new-record) is explicitly scoped to "After a
+successful catch" in prose, and gating every escape/line-break behind a
+modal the player must dismiss would make repeated near-misses tedious in a
+loop that currently has no cooldown between bites. The existing inline
+"Catch Results" HUD row already surfaces escape/line-break outcomes
+without blocking play.
+
+`FishCatchResult` gains `stars: Int`, `coins: Int`, `isNewRecord: Bool`
+(all `0`/`false` for non-`.caught` outcomes), computed in
+`FishFightController.resolve(outcome:)` only when `outcome == .caught`:
+
+```text
+stars = 1 + round(4 * (weight - species.weightRange.min) / species.weightRange.span)   // 1...5
+coins = round(species.value * (0.6 + 0.1 * stars))
+```
+
+New `World/World/Gameplay/FishRecordStore.swift` persists the heaviest
+catch per species ID to `UserDefaults` (`[String: Double]`, JSON-encoded —
+same pattern as `RodViewModel`'s `MotionProfile` persistence).
+`recordCatch(speciesID:weight:)` returns whether this catch beat the
+stored best, which becomes `isNewRecord`. New `World/World/Views/
+ResultView.swift` renders the card (species, weight, length, star row,
+coins, optional "NEW RECORD" badge, "Continue Fishing" button) as a
+full-screen overlay in `ContentView` when `hookPhase == .result`.
+"Return to Menu" from the doc's copy is intentionally not implemented —
+there is no Main Menu yet to return to, and a non-functional button would
+be worse than an absent one.
+
+### Rod's Minimal V1 Interface
+
+`Rod/Rod/ContentView.swift` is rewritten so the primary view matches
+`GAMEPLAY_ARCHITECTURE_V1.md`'s Rod interface exactly: title, connection
+status, and three buttons (`Start Fishing`, the existing per-step
+calibration button relabeled inline, `End Fishing`). All prior debug rows
+(connection/spatial/motion status, calibration step/sample count, raw
+pitch/roll/yaw/action/reelSpeed/etc.) move into a `DisclosureGroup`
+labeled "Developer Details", collapsed by default, instead of being
+deleted — matching this repo's existing precedent of keeping development
+tooling available but demoted (e.g. the commented-out `MotionDebugView`
+section) rather than removing it.
+
+`RodViewModel` gains `isFishing: Bool` (`@Published private(set)`) and
+`startFishing()`/`endFishing()`. `startFishing()` only takes effect once
+`calibrationStep == .complete`. `updateAction()`'s existing
+`hookPhase.allowsCasting`/`allowsReeling` gate gains a third condition
+ahead of both: `!isFishing` forces `action = .idle` regardless of motion.
+Before this, cast/reel gestures were always live the moment calibration
+finished; now the player must explicitly start (and can explicitly end) a
+session, giving the doc's three buttons real functional meaning rather
+than only "Calibrate" doing anything.
+
+**Known gap, not addressed this sprint:** `GAMEPLAY_ARCHITECTURE_V1.md`
+also states "Calibration instructions appear entirely in World. Rod only
+captures..." Rod's `calibrationInstruction` text (unchanged from before
+this sprint) still lives on Rod, not World. This is pre-existing, not
+introduced here, and is tracked as part of the still-open "World Main
+Menu + Tutorial + Calibration instructions" gap.
+
+### Fish Interested
+
+`GAMEPLAY_ARCHITECTURE_V1.md`: "A nearby fish becomes interested but has
+not bitten. World shows subtle movement and Rod provides slow periodic
+vibration." This does not need its own `HookPhase` — reeling is already
+allowed throughout `.hookInWater` regardless of interest, so it is
+presentation-only state inside the existing search phase.
+
+`FishFightController.updateSearching(deltaTime:)` now returns
+`SearchEvent? { .interested, .bite }` instead of `Bool`, driven by two
+sequential timers instead of one: `interestTimer` (`0.8...2.0s`) then,
+once interested, `biteTimer` (`0.8...2.0s`) — replacing the single
+`1.5...4.0s` `biteTimer` from ADR-023, so total time-to-bite stays in
+roughly the same range. `isFishInterested: Bool` (`@Published`) is exposed
+for a future World visual cue (not added this sprint — fish still have no
+visual representation). `FishingEvent` gains `.fishInterested`, sent once
+by `WorldViewModel` when `updateSearching` returns `.interested`.
+
+Rod's periodic vibration is a new pattern:
+`FishingHaptics.interestPulse(now:)` (throttled to `1.1s`, mirroring
+`reelTick(reelSpeed:now:)`'s existing throttle idiom) is a no-op unless an
+internal `isFishInterested` flag is set, which `handle(.fishInterested)`
+sets and every other `FishingEvent` case (plus
+`RodViewModel.handle(.hookPhase:)` whenever the phase leaves
+`.hookInWater`, via the new `stopInterest()`) clears — so a stale interest
+signal can't keep pulsing after the fish bites, escapes, or a new cast
+begins. `RodViewModel.updateAction()` calls `interestPulse()`
+unconditionally every motion sample, the same recurring callback that
+already drives `reelTick`. `HapticManager.fishInterested()` is a single
+soft transient (`0.22`/`0.15`), deliberately duller than `fishBite()`'s
+four-pulse pattern.
+
+## Rationale
+
+Each of these three gaps was explicitly named as missing against the
+product doc in the prior gap analysis; developing them together was
+requested directly ("develop points 1-3 this sprint"). They compose
+without touching each other's mechanics: the result screen only changes
+what happens after a catch resolves, the Rod UI change only changes
+whether a resolved motion action is allowed to leave the device, and fish
+interest only changes what happens before a bite — none required changing
+the tension/fight simulation from ADR-028.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
 # ADR-028 --- Unified Tension Safe Zone Replaces the Duration Timer
 
 ## Decision
