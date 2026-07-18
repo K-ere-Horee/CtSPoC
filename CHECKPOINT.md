@@ -1385,3 +1385,162 @@ modifiers and be swapped for real assets later. Recorded as ADR-026 in
 - `git diff --check` passes.
 - Full Xcode/device build and the actual on-screen tension bar/catch HUD
   have not been observed running yet.
+
+## Gameplay V1 - Line Tension Tracks Fight Duration, Not Reel Speed
+
+Date: 2026-07-18.
+
+Requested change to the tension meter added in the previous entry: sync it
+to reel *time* instead of reel speed, so reeling for too long automatically
+maxes the meter and breaks the line (failed catch), regardless of how fast
+or slow the player reels. Recorded as ADR-027 in `ARCHITECTURE_DECISIONS.md`
+(amends ADR-026's tension formula only).
+
+### Change
+
+- `World/World/Gameplay/FishFightController.swift`:
+  `updateFighting(deltaTime:reelSpeed:)` is now
+  `updateFighting(deltaTime:)` — the `reelSpeed` parameter and the
+  safe-speed/decay comparison are gone. `lineTension` now accumulates as
+  `lineTension += deltaTime / effectiveMaxFightDuration`, capped at 1;
+  reaching 1 still resolves `.lineBreak` exactly as before.
+- Removed `baseSafeReelSpeed`, `baseTensionRiseRate`, `tensionDecayRate`,
+  and their `effectiveSafeReelSpeed`/`effectiveTensionRiseRate` computed
+  properties. Added `baseMaxFightDuration: Float = 6.0` and
+  `effectiveMaxFightDuration = max(2.0, baseMaxFightDuration * (1 -
+  resistance * 0.5))` — a per-species total fight-time budget instead of a
+  per-species safe reel speed.
+- Tension no longer has a decay branch: it only changes while
+  `WorldViewModel.tick(deltaTime:)` is actively calling `updateFighting`
+  (i.e. `HookPhase == .reeling` and the player is reeling), so pausing
+  freezes the meter rather than draining it. The separate
+  `biteExpireTimer`/escape-clock behavior (`pauseFight()`,
+  `updateWaiting(deltaTime:)`) is unchanged.
+- `World/World/ViewModels/WorldViewModel.swift`'s call site updated to
+  `fishFight.updateFighting(deltaTime: deltaTime)` (dropped the
+  `reelSpeed: rodState.reelSpeed` argument).
+- No HUD changes: `LineTensionView` and the "Catch Results" section already
+  just read `fishFight.lineTension`/`hasFishOnHook`/`caughtCount`/
+  `lastCatchResult`, so they needed no changes for this swap.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-027, explicitly scoped as
+  amending only ADR-026's tension formula (the `FishSpecies` model,
+  `FishCatalog`, `FishFightController` extraction, and HUD from ADR-026
+  are unaffected and not re-described).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "Continuous line
+  tension" paragraph under "Fish Species and Fight Simulation" to describe
+  the duration-based formula and reference both ADRs.
+
+### Verification
+
+- Rebuilt the Shared package as a macOS module directly from
+  `find Sources/Shared -name "*.swift"` and used it to
+  `xcrun swiftc -typecheck -target arm64-apple-macosx15.0` against
+  `WorldViewModel.swift`, `ContentView.swift`, `FishCatalog.swift`,
+  `FishCatchResult.swift`, `FishFightController.swift`,
+  `LineTensionView.swift`, `CastMeterView.swift`, and `TransportHost.swift`
+  — passes with no errors (same pre-existing unrelated `controllerEntity`
+  unused-binding warning as before, not touched by this change).
+- `git diff --check` passes.
+- Full Xcode/device build and the actual on-device feel of a fixed 6-second
+  (species-scaled) fight window have not been observed running yet.
+
+## Gameplay V1 - Unified Tension Safe Zone, Fish Physically Fights Back
+
+Date: 2026-07-18.
+
+On-device testing surfaced two problems with the previous entry's design:
+the tension bar never changed while the rod was idle, and the fish escaped
+on a flat ~2.5s timer with no connection to anything the player could see
+happening — not the fish pulling the hook away, as expected. Re-reading
+`GAMEPLAY_ARCHITECTURE_V1.md`'s own "Line Tension" section confirmed the
+intended V1 mechanic was already specified there: a single tension bar with
+a safe zone, where tension too low *or* too high loses the fish. This
+entry replaces the two separate, simpler mechanisms built across ADR-023/
+024/026/027 with that one mechanism. Recorded as ADR-028 in
+`ARCHITECTURE_DECISIONS.md` (marks ADR-024 and ADR-027 superseded).
+
+### FishFightController Rewrite
+
+- `World/World/Gameplay/FishFightController.swift`: removed
+  `updateWaiting(deltaTime:)`, `pauseFight()`, `biteExpireTimer`,
+  `baseBiteExpireDuration`, `effectiveBiteExpireDuration`,
+  `updateFighting(deltaTime:)`, `baseMaxFightDuration`,
+  `effectiveMaxFightDuration` — all replaced by one method,
+  `updateFight(deltaTime:isReeling:reelSpeed:) -> FightFailure?`, called
+  every tick while `hasFishOnHook` (both `.fishOnHook` and `.reeling`
+  `HookPhase`s):
+  - `reelPull = isReeling ? reelSpeed * baseReelTensionRate(0.5) : 0`
+  - `lineTension += (reelPull - effectiveFishPullRate) * deltaTime`,
+    clamped `0...1`
+  - `effectiveFishPullRate = baseFishPullRate(0.15) * (1 + resistance)`
+  - `lineTension <= 0` resolves `.escaped`; `lineTension >= 1` resolves
+    `.lineBreak`.
+- Added `FishFightController.FightFailure` (`.escaped`/`.lineBreak`), the
+  return type of `updateFight`.
+- `updateSearching(deltaTime:)` now sets `lineTension = initialTension`
+  (0.5) on a bite instead of leaving it at 0, so the player has room to
+  react in either direction from the start.
+- Added `fishPullSpeed: Float` (species-scaled m/s, `0` when no fish is
+  hooked) — the only new surface exposed to `WorldViewModel`. The
+  controller still has zero knowledge of RealityKit, entities, or
+  positions; it only publishes a speed.
+
+### WorldViewModel: the Fish Physically Drags the Hook
+
+- `World/World/ViewModels/WorldViewModel.swift`: merged the `.fishOnHook`
+  and `.reeling` `tick(deltaTime:)` switch cases into one
+  (`case .fishOnHook, .reeling:`), since both now run the same
+  reel-or-drift-plus-tension-update logic and only differ in which the
+  player is currently doing.
+- Added `driftHookAway(deltaTime:)`: while a fish is hooked and the player
+  isn't reeling, moves `hookEntity` away from the rod along the existing
+  rod-to-hook axis (the same vector `reelHook(deltaTime:)` already
+  computes, just negated), scaled by `fishFight.fishPullSpeed`. Reeling
+  still closes that same distance via the unchanged `reelHook`/
+  catch-distance logic — so a hooked fish now visibly swims away with the
+  hook when ignored, and reeling visibly pulls it back.
+- Added `resolveFightFailure(_:)`, reacting to
+  `FishFightController.FightFailure`: `.escaped` returns `HookPhase` to
+  `.hookInWater` (hook stays in the water, keeps fishing) and sends
+  `.fishEscaped`; `.lineBreak` disables the hook, returns `HookPhase` to
+  `.idle` (recast required), and sends `.lineBreak` — the same
+  event-sending shape `reelHook`'s catch path already had.
+
+### HUD: Safe Zone Made Visible
+
+- `World/World/Views/LineTensionView.swift`: the bar now shades a visible
+  safe zone (`0.3...0.7`, green-tinted) instead of a single green-to-red
+  ramp that only made sense for a one-directional failure. Below `0.15`
+  shows a `"LOSING FISH"` warning; above `0.85` still shows `"SNAPPING"`.
+  Added `"Slack"`/`"Snap"` end labels, matching `CastMeterView`'s
+  `"Near"`/`"Far"` caption convention.
+- No changes needed to `ContentView`'s "Catch Results" section or how it
+  observes `fishFight` — both already just read the published state.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-028; marked ADR-024 and ADR-027
+  "Superseded by ADR-028" in place (their bodies kept intact for history,
+  per the project's no-delete convention for past decisions).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: rewrote "Fish Species and Fight
+  Simulation" to describe the current (ADR-028) design directly rather than
+  layering another "amends the previous section" paragraph on top of two
+  prior rewrites of the same section.
+
+### Verification
+
+- Rebuilt the Shared package as a macOS module directly from
+  `find Sources/Shared -name "*.swift"` and used it to
+  `xcrun swiftc -typecheck -target arm64-apple-macosx15.0` against
+  `WorldViewModel.swift`, `ContentView.swift`, `FishCatalog.swift`,
+  `FishCatchResult.swift`, `FishFightController.swift`,
+  `LineTensionView.swift`, `CastMeterView.swift`, and `TransportHost.swift`
+  — passes with no errors (same pre-existing, unrelated `controllerEntity`
+  unused-binding warning as every prior entry in this series).
+- `git diff --check` passes.
+- Full Xcode/device build remains environment-blocked; the actual feel of
+  the tug-of-war (reel-to-hold-steady vs. drift-away-when-idle) and the new
+  safe-zone HUD have not been observed running yet.

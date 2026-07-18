@@ -186,29 +186,46 @@ final class WorldViewModel: ObservableObject {
             if rodState.action == .reeling {
                 reelHook(deltaTime: deltaTime)
             }
-        case .fishOnHook:
+        case .fishOnHook, .reeling:
             if rodState.action == .reeling {
                 reelHook(deltaTime: deltaTime)
-            } else if fishFight.updateWaiting(deltaTime: deltaTime) {
-                setHookPhase(.hookInWater)
-                Task { await send(.fishingEvent(.fishEscaped)) }
-            }
-        case .reeling:
-            if rodState.action == .reeling {
-                reelHook(deltaTime: deltaTime)
-                if fishFight.hasFishOnHook,
-                   fishFight.updateFighting(deltaTime: deltaTime, reelSpeed: rodState.reelSpeed) {
-                    hookEntity?.isEnabled = false
-                    setHookPhase(.idle)
-                    Task { await send(.fishingEvent(.lineBreak)) }
-                }
             } else {
-                if fishFight.hasFishOnHook {
-                    fishFight.pauseFight()
-                }
-                setHookPhase(fishFight.hasFishOnHook ? .fishOnHook : .hookInWater)
+                driftHookAway(deltaTime: deltaTime)
+                setHookPhase(.fishOnHook)
+            }
+
+            if let failure = fishFight.updateFight(
+                deltaTime: deltaTime,
+                isReeling: rodState.action == .reeling,
+                reelSpeed: rodState.reelSpeed
+            ) {
+                resolveFightFailure(failure)
             }
         }
+    }
+
+    private func resolveFightFailure(_ failure: FishFightController.FightFailure) {
+        switch failure {
+        case .escaped:
+            setHookPhase(.hookInWater)
+            Task { await send(.fishingEvent(.fishEscaped)) }
+        case .lineBreak:
+            hookEntity?.isEnabled = false
+            setHookPhase(.idle)
+            Task { await send(.fishingEvent(.lineBreak)) }
+        }
+    }
+
+    private func driftHookAway(deltaTime: Float) {
+        guard let controllerEntity, let hookEntity else { return }
+
+        let directionToRod = controllerEntity.position - hookEntity.position
+        let distance = simd_length(directionToRod)
+        guard distance > 0.0001 else { return }
+
+        let awayDirection = -simd_normalize(directionToRod)
+        let step = fishFight.fishPullSpeed * deltaTime
+        hookEntity.position += awayDirection * step
     }
 
     private func updateRodPose() {

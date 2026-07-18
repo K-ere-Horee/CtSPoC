@@ -451,30 +451,28 @@ never sent them before ADR-023 — that was their first real use.
 
 ## Fish Species and Fight Simulation
 
-Recorded in ADR-024 (escape timer, line break) and ADR-026 (species data,
-continuous tension, HUD). `World/World/Gameplay/FishFightController.swift`
-is an `ObservableObject` owning all bite/escape/tension/catch simulation;
-`WorldViewModel` no longer holds any of this state directly and drives the
-controller from `tick(deltaTime:)` with a small explicit interface:
+Current design recorded across ADR-024, ADR-026, and ADR-028 (which
+superseded ADR-024's and ADR-027's tension/escape mechanisms — see those
+ADRs for the mechanisms that were tried and replaced along the way).
+`World/World/Gameplay/FishFightController.swift` is an `ObservableObject`
+owning all bite/fight/catch simulation; `WorldViewModel` holds none of this
+state directly and drives the controller from `tick(deltaTime:)`:
 
 ```text
-.hookInWater             -> fishFight.updateSearching(deltaTime:)
-  -> returns true          -> HookPhase .fishOnHook, send .fishBite
-.fishOnHook, not reeling -> fishFight.updateWaiting(deltaTime:)
-  -> returns true          -> HookPhase .hookInWater, send .fishEscaped
-.reeling, reeling active -> fishFight.updateFighting(deltaTime:, reelSpeed:)
-  -> returns true          -> hook disabled, HookPhase .idle, send .lineBreak
-.reeling, reeling paused -> fishFight.pauseFight(), HookPhase back to
-                             .fishOnHook (if still hooked) or .hookInWater
-reelHook() reaches rod   -> fishFight.resolveCatch(), send .catchFish
+.hookInWater                 -> fishFight.updateSearching(deltaTime:)
+  -> returns true              -> HookPhase .fishOnHook, send .fishBite
+.fishOnHook / .reeling       -> reeling ? reelHook() : driftHookAway()
+  (merged switch case)       -> fishFight.updateFight(deltaTime:, isReeling:, reelSpeed:)
+  -> returns .escaped          -> HookPhase .hookInWater, send .fishEscaped
+  -> returns .lineBreak        -> hook disabled, HookPhase .idle, send .lineBreak
+reelHook() reaches rod       -> fishFight.resolveCatch(), send .catchFish
   (hasFishOnHook)
-new splash                -> fishFight.resetForNewCast()
+new splash                    -> fishFight.resetForNewCast()
 ```
 
 `WorldViewModel` still owns `HookPhase` transitions, the hook entity, and
 sending `FishingEvent` over transport; `FishFightController` has no
-transport, entity, or `HookPhase` knowledge — it only takes `deltaTime`/
-`reelSpeed` in and returns a bool signalling a state transition.
+transport, entity, or `HookPhase` knowledge.
 
 **Species data.** `Shared/Sources/Shared/Models/FishSpecies.swift` is a
 `Codable`, Foundation-only struct (`id`, `name`, `weightRange`,
@@ -485,19 +483,41 @@ FishCatalog.swift` is the World-owned content list (`all: [FishSpecies]`,
 one entry today, `"fish_a"`) and `randomSpecies()` picker; adding a species
 is a one-line addition there.
 
-**Continuous line tension.** `FishFightController.lineTension: Float`
-(0...1) replaces the old binary sustained-threshold timer: it rises while
-reeling above a per-species safe reel speed and decays otherwise, breaking
-the line at 1.0 via `updateFighting(deltaTime:reelSpeed:)`. Species
-`resistance` scales three constants — `effectiveBiteExpireDuration`
-(shorter for stronger fish), `effectiveSafeReelSpeed` (lower, so strong
-fish tolerate less aggressive reeling), and `effectiveTensionRiseRate`
-(faster tension buildup) — giving each species a distinct feel without any
-per-species code path. Pausing reeling mid-fight still resets the escape
-clock (`pauseFight()`) rather than draining it silently.
+**Tension safe zone — the fish physically fights back.** Matches
+`GAMEPLAY_ARCHITECTURE_V1.md`'s own line-tension description: the player
+keeps tension in a safe zone; sustained tension too high *or* too low
+loses the fish. `FishFightController.lineTension: Float` (0...1) starts at
+`initialTension` (0.5) on a bite and updates every tick in
+`updateFight(deltaTime:isReeling:reelSpeed:)`:
 
-**HUD.** `World/World/Views/LineTensionView.swift` renders `lineTension` as
-a green/yellow/red 0...1 bar, visible whenever `fishFight.hasFishOnHook`.
+```text
+reelPull = isReeling ? reelSpeed * baseReelTensionRate(0.5) : 0
+lineTension += (reelPull - effectiveFishPullRate) * deltaTime
+effectiveFishPullRate = baseFishPullRate(0.15) * (1 + resistance)
+
+lineTension <= 0 -> .escaped (line went slack)
+lineTension >= 1 -> .lineBreak (reeled too hard)
+```
+
+Not reeling drains tension toward 0 (the fish is winning); reeling raises
+it, and reeling too hard for too long pushes it past 1. The fish also
+physically drags the hook: `FishFightController.fishPullSpeed: Float`
+(species-scaled m/s, zero unless hooked) is read by
+`WorldViewModel.driftHookAway(deltaTime:)`, which moves the hook entity
+away from the rod along the same rod-to-hook axis
+`reelHook(deltaTime:)` already uses, just reversed — the controller
+publishes a speed only, it never touches RealityKit. Reeling still closes
+that same distance via the existing `reelHook`/catch-distance logic, so
+tension and physical hook position now move together: ignoring a hooked
+fish both drains tension *and* visibly lets it swim away with the hook.
+Species `resistance` scales `effectiveFishPullRate` and `fishPullSpeed`
+together, so a tougher fish both drains tension faster and drags the hook
+away faster when not countered.
+
+**HUD.** `World/World/Views/LineTensionView.swift` renders `lineTension` on
+a bar with a shaded safe zone (`0.3...0.7`, green) and two failure
+directions: below `0.15` shows `"LOSING FISH"`, above `0.85` shows
+`"SNAPPING"`; it's visible whenever `fishFight.hasFishOnHook`.
 `ContentView`'s "Catch Results" section shows `fishFight.caughtCount` and
 `fishFight.lastCatchResult` (species name, weight, length,
 caught/escaped/line-broke outcome) via `FishCatchResult`
