@@ -128,11 +128,10 @@ struct ContentView: View {
                 valueRow("Timestamp", value: String(format: "%.3f", viewModel.rodState.timestamp))
             }
 
-            /*
-            #if DEBUG
-            MotionDebugView(recorder: viewModel.debugRecorder)
-            #endif
-             */
+            Group {
+                Text("Cast/Reel Classifier").font(.caption.bold()).foregroundStyle(.secondary)
+                MotionDebugView(recorder: viewModel.debugRecorder)
+            }
         }
         .padding(.top, 8)
     }

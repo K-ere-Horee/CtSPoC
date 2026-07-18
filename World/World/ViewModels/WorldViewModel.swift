@@ -6,6 +6,7 @@
 //
 
 import RealityKit
+import _RealityKit_SwiftUI
 import Shared
 import SwiftUI
 import Combine
@@ -18,23 +19,82 @@ final class WorldViewModel: ObservableObject {
     @Published private(set) var connectionState: ConnectionState = .idle
     @Published private(set) var hookPhase: HookPhase = .idle
     @Published private(set) var lastError: String?
-
-    private var rodModel: Entity?
+    @Published private(set) var fps: Double = 0
 
     private let transport: TransportHost
-    private let waterHeight: Float = -0.8
-    private let gravity: Float = 2.2
-    private let castSpeed: Float = 2.4
-    private let reelSpeed: Float = 3.0
-    private let controllerOffset = SIMD3<Float>(0, -0.15, -0.60)
 
+    /// Real-world-scale water plane sits at y=0; the rod is held near the dock's outer tip
+    /// rather than at world origin (which is now the middle of an 80x60 m lake).
+    private let waterHeight: Float = 0
+    private let gravity: Float = 4.0
+    private let castSpeed: Float = 3.6
+    private let reelSpeed: Float = 3.0
+
+    /// World-space position of the first-person camera, near the dock's tip (tip itself is at
+    /// `z ≈ -4.5`), facing open water — the asset repo's own validated "natural casting position"
+    /// (see its CHECKPOINT.md CP41).
+    ///
+    /// **Not the literal tip (`z = -3.2`) any more.** That position, combined with a dead-level
+    /// camera (matching the source .blend's `player_pov`, which has no pitch), put the *visible*
+    /// ground/water crossover point (where `tan(halfFOV) = eyeHeight / distance` — ~3.7 m out, at
+    /// this camera's 46.4°-vertical FOV and 1.6 m eye height) **past the dock's edge entirely** —
+    /// every pixel of "ground" in frame was already over open water, so nothing on screen read as
+    /// "standing on a dock." User feedback: "we still need to let the user know he is fishing on a
+    /// dock somehow." Fixed by pulling back to `z = -1.5` (still much closer to the tip than the
+    /// original shore-half `+3.2`) **and** adding `cameraPitchDownDegrees` of downward tilt so the
+    /// ground/water crossover distance shrinks enough to land *before* the tip — putting a visible
+    /// strip of dock decking in the lower frame, with the tip/water's edge visible beyond it, before
+    /// the rod and open lake. Verified by direct screenshot, not just computed by trig (the formula
+    /// is a first-order planar-ground estimate; the dock deck itself sits at a slightly different
+    /// height than open water, and FOV/aspect details aren't perfectly reflected in a back-of-envelope
+    /// calculation) — iterate the constants below and re-check live if the dock ever disappears from
+    /// frame again after some other camera-related change.
+    private let playerCameraPosition: SIMD3<Float> = [0, 2.4, -1.5]
+
+    /// Downward camera tilt (degrees) added on top of the dead-level `player_pov` reference pose,
+    /// so the dock deck is visible in frame from `playerCameraPosition` (see its doc comment) — a
+    /// deliberate, small deviation from "matches the Blender camera exactly," justified by needing
+    /// the player to visually read as standing on a dock, not floating on the water.
+    ///
+    /// **Reduced from 12° to 6°** — at 12° the sky was compressed to a thin strip at the very top
+    /// of frame (~13% of the visible height in a test screenshot) while water dominated over half
+    /// of it; comparing directly against the asset repo's own Blender preview render (which the
+    /// user pointed to explicitly) showed a much more even split — sky roughly a third of the
+    /// frame, not a sliver. 6° keeps enough tilt for the dock to still read in the lower frame
+    /// (verified live, not just computed) while giving the sky room to actually read as sky.
+    private let cameraPitchDownDegrees: Float = 6
+
+    /// First-person hold position for the rod handle, in world space (not parented to the camera,
+    /// so it doesn't automatically follow `cameraPitchDownDegrees` — tuned by eye to still read
+    /// correctly in frame at the new camera position/tilt). Derived from the asset repo's own
+    /// preview rig: in the source .blend, `rod_main` is parented directly to the `player_pov` camera
+    /// with local offset (0.22, -0.45, -0.60) (x=right, y=up, z=forward). Applied here as a
+    /// world-space offset from `playerCameraPosition`: world = (0, 2.4, -1.5) + (0.22, -0.45, -0.60)
+    /// = (0.22, 1.95, -2.1).
+    ///
+    /// Kept as a fixed constant rather than driven by live Nearby Interaction distance/direction —
+    /// per ADR-019/ADR-018, the rod root stays at a stable camera-relative offset; only the hook
+    /// receives cast trajectory and moves through the scene.
+    private let dockAnchorPosition: SIMD3<Float> = [0.22, 1.95, -2.1]
+
+    private var rodRig: RodRigController?
     private var controllerEntity: Entity?
     private var hookEntity: ModelEntity?
     private var hookVelocity = SIMD3<Float>.zero
     private var castLaunchPosition = SIMD3<Float>.zero
     private var pendingCastSolution: CastSolution?
-    private var simulationTask: Task<Void, Never>?
     private var hasStarted = false
+
+    /// Drives the simulation from RealityKit's own per-frame scene update, with a real
+    /// `event.deltaTime` — replaces a previous hand-rolled `Task.sleep(nanoseconds: 16_666_667)`
+    /// loop, which ran on its own imprecise clock decoupled from the actual render cadence
+    /// (`Task.sleep` has no frame-pacing guarantee and drifts under load, which read as laggy/
+    /// uneven rod motion independent of any network latency). Set up once from the `RealityView`
+    /// `make` closure; gated by `hasStarted` rather than torn down on `stop()`, so the same
+    /// subscription survives `start()`/`stop()` cycles without needing to recreate it.
+    private var frameUpdateSubscription: EventSubscription?
+    private var fpsFrameCount = 0
+    private var fpsElapsedTime: TimeInterval = 0
 
     let fishFight = FishFightController()
 
@@ -44,7 +104,16 @@ final class WorldViewModel: ObservableObject {
         self.transport = transport
 
         transport.onStateChange = { [weak self] state in
-            Task { @MainActor in self?.connectionState = state }
+            Task { @MainActor in
+                self?.connectionState = state
+                guard let self, state == .ready else { return }
+                // A dropped `.hookPhase` message during a prior disconnect would otherwise leave
+                // Rod stuck believing an old phase forever (MultipeerConnectivity does not retry
+                // a `send()` that failed outright) — resync on every reconnect so a transient drop
+                // can't permanently block casting/reeling on the Rod side.
+                self.lastError = nil
+                Task { await self.send(.hookPhase(self.hookPhase)) }
+            }
         }
         transport.onMessage = { [weak self] message in
             Task { @MainActor in self?.handle(message) }
@@ -54,7 +123,6 @@ final class WorldViewModel: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
-        startSimulation()
 
         Task {
             do {
@@ -67,88 +135,89 @@ final class WorldViewModel: ObservableObject {
     }
 
     func stop() {
-        simulationTask?.cancel()
-        simulationTask = nil
         transport.disconnect()
         hasStarted = false
     }
 
-    private func makeArrow() -> Entity {
+    /// Called once from `ContentView`'s `RealityView` `make` closure. Subscribes to the scene's
+    /// real per-frame update event so the simulation ticks in lockstep with actual rendering
+    /// instead of a separate, imprecise timer.
+    func attachFrameLoop(to content: some RealityViewContentProtocol) {
+        guard frameUpdateSubscription == nil else { return }
+        frameUpdateSubscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
+            Task { @MainActor in
+                self?.advance(deltaTime: Float(event.deltaTime))
+            }
+        }
+    }
 
-        let root = Entity()
+    private func advance(deltaTime: Float) {
+        updateFPS(deltaTime: TimeInterval(deltaTime))
+        guard hasStarted else { return }
+        tick(deltaTime: deltaTime)
+    }
 
-        let shaft = ModelEntity(
-            mesh: .generateBox(size: [0.1, 0.1, 1.0]),
-            materials: [
-                SimpleMaterial(color: .green, isMetallic: false)
-            ]
-        )
-
-        shaft.position = [0, 0, -0.175]
-
-        let head = ModelEntity(
-            mesh: .generateCone(
-                height: 0.08,
-                radius: 0.04
-            ),
-            materials: [
-                SimpleMaterial(color: .red, isMetallic: false)
-            ]
-        )
-
-        // cone RealityKit default menghadap +Y
-        head.orientation = simd_quatf(
-            angle: -.pi / 2,
-            axis: [1,0,0]
-        )
-
-        let tip = Entity()
-        tip.name = "Tip"
-
-        head.position = [0, 0, -0.72]
-        tip.position = [0, 0, -0.76]
-
-        root.addChild(shaft)
-        root.addChild(head)
-        root.addChild(tip)
-
-        return root
+    /// Rolling FPS measured over a half-second window rather than a raw
+    /// `1 / deltaTime` per frame, which would jump around too much to read at a glance.
+    private func updateFPS(deltaTime: TimeInterval) {
+        fpsFrameCount += 1
+        fpsElapsedTime += deltaTime
+        guard fpsElapsedTime >= 0.5 else { return }
+        fps = Double(fpsFrameCount) / fpsElapsedTime
+        fpsFrameCount = 0
+        fpsElapsedTime = 0
     }
 
     func makeSceneEntity() async -> Entity {
-
-        let water = ModelEntity(
-            mesh: .generatePlane(width: 6, depth: 6),
-            materials: [SimpleMaterial(color: .blue, isMetallic: false)]
-        )
-        water.position = [0, waterHeight, 0]
-
         let root = Entity()
-        let rodRoot = Entity()
-        let rod = makeArrow()
-        rod.position = [0, 0, -1]
+
+        let environment = await EnvironmentSceneBuilder.build()
+        root.addChild(environment)
+
+        root.addChild(makePlayerCamera())
+
+        let rig = await RodRigController.load()
+        root.addChild(rig.root)
+        controllerEntity = rig.root
+        rodRig = rig
 
         let hook = ModelEntity(
             mesh: .generateSphere(radius: 0.035),
             materials: [SimpleMaterial(color: .yellow, isMetallic: false)]
         )
         hook.isEnabled = false
-
-        controllerEntity = rodRoot
-        rodModel = rod
         hookEntity = hook
-
-        rodRoot.addChild(rod)
-
-        root.addChild(rodRoot)
         root.addChild(hook)
-        root.addChild(water)
 
         return root
     }
 
-    func updateScene() {
-        updateRodPose()
+    /// `RealityView` in non-AR ("virtual") mode has no ARKit device camera to fall back on, and
+    /// provides no default first-person viewpoint of its own — without an explicit camera entity,
+    /// it auto-frames the whole scene's bounding box from an arbitrary vantage point, which is what
+    /// produced the "standing underwater looking up at the dock" bug. This builds that camera.
+    ///
+    /// Positioned at `playerCameraPosition`, facing -Z and tilted down by
+    /// `cameraPitchDownDegrees` (see that constant's doc comment for why — keeping the dock deck
+    /// visible in frame, not a dead-level match to the source .blend's `player_pov` any more).
+    /// Verified against `dock_main.usdz`/`terrain_underwater.usdz` world-space geometry (loaded
+    /// through RealityKit, not just read from the source .blend): the open-water/dock-tip side is
+    /// -Z, the shore side is +Z, so -Z is "out over the lake" from any point along the dock.
+    private func makePlayerCamera() -> Entity {
+        let camera = PerspectiveCamera()
+        camera.name = "PlayerCamera"
+        camera.components.set(
+            PerspectiveCameraComponent(fieldOfViewInDegrees: 46.4, fieldOfViewOrientation: .vertical)
+        )
+
+        let pitch = cameraPitchDownDegrees * .pi / 180
+        let forward = SIMD3<Float>(0, -sin(pitch), -cos(pitch))
+        camera.look(
+            at: playerCameraPosition + forward,
+            from: playerCameraPosition,
+            relativeTo: nil
+        )
+        return camera
     }
 
     /// Called by World's result screen when the player dismisses it after a
@@ -164,17 +233,9 @@ final class WorldViewModel: ObservableObject {
         Task { await send(.hookPhase(phase)) }
     }
 
-    private func startSimulation() {
-        simulationTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 16_666_667)
-                self?.tick(deltaTime: 1.0 / 60.0)
-            }
-        }
-    }
-
     private func tick(deltaTime: Float) {
         updateRodPose()
+        rodRig?.applyLineTension(lineTension(for: hookPhase))
 
         switch hookPhase {
         case .idle:
@@ -262,32 +323,47 @@ final class WorldViewModel: ObservableObject {
         hookEntity.position += awayDirection * step
     }
 
+    /// Per ADR-018/ADR-019 and the calibration contract in `AGENTS.md`: the rod root stays at a
+    /// fixed camera-relative offset (`dockAnchorPosition`) — Nearby Interaction distance/direction
+    /// must never move it, only the hook receives cast trajectory. Orientation comes directly from
+    /// `RodState.orientation`, the single renderer-facing quaternion already corrected by the
+    /// Rod/Shared calibration pipeline; World must not reconstruct it from raw Euler angles or add
+    /// its own smoothing/clamping on top. Raw `pitch`/`roll` remain available for the rod rig's own
+    /// secondary bend visualization (`RodRigController.applyBend`), which is a supplementary flex
+    /// effect layered on top of the whole-rig orientation, not the renderer orientation itself.
     private func updateRodPose() {
         guard let controllerEntity else { return }
 
-        // The rod represents the player's controller. Gameplay must only move
-        // the hook, so the rod root stays at a stable camera-relative offset.
-        controllerEntity.position = controllerOffset
-
+        controllerEntity.position = dockAnchorPosition
         controllerEntity.orientation = simd_quatf(
             ix: Float(rodState.orientation.x),
             iy: Float(rodState.orientation.y),
             iz: Float(rodState.orientation.z),
             r: Float(rodState.orientation.w)
         )
+
+        rodRig?.applyBend(pitch: rodState.pitch, roll: rodState.roll)
+    }
+
+    private func lineTension(for phase: HookPhase) -> Float {
+        switch phase {
+        case .idle: return 0
+        case .flying: return 0.9
+        case .hookInWater: return 0.3
+        case .fishOnHook, .reeling: return 0.8
+        case .result: return 0
+        }
     }
 
     private func launchHook(solution: CastSolution) {
         guard
-            let controllerEntity,
-            let rodModel,
             let hookEntity,
-            let tip = rodModel.findEntity(named: "Tip")
+            let tipEntity = rodRig?.tipEntity
         else {
             return
         }
 
-        let tipPosition = tip.position(relativeTo: nil)
+        let tipPosition = tipEntity.position(relativeTo: nil)
         hookEntity.isEnabled = true
         hookEntity.position = tipPosition
         castLaunchPosition = tipPosition
@@ -361,6 +437,7 @@ final class WorldViewModel: ObservableObject {
     private func send(_ message: NetworkMessage) async {
         do {
             try await transport.send(message)
+            lastError = nil
         } catch {
             lastError = error.localizedDescription
         }
