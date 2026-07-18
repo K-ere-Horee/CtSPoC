@@ -11,6 +11,137 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-028 --- Unified Tension Safe Zone Replaces the Duration Timer
+
+## Decision
+
+ADR-027's duration-only tension formula is replaced, one task later, by the
+single tension-with-safe-zone mechanic `GAMEPLAY_ARCHITECTURE_V1.md`
+already specified: "the player keeps tension in a safe zone... sustained
+tension too high or too low causes the fish to escape." Two problems
+prompted this: `lineTension` froze while the player wasn't reeling instead
+of reflecting anything happening in the fight, and the *separate*
+`biteExpireTimer`/`updateWaiting` mechanic (ADR-024) that actually caused
+escapes was a flat countdown fully disconnected from hook/rod distance —
+contradicting the player's (correct) expectation that a hooked fish should
+visibly fight by pulling the hook away.
+
+`FishFightController` now has one continuous update path,
+`updateFight(deltaTime:isReeling:reelSpeed:)`, called every tick while
+`hasFishOnHook` (both `.fishOnHook` and `.reeling` `HookPhase`s):
+
+```text
+reelPull = isReeling ? reelSpeed * baseReelTensionRate(0.5) : 0
+lineTension += (reelPull - effectiveFishPullRate) * deltaTime
+effectiveFishPullRate = baseFishPullRate(0.15) * (1 + resistance)
+
+lineTension <= 0  -> FightFailure.escaped   (line went slack)
+lineTension >= 1  -> FightFailure.lineBreak (reeled too hard)
+```
+
+A bite starts `lineTension` at `initialTension` (0.5), not 0, giving the
+player room to react in either direction. `updateWaiting`, `pauseFight`,
+`biteExpireTimer`, `baseBiteExpireDuration`, and ADR-027's
+`updateFighting(deltaTime:)`/`baseMaxFightDuration` are all removed —
+tension alone now governs both failure modes.
+
+**The fish now physically pulls the hook.** `FishFightController` exposes
+`fishPullSpeed: Float` (m/s, species-scaled, zero when no fish is hooked)
+so `WorldViewModel` can move the hook entity itself — `FishFightController`
+still has no RealityKit/entity knowledge, it only publishes a speed.
+`WorldViewModel.driftHookAway(deltaTime:)` moves the hook away from the rod
+along the existing rod-to-hook axis (the same vector `reelHook(deltaTime:)`
+already used, just reversed) whenever a fish is hooked and the player isn't
+reeling. Reeling still moves the hook toward the rod via the existing
+`reelHook(deltaTime:)`/distance-to-catch logic, unchanged. The result is an
+actual tug-of-war: not reeling lets the fish visibly drag the hook away
+(and drains tension); reeling pulls it back (and, if sustained too hard,
+raises tension toward a snap).
+
+`WorldViewModel.tick(deltaTime:)` merges the `.fishOnHook` and `.reeling`
+`HookPhase` switch cases into one block, since both now run the same
+reel-or-drift-plus-tension-update logic and differ only in which the
+player is currently doing. `resolveFightFailure(_:)` reacts to
+`FishFightController.FightFailure` (`.escaped` -> `HookPhase.hookInWater`,
+keep fishing; `.lineBreak` -> hook disabled, `HookPhase.idle`, recast
+required), mirroring the event-sending shape `reelHook`'s catch path
+already had.
+
+`LineTensionView` now shades a visible safe zone (`0.3...0.7`) on the bar
+and shows a `"LOSING FISH"` warning below `0.15` alongside the existing
+`"SNAPPING"` above `0.85`, instead of a single-direction green-to-red ramp
+that only made sense for a one-way failure mode.
+
+## Rationale
+
+Requested directly after the player noticed the tension bar never reset
+while idle and the fish escaped on a flat ~2.5s timer with no connection to
+the hook visibly getting away — "setau aku ikan nya bisa ngelawan dengan
+ngejauhin lagi distance si hook nya relatif ke rod" (as far as I know the
+fish should be able to fight back by pulling the hook's distance from the
+rod farther away). Re-reading `GAMEPLAY_ARCHITECTURE_V1.md`'s own line
+tension description confirmed the safe-zone design was the intended V1
+mechanic all along; ADR-023/024/026/027 had incrementally built two
+separate, simpler mechanisms (a flat escape timer, then a one-directional
+duration-based snap timer) instead. Collapsing them into the one
+mechanism the product doc already specifies removes both problems at once
+and gives the fish a real, visible presence in the fight rather than an
+invisible clock.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-027 --- Line Tension Tracks Fight Duration, Not Reel Speed
+
+## Decision
+
+`FishFightController.updateFighting(deltaTime:)` no longer takes a
+`reelSpeed` parameter or compares it to a per-species safe threshold.
+`lineTension` now accumulates purely from elapsed time spent actively
+reeling a hooked fish:
+
+```text
+lineTension += deltaTime / effectiveMaxFightDuration
+effectiveMaxFightDuration = max(2.0, baseMaxFightDuration(6.0) * (1 - resistance * 0.5))
+```
+
+Tension only advances while `WorldViewModel` is calling `updateFighting`,
+i.e. while `HookPhase == .reeling` and the player is actively reeling; it
+is untouched (frozen, not decayed) whenever reeling pauses, since the call
+site simply stops calling it (`pauseFight()` still resets the separate
+`biteExpireTimer` for the escape clock). There is no decay branch anymore.
+The three former constants (`baseSafeReelSpeed`, `baseTensionRiseRate`,
+`tensionDecayRate`) and their `effective*` computed properties were
+removed; `effectiveMaxFightDuration` is the only new one, still scaled by
+species `resistance` (stronger fish give less total fight time before the
+line snaps).
+
+This amends ADR-026's tension formula only. ADR-026's `FishSpecies`/
+`FishCatalog` data model, the `FishFightController` extraction, and the
+HUD (`LineTensionView`, catch results) are all unaffected — `lineTension`
+is still a `@Published 0...1 Float` and `WorldViewModel`'s call site
+still reacts to `updateFighting`'s bool return the same way.
+
+## Rationale
+
+Requested directly: the meter should reflect how long the player has been
+reeling, not how fast — "kalo user kelamaan nge reel, otomatis reel
+meternya bisa max dan line putus" (if the player reels for too long, the
+meter maxes out on its own and the line breaks). A duration budget per
+fight is simpler to read from the bar (it always climbs while you're
+reeling, so the bar's rate of climb answers "how much time do I have
+left") and simpler to reason about than a speed-conditioned accumulate/
+decay rule, while still giving stronger fish a shorter, harder fight via
+the same `resistance` modifier introduced in ADR-026.
+
+Status: Superseded by ADR-028, one task later — the duration-only formula
+this ADR introduced didn't address the player's actual request (a real
+safe-zone mechanic where the fish fights back via hook distance), so it
+was replaced rather than further amended. Left below for history.
+
+------------------------------------------------------------------------
+
 # ADR-026 --- FishSpecies Data Model and Continuous Line Tension
 
 ## Decision
@@ -123,7 +254,12 @@ that. Making pausing reset the escape timer (rather than a monotonic clock
 since the bite) keeps the rule simple: the fish is only lost through
 inaction, never through unlucky timing across a reel/pause boundary.
 
-Status: Accepted
+Status: Superseded by ADR-028. Both timers this ADR introduced
+(`biteExpireTimer` and `lineStrainTimer`) were replaced by the unified
+tension safe zone — the "sustained safe-zone mechanic" explicitly called
+out above as out of scope for this task turned out to be exactly what the
+product doc already specified and what the player expected. Left below for
+history.
 
 ------------------------------------------------------------------------
 
