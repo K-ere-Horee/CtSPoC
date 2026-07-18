@@ -173,7 +173,12 @@ final class RodViewModel: ObservableObject {
             motionInterpreter.profile.reelPose = averagePose(of: samples)
             let rates = samples.map(\.rotationRateMagnitude)
             let averageRate = rates.reduce(0, +) / Double(rates.count)
+            let peakRate = rates.max() ?? averageRate
             motionInterpreter.profile.reelRotationRate = max(0.2, averageRate * 0.45)
+            motionInterpreter.profile.reelFullRotationRate = max(
+                motionInterpreter.profile.reelRotationRate + 0.3,
+                peakRate
+            )
             motionInterpreter.profile.isComplete = true
             calibrationSamples.removeAll(keepingCapacity: true)
             calibrationSampleCount = 0

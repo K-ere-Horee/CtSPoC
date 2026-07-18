@@ -35,6 +35,8 @@ final class WorldViewModel: ObservableObject {
     private var simulationTask: Task<Void, Never>?
     private var hasStarted = false
 
+    let fishFight = FishFightController()
+
     init(
         transport: TransportHost
     ) {
@@ -177,14 +179,34 @@ final class WorldViewModel: ObservableObject {
         case .flying:
             simulateFlyingHook(deltaTime: deltaTime)
         case .hookInWater:
+            if fishFight.updateSearching(deltaTime: deltaTime) {
+                setHookPhase(.fishOnHook)
+                Task { await send(.fishingEvent(.fishBite)) }
+            }
             if rodState.action == .reeling {
                 reelHook(deltaTime: deltaTime)
+            }
+        case .fishOnHook:
+            if rodState.action == .reeling {
+                reelHook(deltaTime: deltaTime)
+            } else if fishFight.updateWaiting(deltaTime: deltaTime) {
+                setHookPhase(.hookInWater)
+                Task { await send(.fishingEvent(.fishEscaped)) }
             }
         case .reeling:
             if rodState.action == .reeling {
                 reelHook(deltaTime: deltaTime)
+                if fishFight.hasFishOnHook,
+                   fishFight.updateFighting(deltaTime: deltaTime, reelSpeed: rodState.reelSpeed) {
+                    hookEntity?.isEnabled = false
+                    setHookPhase(.idle)
+                    Task { await send(.fishingEvent(.lineBreak)) }
+                }
             } else {
-                setHookPhase(.hookInWater)
+                if fishFight.hasFishOnHook {
+                    fishFight.pauseFight()
+                }
+                setHookPhase(fishFight.hasFishOnHook ? .fishOnHook : .hookInWater)
             }
         }
     }
@@ -235,6 +257,7 @@ final class WorldViewModel: ObservableObject {
         guard hookEntity.position.y <= waterHeight else { return }
         hookEntity.position.y = waterHeight
         hookVelocity = .zero
+        fishFight.resetForNewCast()
         setHookPhase(.hookInWater)
         Task { await send(.fishingEvent(.hookSplash)) }
     }
@@ -246,7 +269,14 @@ final class WorldViewModel: ObservableObject {
         let distance = simd_length(directionToRod)
         guard distance > 0.12 else {
             hookEntity.isEnabled = false
+            let caughtFish = fishFight.hasFishOnHook
+            if caughtFish {
+                fishFight.resolveCatch()
+            }
             setHookPhase(.idle)
+            if caughtFish {
+                Task { await send(.fishingEvent(.catchFish)) }
+            }
             return
         }
 

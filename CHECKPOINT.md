@@ -1074,3 +1074,314 @@ and considered intentionally disabled rather than dead.
   `modelPitch`/`modelYaw`/`modelRoll`, or `orientationSlider` anywhere in the
   Swift sources.
 - Full Xcode/device build remains environment-blocked as in prior checkpoints.
+
+## Gameplay V1 - Fish Spawn (Fish A)
+
+Date: 2026-07-18.
+
+Design source: `GAMEPLAY_ARCHITECTURE_V1.md`, first implementation slice
+requested for the fish system, scoped to spawning a single fish entity.
+Recorded as ADR-022 in `ARCHITECTURE_DECISIONS.md`.
+
+### Scope
+
+- Added `World/World/Gameplay/FishManager.swift`, a `@MainActor` manager that
+  owns one `ModelEntity` named `"Fish A"`: spawn, despawn, and idle swim
+  motion. It is World-only; Rod and Shared are untouched.
+- The fish body is a `ModelEntity` sphere mesh (`generateSphere`) scaled
+  non-uniformly (`[1, 0.6, 2.2]`) to approximate an elongated fish shape,
+  since this RealityKit SDK has no capsule mesh primitive and no fish asset
+  exists yet. Matches the existing primitive-mesh convention used for the rod
+  arrow and hook.
+- `WorldViewModel` now holds `sceneRoot` (captured at the end of
+  `makeSceneEntity()`) and a `FishManager` instance created in `init()` with
+  the existing `waterHeight`.
+- `setHookPhase(_:)` calls `fishManager.spawn(in: sceneRoot)` when the phase
+  transitions from `.flying` to `.hookInWater`, and `fishManager.despawn()`
+  when the phase returns to `.idle`. `tick(deltaTime:)` calls
+  `fishManager.update(deltaTime:)` every frame; the update is a no-op while
+  no fish is spawned.
+- Fish A swims in a slow circular idle loop around a randomized point in the
+  water plane, chosen at spawn time, and orients to face its direction of
+  travel. There is no searching, fish interest, bite, fight, or species data
+  yet — those remain future work per `GAMEPLAY_ARCHITECTURE_V1.md`.
+
+### Documentation
+
+- `CLAUDE.md` project structure now lists
+  `World/World/Gameplay/FishManager.swift`.
+- Added ADR-022 to `ARCHITECTURE_DECISIONS.md` (Fish Spawn Ownership).
+- Added a "Fish Spawn (Fish A)" subsection to the "Gameplay Architecture V1"
+  section of `SOFTWARE_ARCHITECTURE_DOCUMENT.md`.
+
+### Verification
+
+- `xcrun swiftc -typecheck` on `FishManager.swift` standalone passes (no
+  Shared dependency; imports only `RealityKit` and `simd`).
+- Targeted Shared `swiftc -parse-as-library` compilation (per the standard
+  verification command set) passes.
+- `git diff --check` passes.
+- `WorldViewModel.swift` remains at 289 lines, under the 300-line ViewModel
+  guideline in `AGENTS.md`.
+- Full Xcode/device build and in-scene visual verification remain
+  environment-blocked, as in prior checkpoints; the fish spawn/despawn/swim
+  behavior has not been observed running.
+
+## Gameplay V1 - Hook Phase Fish Grab (Reverted Visual Fish)
+
+Date: 2026-07-18.
+
+Direction change from the prior entry, the same day: no visual fish in
+World for now. Priority is making `HookPhase` actually reflect the real
+game state (e.g. a fish grab) before any rendering. Recorded as ADR-023 in
+`ARCHITECTURE_DECISIONS.md`, which marks ADR-022 as superseded rather than
+deleting it.
+
+### Scope
+
+- Deleted `World/World/Gameplay/FishManager.swift` and its directory. No
+  fish entity, mesh, or RealityKit visual exists in World anymore.
+- Reverted `WorldViewModel`'s `sceneRoot`/`fishManager` wiring added for the
+  visual slice.
+- Added `HookPhase.fishOnHook` in
+  `Shared/Sources/Shared/Models/HookPhase.swift`, between `hookInWater` and
+  `reeling`. `allowsReeling` now includes `.fishOnHook`.
+- `WorldViewModel` now tracks fish attachment as private simulation state
+  (`biteTimer: Float`, `hasFishOnHook: Bool`), not as part of `HookPhase`
+  itself:
+  - `updateBiteTimer(deltaTime:)` runs every tick while `.hookInWater`;
+    on expiry (`biteTimer <= 0`) it sets `hasFishOnHook = true`, transitions
+    to `.fishOnHook`, and sends `FishingEvent.fishBite`.
+  - `tick(deltaTime:)` gained a `.fishOnHook` case (reels like
+    `.hookInWater`) and the `.reeling` case now returns to `.fishOnHook`
+    instead of unconditionally `.hookInWater` when `hasFishOnHook` is true.
+  - `simulateFlyingHook()` resets `hasFishOnHook = false` and
+    `biteTimer = Float.random(in: 1.5...4.0)` on every splash, so each cast
+    gets an independent, randomized chance to hook a fish.
+  - `reelHook(deltaTime:)` sends `FishingEvent.catchFish` only when the hook
+    reaches the rod with `hasFishOnHook == true`, then clears the flag; an
+    empty retrieve from `.hookInWater` (never bitten) sends no event.
+- `FishingEvent.fishBite` and `.catchFish` were already defined and already
+  handled by `Rod/Rod/Haptics/FishingHaptics.swift`, but World never sent
+  either one before this change — this is their first real use.
+- Explicitly not implemented yet: fish interest (as distinct from bite),
+  line tension, escape (`fishEscaped`/`lineBreak` remain unsent), species
+  data, and any visual/RealityKit representation of a fish. A bite always
+  succeeds if reeled in.
+
+### Documentation
+
+- `CLAUDE.md` project structure reverted (no `Gameplay/FishManager.swift`
+  entry).
+- `ARCHITECTURE_DECISIONS.md`: ADR-022 marked Superseded by new ADR-023
+  (Hook Phase Reflects a Real Fish Grab, No Visual Fish Yet). Neither ADR
+  entry was deleted.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: replaced the "Fish Spawn (Fish A)"
+  subsection with "Hook Phase Fish Grab (No Visual Fish Yet)" describing the
+  new state machine.
+
+### Verification
+
+- Targeted Shared `swiftc -parse-as-library` compilation, expanded to
+  include `FishingEvent.swift`, `NetworkMessage.swift`, `ConnectionState.swift`,
+  `SpatialStatus.swift`, and `Transport.swift` alongside the standard set,
+  passes with no errors.
+- `grep` confirms `WorldViewModel.swift`'s `switch hookPhase` is the only
+  exhaustive switch over `HookPhase` in the repository, and it already
+  handles `.fishOnHook`.
+- `git diff --check` passes.
+- Full Xcode/device build and in-scene/haptic runtime verification remain
+  environment-blocked; the bite/catch event flow and Rod haptic response
+  have not been observed running end to end.
+
+## Gameplay V1 - Escape/Line-Break Haptics and Dynamic Reel Speed
+
+Date: 2026-07-18.
+
+Confirmed on-device: hook/fish-bite/reel now work end to end (prior
+checkpoint entry's flow was validated). This entry covers two follow-ups
+raised from that test: (1) `fishEscaped`/`lineBreak` haptics were defined
+but never triggered by any real game state, and (2) `RodState.reelSpeed`
+read as a constant 1.000 or 0.000 instead of scaling with how fast the
+player physically rotates the controller. Recorded as ADR-024 and ADR-025
+in `ARCHITECTURE_DECISIONS.md`.
+
+### Fish Escape and Line Break (ADR-024)
+
+- `World/World/ViewModels/WorldViewModel.swift` gained `biteExpireTimer`,
+  `lineStrainTimer`, and constants `biteExpireDuration` (2.5s),
+  `lineBreakReelThreshold` (0.9 reel speed), `lineBreakSustainDuration`
+  (1.2s).
+- `updateBiteExpiry(deltaTime:)` runs while `.fishOnHook` and the player is
+  not reeling; on expiry it clears `hasFishOnHook`, returns `HookPhase` to
+  `.hookInWater` with a fresh `biteTimer`, and sends
+  `FishingEvent.fishEscaped`.
+- `updateLineStrain(deltaTime:)` runs while `.reeling` with
+  `hasFishOnHook == true`; it accumulates only while
+  `rodState.reelSpeed >= lineBreakReelThreshold` and resets to zero
+  otherwise. Sustaining the threshold for `lineBreakSustainDuration`
+  disables the hook, clears `hasFishOnHook`, returns `HookPhase` to `.idle`,
+  and sends `FishingEvent.lineBreak`.
+- Pausing reeling mid-fight (the `.reeling` case's `else` branch) now resets
+  `biteExpireTimer` to `biteExpireDuration` before returning to
+  `.fishOnHook`, so the escape clock doesn't keep draining silently through
+  a reel/pause boundary.
+- `simulateFlyingHook()` resets both new timers to zero alongside the
+  existing `hasFishOnHook`/`biteTimer` reset on every splash.
+- `Rod/Rod/Haptics/HapticManager.swift` gained `fishEscaped()`, a fading
+  three-pulse pattern distinct from the sharp single-transient
+  `lineBreak()`. `Rod/Rod/Haptics/FishingHaptics.swift`'s `handle(_:)` no
+  longer aliases `.fishEscaped` to `.lineBreak`'s haptic; each case now maps
+  to its own method.
+
+### Dynamic Reel Speed (ADR-025)
+
+- Root cause: `RodMotionInterpreter`'s `.reel` case computed
+  `speed = min(1, rotationRateMagnitude / max(profile.reelRotationRate, 1))`.
+  `reelRotationRate` (the calibrated minimum threshold) is almost always
+  under 1.0, so `max(_, 1)` floored the denominator at a near-constant `1`,
+  and real reeling motion easily exceeds 1 rad/s — so `speed` saturated to
+  `1.0` almost immediately past the detection threshold.
+- `Shared/Sources/Shared/Gameplay/MotionProfile.swift`: added
+  `reelFullRotationRate: Double` alongside the existing `reelRotationRate`.
+- `Shared/Sources/Shared/Gameplay/RodMotionInterpreter.swift`: `.reel` now
+  computes
+  `speed = clamp((rotationRateMagnitude - reelRotationRate) / (reelFullRotationRate - reelRotationRate), 0...1)`,
+  a continuous ramp instead of a saturating ratio.
+- `Rod/Rod/ViewModel/RodViewModel.swift`'s reel-calibration step
+  (`calibrateMotion()`, `.reel` branch) now also records `peakRate` (the max
+  rotation rate magnitude across the demonstrated reel samples, not just
+  the average) and sets
+  `reelFullRotationRate = max(reelRotationRate + 0.3, peakRate)`. The
+  player's own demonstrated peak becomes the 1.0 reference instead of an
+  arbitrary constant.
+- `MotionProfile` is `Codable` and persisted via `UserDefaults`;
+  `RodViewModel.loadMotionProfile()` already uses `try?` around decode, so a
+  profile saved before this change safely falls back to requiring
+  recalibration rather than crashing.
+
+### Verification
+
+- Targeted Shared `swiftc -parse-as-library` compilation (standard set plus
+  `FishingEvent`, `NetworkMessage`, `ConnectionState`, `SpatialStatus`,
+  `Transport`) passes.
+- Built `Shared` as an iOS-simulator module
+  (`-sdk iphonesimulator -target arm64-apple-ios17.0-simulator`) and used it
+  to `swiftc -typecheck` `Rod/Rod/Haptics/FishingHaptics.swift`,
+  `Rod/Rod/Haptics/HapticManager.swift`, and the full
+  `Rod/Rod/ViewModel/RodViewModel.swift` alongside its sibling sensor/
+  transport files (`MotionManager.swift`, `NearbyInteractionManager.swift`,
+  `TransportClient.swift`) — all pass with no errors.
+- `git diff --check` passes.
+- Full Xcode/device build remains environment-blocked; the escape/
+  line-break event flow, the two new haptic patterns, and the dynamic reel
+  speed feel have not been observed running on hardware yet.
+
+## Gameplay V1 - FishSpecies Model, Continuous Line Tension, Catch HUD
+
+Date: 2026-07-18.
+
+Follow-up requested after confirming the escape/line-break/reel-speed work:
+(1) a real 0...1 tension bar instead of the prior binary sustained-threshold
+timer, (2) World HUD showing catch success and running catch count, and (3)
+fish separated into their own data model so species can carry base
+modifiers and be swapped for real assets later. Recorded as ADR-026 in
+`ARCHITECTURE_DECISIONS.md`.
+
+### FishSpecies Data Model
+
+- Added `Shared/Sources/Shared/Models/FishSpecies.swift`: `Codable`,
+  `Sendable`, `Identifiable` struct (`id`, `name`, `weightRange`,
+  `lengthRange`, `resistance: Double` 0...1, `value: Int`), plus
+  `FishSpeciesRange` (a `Codable` min/max pair — `ClosedRange` does not
+  synthesize `Codable`, so it can't be used directly in a `Codable` model).
+  No mesh, asset name, or RealityKit reference; Shared still imports only
+  Foundation.
+- Added `World/World/Gameplay/FishCatalog.swift`: the World-owned content
+  list (`static let all: [FishSpecies]`, currently one entry, `"fish_a"` /
+  "Fish A") and `randomSpecies()`. Adding a species means appending one
+  entry here; nothing else in the fight simulation is species-specific
+  code, only data.
+
+### FishFightController (Extracted From WorldViewModel)
+
+- Added `World/World/Gameplay/FishFightController.swift`, a `@MainActor`
+  `ObservableObject` owning all fish-fight state: `hasFishOnHook`,
+  `lineTension: Float` (`@Published`, 0...1), `caughtCount`,
+  `lastCatchResult: FishCatchResult?`, plus the private bite/escape timers
+  and the currently-hooked species/weight/length.
+- `WorldViewModel.tick(deltaTime:)` now calls into it instead of managing
+  bite/escape/tension timers inline:
+  `updateSearching(deltaTime:)`, `updateWaiting(deltaTime:)`,
+  `pauseFight()`, `updateFighting(deltaTime:reelSpeed:)`, `resolveCatch()`,
+  `resetForNewCast()`. `WorldViewModel` still owns `HookPhase` transitions,
+  the hook entity, and sending `FishingEvent`; the controller has no
+  transport, entity, or `HookPhase` knowledge.
+- `lineTension` replaces the prior `lineStrainTimer`/threshold/sustain-
+  duration mechanic (ADR-024) with a continuous value: it rises while
+  reeling above a per-species safe reel speed
+  (`effectiveSafeReelSpeed`) at a per-species rate
+  (`effectiveTensionRiseRate`), decays otherwise, and breaks the line at
+  1.0. Species `resistance` also scales the bite grace period
+  (`effectiveBiteExpireDuration`) — a stronger fish gives less time to
+  react to a bite and snaps the line faster under strain.
+- `World/World/Gameplay/FishCatchResult.swift`: a small, non-`Codable`,
+  World-only struct (`speciesName`, `weight`, `length`,
+  `outcome: .caught/.escaped/.lineBreak`) used purely for HUD display, set
+  by `FishFightController` whenever a bite resolves.
+
+### World HUD
+
+- Added `World/World/Views/LineTensionView.swift`: a green/yellow/red
+  0...1 bar bound to `fishFight.lineTension`, visible whenever
+  `fishFight.hasFishOnHook`; shows a "SNAPPING" label past 0.8.
+- `World/World/ContentView.swift` now constructs `WorldViewModel` in an
+  explicit `init()` and separately observes `viewModel.fishFight` as its
+  own `@ObservedObject`, so `FishFightController`'s `@Published` state
+  drives the view independently of `WorldViewModel`'s. Added a "Catch
+  Results" `GroupBox` showing `fishFight.caughtCount` and the last resolved
+  outcome (species name, weight in kg, length in cm, and
+  caught/escaped/line-broke label).
+
+### Documentation
+
+- `CLAUDE.md`: `Shared/Models` note now mentions `FishSpecies`;
+  `World/World` structure now lists `Gameplay/` (FishFightController,
+  FishCatalog, FishCatchResult) and `LineTensionView.swift`.
+- `ARCHITECTURE_DECISIONS.md`: added ADR-026.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: replaced the stale
+  `WorldViewModel`-owned bite-timer description (now moved) and the ADR-024
+  binary-timer section with a single "Fish Species and Fight Simulation"
+  section describing the current design.
+
+### Unrelated Concurrent Change Observed
+
+- While this task was in progress, `Shared/Sources/Shared/Models/` was
+  reorganized into subfolders (`Device/`, `Gameplay/`, `Rod/`, `Spatial/`)
+  outside of this session's edits (some of it already `git add`-staged).
+  This was left untouched — it did not originate from this task, and
+  Swift Package Manager does not care about subfolder layout within a
+  target's source directory, so it does not affect anything above.
+  `FishSpecies.swift` was added directly to `Shared/Sources/Shared/Models/`
+  (not into any of those subfolders) and remains there.
+
+### Verification
+
+- Rebuilt the Shared package as a macOS module and as an iOS-simulator
+  module directly from `find Sources/Shared -name "*.swift"` (so the
+  in-flight subfolder reorganization above didn't require hardcoded
+  paths); both build cleanly.
+- `xcrun swiftc -typecheck -target arm64-apple-macosx15.0` against the
+  macOS Shared module for `WorldViewModel.swift`, `ContentView.swift`,
+  `FishCatalog.swift`, `FishCatchResult.swift`, `FishFightController.swift`,
+  `LineTensionView.swift`, `CastMeterView.swift`, and `TransportHost.swift`
+  passes with no errors (one pre-existing, unrelated warning about an
+  unused `controllerEntity` binding in `launchHook(solution:)`).
+- `xcrun swiftc -typecheck -sdk iphonesimulator -target
+  arm64-apple-ios17.0-simulator` against the iOS Shared module for
+  `RodViewModel.swift`, `FishingHaptics.swift`, `HapticManager.swift`,
+  `MotionManager.swift`, `NearbyInteractionManager.swift`, and
+  `TransportClient.swift` passes with no errors.
+- `git diff --check` passes.
+- Full Xcode/device build and the actual on-screen tension bar/catch HUD
+  have not been observed running yet.

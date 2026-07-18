@@ -19,7 +19,7 @@ CtSPoC/
 ├── Shared/
 │   ├── Package.swift
 │   └── Sources/Shared/
-│       ├── Models/       # RodState, CastSolution, HookPhase, network contracts
+│       ├── Models/      # RodState, CastSolution, HookPhase, FishSpecies, network contracts
 │       ├── Gameplay/    # MotionProfile, RodMotionInterpreter, CastResolver
 │       ├── Debug/       # motion decisions, samples, recorder
 │       ├── Protocols/   # Transport protocol
@@ -34,8 +34,9 @@ CtSPoC/
 └── World/World/
     ├── WorldApp.swift / ContentView.swift
     ├── ViewModels/WorldViewModel.swift
+    ├── Gameplay/        # FishFightController, FishCatalog, FishCatchResult
     ├── Transport/       # Multipeer host
-    ├── Views/CastMeterView.swift
+    ├── Views/CastMeterView.swift, LineTensionView.swift
     └── Assets/Rod.usdz
 ```
 

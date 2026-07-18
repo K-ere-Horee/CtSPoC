@@ -11,6 +11,171 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-026 --- FishSpecies Data Model and Continuous Line Tension
+
+## Decision
+
+Two related changes replace ADR-024's binary line-break timer with a real
+tension meter and separate fish data from fight logic:
+
+**`FishSpecies` (Shared).** Added
+`Shared/Sources/Shared/Models/FishSpecies.swift`: a `Codable` data-only
+struct (`id`, `name`, `weightRange`, `lengthRange`, `resistance` 0...1,
+`value`) plus `FishSpeciesRange` (a `Codable` replacement for `ClosedRange`,
+which does not synthesize `Codable`). It carries no mesh, asset name, or
+RealityKit reference — Shared still never imports rendering frameworks. The
+World-owned content list (`World/World/Gameplay/FishCatalog.swift`, one
+entry today: `"fish_a"`) is where species are defined and tuned; asset
+wiring is deferred until 3D fish assets exist.
+
+**Continuous line tension.** `FishFightController` (new,
+`World/World/Gameplay/FishFightController.swift`, an `ObservableObject`)
+replaces the boolean `lineStrainTimer`/threshold/sustain-duration mechanic
+with a `lineTension: Float` (0...1) that rises while reeling above a
+per-species "safe" reel speed and decays otherwise, breaking the line at
+1.0. `biteTimer`/`hasFishOnHook`/`biteExpireTimer`/catch bookkeeping also
+moved out of `WorldViewModel` into this controller, which
+`WorldViewModel.tick(deltaTime:)` now drives through a small explicit
+interface (`updateSearching`, `updateWaiting`, `pauseFight`,
+`updateFighting`, `resolveCatch`, `resetForNewCast`); `WorldViewModel`
+still owns `HookPhase` transitions and sending `FishingEvent` over
+transport, since fight state itself has no transport or hook-entity
+knowledge. `WorldViewModel` also gained `caughtCount` and
+`lastCatchResult: FishCatchResult?` (`World/World/Gameplay/
+FishCatchResult.swift`) for HUD display.
+
+Species `resistance` now scales three constants: bite grace period
+(`effectiveBiteExpireDuration`), the safe reel speed before tension rises
+(`effectiveSafeReelSpeed`), and the tension rise rate
+(`effectiveTensionRiseRate`) — a stronger fish gives less reaction time and
+snaps the line faster under strain.
+
+**World HUD additions.** `World/World/Views/LineTensionView.swift` renders
+`fishFight.lineTension` as a green/yellow/red 0...1 bar, visible whenever
+`fishFight.hasFishOnHook`. `ContentView` adds a "Catch Results" section
+showing `fishFight.caughtCount` and the last resolved outcome (species
+name, weight, length, caught/escaped/line-broke). `ContentView` now
+observes `WorldViewModel.fishFight` directly as a second `@ObservedObject`
+(constructed in `init()` from the same instance `WorldViewModel` owns), so
+its `@Published` fight state drives the HUD independently of
+`WorldViewModel`'s own `@Published` properties.
+
+## Rationale
+
+A binary "sustained fast reel for N seconds" rule cannot be shown to the
+player as a meaningful 0...1 bar — it is just off or (after N seconds) on.
+A continuously accumulating/decaying value is both a more honest fishing-
+game mechanic and the only thing a tension bar can actually visualize.
+Moving fish/fight state into `FishFightController` was necessary before
+adding it: `WorldViewModel` was already at the file-size guideline in
+`AGENTS.md` after ADR-023/024, and fish bite/escape/tension/catch
+bookkeeping is a cohesive unit of behavior that does not need
+`WorldViewModel`'s transport, hook-entity, or `HookPhase` internals to
+operate — it only needs `deltaTime` and `reelSpeed` in, and yes/no
+transition signals out. Splitting `FishSpecies` (data) from `FishCatalog`
+(World-owned content) from `FishFightController` (simulation) from
+`FishCatchResult` (HUD projection) keeps each piece swappable
+independently — the stated reason for the split is that fish will soon get
+real assets and more species, and the data model must not assume a
+particular mesh or rendering approach.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-024 --- Escape Timer and Reel-Speed Line Break
+
+## Decision
+
+Building on ADR-023's `fishOnHook` state, World now implements minimal line
+tension without a full tension bar, using two independent timers owned by
+`WorldViewModel`:
+
+-   `biteExpireTimer` counts down while `.fishOnHook` and the player is not
+    reeling. On expiry the fish escapes: `hasFishOnHook` clears,
+    `HookPhase` returns to `.hookInWater` (a fresh `biteTimer` starts, so the
+    hook keeps fishing rather than forcing a recast), and
+    `FishingEvent.fishEscaped` sends. Pausing mid-fight resets this timer
+    to `biteExpireDuration` (2.5s) rather than continuing to drain it, so a
+    deliberate pause and an unaddressed bite are treated the same way.
+-   `lineStrainTimer` accumulates only while actively reeling with
+    `hasFishOnHook == true` and `RodState.reelSpeed` at or above
+    `lineBreakReelThreshold` (0.9). Sustaining that for
+    `lineBreakSustainDuration` (1.2s) snaps the line: the hook disables,
+    `hasFishOnHook` clears, `HookPhase` returns to `.idle` (the line is
+    gone; a new cast is required), and `FishingEvent.lineBreak` sends.
+    Dropping below the threshold at any point resets the timer to zero.
+
+`FishingEvent.fishEscaped` and `.lineBreak` were previously defined and
+already handled by `Rod/Rod/Haptics/FishingHaptics.swift`, but World never
+sent either one before this change. `HapticManager` gained a distinct
+`fishEscaped()` pattern (a fading three-pulse taper) instead of aliasing to
+the sharp single-transient `lineBreak()` pattern, so the two failure modes
+feel different to the player.
+
+## Rationale
+
+A real tension bar (per `GAMEPLAY_ARCHITECTURE_V1.md`) needs UI, a
+resistance-per-species model, and a sustained safe-zone mechanic that is out
+of scope for this task. Two independent timers give the same core pressure
+—react to a bite in time, then don't reel too aggressively—without any of
+that. Making pausing reset the escape timer (rather than a monotonic clock
+since the bite) keeps the rule simple: the fish is only lost through
+inaction, never through unlucky timing across a reel/pause boundary.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-025 --- Reel Speed Scales Continuously With Rotation Rate
+
+## Decision
+
+`RodMotionInterpreter`'s `.reel` classification previously computed
+`reelSpeed` as
+`min(1, input.rotationRateMagnitude / max(profile.reelRotationRate, 1))`.
+Because `profile.reelRotationRate` (the calibrated minimum reel-detection
+threshold, `max(0.2, averageRate * 0.45)`) is almost always well under 1.0,
+the `max(_, 1)` floor made the denominator effectively constant at `1`, and
+real device rotation rates during an actual reeling motion routinely exceed
+1 rad/s. `reelSpeed` therefore saturated to `1.0` almost immediately after
+crossing the detection threshold, reading as binary 0/1 rather than a
+dynamic value.
+
+`MotionProfile` gains `reelFullRotationRate`, captured during reel
+calibration in `RodViewModel.calibrateMotion()` as
+`max(reelRotationRate + 0.3, peakRate)`, where `peakRate` is the maximum
+rotation rate magnitude observed across the player's demonstrated reel
+samples (previously only the average was used). `reelSpeed` is now a linear
+ramp between the two calibrated references:
+
+```text
+speed = clamp((rotationRateMagnitude - reelRotationRate)
+              / (reelFullRotationRate - reelRotationRate), 0...1)
+```
+
+`reelRotationRate` remains 0 speed (the minimum motion still recognized as
+reeling); `reelFullRotationRate` (the player's own demonstrated peak) is
+1.0. Spinning faster than that still clamps at 1.0; spinning at the
+threshold reads near 0. `MotionProfile` is Codable and persisted to
+`UserDefaults`; `RodViewModel.loadMotionProfile()` already discards
+undecodable stored profiles with `try?`, so profiles saved before this
+change safely fall back to requiring recalibration rather than crashing.
+
+## Rationale
+
+The player-reported symptom was reel speed reading constant at 1.000 or
+0.000 instead of tracking how fast they physically spin the controller.
+The fix keeps the existing per-player calibration model (Rod owns sensing
+and motion interpretation per `AGENTS.md`) but uses the player's own
+demonstrated range as both ends of the scale, instead of an arbitrary
+floor that happened to make the scale collapse for most real rotation
+rates.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
 # ADR-001 --- World/Rod Separation
 
 ## Decision
@@ -30,6 +195,94 @@ Benefits:
 -   Independent deployment
 -   Cleaner architecture
 -   Reusable controller
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-022 --- Fish Spawn Ownership (Fish A)
+
+## Decision
+
+Fish spawning is a World-only concern with no Shared or Rod involvement.
+`World/World/Gameplay/FishManager.swift` owns a single fish entity's spawn,
+despawn, and idle swim motion. It is instantiated and driven by
+`WorldViewModel`, keeping `WorldViewModel` itself under the ViewModel file
+size guideline.
+
+Fish A spawns when `HookPhase` transitions from `.flying` to `.hookInWater`
+and despawns when the phase returns to `.idle`. It has no interest, bite, or
+fight behavior yet; it only exists and swims in a slow idle loop near a
+randomized point in the water. Fish selection, species data, resistance, and
+the searching/interested/bite state machine described in
+`GAMEPLAY_ARCHITECTURE_V1.md` remain unimplemented and are deferred to a
+future task.
+
+The fish body uses a non-uniformly scaled sphere primitive, matching the
+existing primitive-mesh approach used for the rod arrow and hook (no capsule
+mesh primitive is available on this RealityKit SDK, and no fish asset exists
+yet).
+
+## Rationale
+
+Keeping fish spawn logic in a dedicated manager preserves `WorldViewModel`'s
+role as a coordinator rather than a growing gameplay implementation, and
+keeps the fish system isolated so future searching/interest/bite/fight work
+can extend `FishManager` without touching hook or controller logic.
+
+Status: Superseded by ADR-023. Direction changed the same day: no visual
+fish entity for now, in favor of getting the `HookPhase` state machine
+itself to reflect a real fish grab first. `FishManager.swift` was removed.
+
+------------------------------------------------------------------------
+
+# ADR-023 --- Hook Phase Reflects a Real Fish Grab, No Visual Fish Yet
+
+## Decision
+
+Before any fish is rendered in World, `HookPhase` (Shared) must accurately
+represent whether a fish is actually attached to the hook, so that gameplay
+state and Rod haptics are truthful rather than cosmetic. This reverses
+ADR-022's visual-first approach.
+
+`HookPhase` gains a `fishOnHook` case between `hookInWater` and `reeling`:
+
+```text
+idle -> flying -> hookInWater -> fishOnHook -> reeling -> idle
+                (searching)      (bite)       (fight)   (catch)
+```
+
+`WorldViewModel` tracks the attachment as private simulation state, not as
+part of `HookPhase` itself:
+
+-   `biteTimer` counts down while `hookInWater` (searching). On expiry,
+    `hasFishOnHook` becomes `true`, the phase moves to `.fishOnHook`, and
+    `FishingEvent.fishBite` is sent — the first real use of that existing
+    but previously unsent event.
+-   Reeling is allowed from `hookInWater` (retrieve an empty hook, no event)
+    or from `fishOnHook`/`reeling` (retrieve a hooked fish).
+-   When the hook reaches the rod, `FishingEvent.catchFish` is sent only if
+    `hasFishOnHook` was true — also a first real use of an existing,
+    previously unsent event.
+-   `biteTimer` and `hasFishOnHook` reset on every new splash
+    (`simulateFlyingHook`), so each cast gets an independent chance to hook
+    a fish.
+
+No fish entity, mesh, or RealityKit visual exists yet. No searching/interest
+distinction, line tension, or escape logic exists yet — a bite always
+succeeds if reeled in. Those remain future work per
+`GAMEPLAY_ARCHITECTURE_V1.md`.
+
+## Rationale
+
+The gameplay loop and Rod haptics (`FishingHaptics.handle(_:)` already
+switches on every `FishingEvent` case, including `fishBite` and
+`catchFish`) were built against events that World never actually sent.
+Rendering a fish in the scene before the underlying state machine reflects
+a real bite/catch would make the visual a lie layered on top of a
+non-functional loop. Fixing `HookPhase`/`FishingEvent` truthfulness first
+means any future visual or haptic work has a correct state machine to
+attach to.
 
 Status: Accepted
 

@@ -10,9 +10,14 @@ import Shared
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var viewModel = WorldViewModel(
-        transport: TransportHost()
-    )
+    @StateObject private var viewModel: WorldViewModel
+    @ObservedObject private var fishFight: FishFightController
+
+    init() {
+        let viewModel = WorldViewModel(transport: TransportHost())
+        _viewModel = StateObject(wrappedValue: viewModel)
+        _fishFight = ObservedObject(wrappedValue: viewModel.fishFight)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -44,6 +49,38 @@ struct ContentView: View {
                     row("Pitch", format(viewModel.rodState.pitch))
                     row("Roll", format(viewModel.rodState.roll))
                     row("Yaw", format(viewModel.rodState.yaw))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            LineTensionView(
+                isFighting: fishFight.hasFishOnHook,
+                tension: fishFight.lineTension
+            )
+
+            GroupBox("Catch Results") {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Caught")
+                        Spacer()
+                        Text("\(fishFight.caughtCount)")
+                            .bold()
+                    }
+
+                    if let result = fishFight.lastCatchResult {
+                        HStack {
+                            Text(result.outcome.rawValue)
+                                .foregroundStyle(result.outcome == .caught ? .green : .secondary)
+                            Spacer()
+                            Text(String(format: "%@ \u{2022} %.1f kg \u{2022} %.0f cm", result.speciesName, result.weight, result.length))
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.caption)
+                    } else {
+                        Text("No catch attempts yet")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }

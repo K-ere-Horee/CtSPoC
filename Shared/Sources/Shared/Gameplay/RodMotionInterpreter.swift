@@ -183,7 +183,9 @@ public final class RodMotionInterpreter {
         case .reel:
             previousClassification = classification
             guard input.rotationRateMagnitude >= profile.reelRotationRate else { break }
-            let speed = Float(min(1, input.rotationRateMagnitude / max(profile.reelRotationRate, 1)))
+            let minRate = profile.reelRotationRate
+            let maxRate = max(profile.reelFullRotationRate, minRate + 0.05)
+            let speed = Float(min(1, max(0, (input.rotationRateMagnitude - minRate) / (maxRate - minRate))))
             previousCastPhase = .idle
             return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .reeling, action: .reeling, reelSpeed: speed, castPower: 0, debug: debug)
         case .idle:

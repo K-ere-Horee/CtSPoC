@@ -76,6 +76,7 @@ public struct MotionProfile: Codable, Sendable, Equatable {
     public var castAcceleration: Double
     public var castAccelerationSign: Double
     public var reelRotationRate: Double
+    public var reelFullRotationRate: Double
     public var castDuration: TimeInterval
 
     public init(
@@ -87,6 +88,7 @@ public struct MotionProfile: Codable, Sendable, Equatable {
         castAcceleration: Double = 0,
         castAccelerationSign: Double = 1,
         reelRotationRate: Double = 0,
+        reelFullRotationRate: Double = 0,
         castDuration: TimeInterval = 0.25
     ) {
         self.isComplete = isComplete
@@ -97,6 +99,7 @@ public struct MotionProfile: Codable, Sendable, Equatable {
         self.castAcceleration = castAcceleration
         self.castAccelerationSign = castAccelerationSign
         self.reelRotationRate = reelRotationRate
+        self.reelFullRotationRate = reelFullRotationRate
         self.castDuration = castDuration
     }
 }
