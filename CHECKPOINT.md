@@ -3060,3 +3060,69 @@ clearing on success/reconnect), `World/World/ViewModels/WorldViewModel.swift` (`
 clearing, `hookPhase` resync on reconnect), `World/World/ContentView.swift` (FPS overlay, simplified
 `RealityView` to a `make`-only initializer), `Rod/Rod/ContentView.swift` (re-enabled
 `MotionDebugView` under Developer Details).
+
+## Merge feat/asset-integration into dev
+
+Date: 2026-07-18.
+
+Requested directly: "coba cek branch feat/asset-integration deh... Aku
+berencana buat nge pull dan merge branch itu ke dev di local sekarang,
+tapi di Xcode branch itu ga muncul" — the branch existed fine on
+`origin` and fetched cleanly via CLI, so the "not showing in Xcode" issue
+was Xcode's own Source Control view not having refreshed, not a repo
+problem. The player then ran `git merge origin/feat/asset-integration`
+manually before this entry, which auto-merged everything except
+`CHECKPOINT.md` (a real content conflict, both branches having appended
+entries near the same point in this append-only log); asked to finish
+resolving it.
+
+### Conflict Resolution
+
+`CHECKPOINT.md`'s single conflict block (originally lines 1687-3065)
+covered every entry from "Gameplay V1 - Resistance Scales With Rolled
+Fish Size" (ADR-030) through "Gameplay V1 - Cast Power Weighted by
+Backswing Distance" (ADR-032) on the `dev` (`HEAD`) side, against the
+"Asset-Integration Environment, First-Person Camera, and Rod Motion
+Fixes" entry on the `feat/asset-integration` side. Both sides were kept,
+concatenated in their original order (`HEAD` entries first, then the
+asset-integration entry) — no entry was ever in genuine conflict; the
+markers existed purely because both branches appended near the same
+byte offset. Nothing else conflicted: `git status` showed every other
+touched path (`WorldViewModel.swift`, `ContentView.swift`,
+`ARCHITECTURE_DECISIONS.md`, `AGENTS.md`, `SPATIAL_CONTROLLER_DOCUMENT.md`,
+Rod's `ContentView.swift`/`TransportClient.swift`/`RodViewModel.swift`,
+`Shared/Package.swift`, `NetworkMessage.swift`, both `.xcodeproj/
+project.pbxproj` files, every new `World/World/Assets/Environment/*`
+asset, the new `World/World/Reality/` files, and the removed old
+`World/World/Assets/Rod.usdz`) already three-way-merged cleanly before
+this session touched anything.
+
+### Verification
+
+`xcodebuild -workspace CtSPoC.xcworkspace -scheme World -destination
+'platform=macOS' build` failed on a pre-existing, unrelated signing gap
+("No signing certificate 'Mac Development' found") — not a code issue.
+Fell back to the same `swiftc`-based module verification used throughout
+this session, bumped to the platforms `Shared/Package.swift` now
+declares (`.iOS(.v26)`/`.macOS(.v26)`, up from `.v14`/`.v17` in earlier
+entries):
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an
+  `arm64-apple-ios26.0-simulator` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors.
+- `xcrun swiftc -typecheck` against the macOS module for every
+  `World/World` Swift file, including the new `Reality/
+  EnvironmentSceneBuilder.swift`, `RodRigController.swift`,
+  `WaterMaterial.swift` (`WaterShader.metal` is not Swift and wasn't
+  typechecked this way) — no errors.
+- `xcrun swiftc -typecheck` against the iOS-simulator module for every
+  `Rod/Rod` Swift file — no errors.
+- `git diff --cached --check` passed before committing.
+- Merge commit created with `git commit --no-edit` (kept git's own
+  `Merge remote-tracking branch 'refs/remotes/origin/feat/asset-
+  integration'` message); `dev` is now 10 commits ahead of `origin/dev`,
+  not yet pushed as of this entry.
+- Not run: the actual Xcode build/signing path, and no live
+  device/simulator session with the new environment assets, water
+  shader, or rod rig — this merge has only been verified to typecheck,
+  not to run.
