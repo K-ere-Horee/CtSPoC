@@ -1,0 +1,12 @@
+# Xcode user-specific state (breakpoints, window layout, scheme selection).
+xcuserdata/
+*.xcuserstate
+
+# Build products and package caches.
+DerivedData/
+.build/
+.swiftpm/
+*.xcarchive
+
+# macOS
+.DS_Store

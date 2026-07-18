@@ -11,7 +11,8 @@ import SwiftUI
 struct WorldApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
         }
+        .defaultSize(width: 1280, height: 800)
     }
 }

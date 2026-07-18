@@ -6,5 +6,12 @@
 	<array>
 		<string>_cts-poc._tcp</string>
 	</array>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Fredoka-Regular.ttf</string>
+		<string>Fredoka-Bold.ttf</string>
+	</array>
+	<key>ATSApplicationFontsPath</key>
+	<string>.</string>
 </dict>
 </plist>

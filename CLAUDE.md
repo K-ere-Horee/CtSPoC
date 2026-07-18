@@ -10,7 +10,7 @@ Never delete previous checkpoint entries.
 ```text
 CtSPoC/
 ├── AGENTS.md / SESSION_MEMORY.md / CHECKPOINT.md
-├── Architecture/
+├── Architecture /             # NOTE: literal trailing space in this dir name
 │   ├── ARCHITECTURE_DECISIONS.md
 │   ├── SOFTWARE_ARCHITECTURE_DOCUMENT.md
 │   └── SPATIAL_CONTROLLER_DOCUMENT.md
@@ -19,7 +19,8 @@ CtSPoC/
 ├── Shared/
 │   ├── Package.swift
 │   └── Sources/Shared/
-│       ├── Models/      # RodState, CastSolution, HookPhase, FishSpecies, network contracts
+│       ├── Models/      # Device/, Gameplay/, Rod/, Spatial/ subfolders — RodState,
+│       │                # CastSolution, HookPhase, FishSpecies, network contracts
 │       ├── Gameplay/    # MotionProfile, RodMotionInterpreter, CastResolver
 │       ├── Debug/       # motion decisions, samples, recorder
 │       ├── Protocols/   # Transport protocol
@@ -36,9 +37,19 @@ CtSPoC/
     ├── ViewModels/WorldViewModel.swift
     ├── Gameplay/        # FishFightController, FishCatalog, FishCatchResult, FishRecordStore
     ├── Transport/       # Multipeer host
-    ├── Views/CastMeterView.swift, LineTensionView.swift, ResultView.swift
+    ├── Support/         # Theme.swift — shared color/font tokens, ShadowedLabel
+    ├── Fonts/           # Fredoka-Regular.ttf, Fredoka-Bold.ttf (see ATSApplicationFontsPath below)
+    ├── Views/
+    │   ├── RootView.swift       # top-level screen router: Loading -> Main Menu -> Game/Credits
+    │   ├── LoadingView.swift, MainMenuView.swift, CreditsView.swift
+    │   ├── TutorialView.swift   # tap-to-advance onboarding overlay, shown over ContentView
+    │   └── CastMeterView.swift, LineTensionView.swift, ResultView.swift
     └── Assets/Rod.usdz
 ```
+
+Custom fonts are registered via both `UIAppFonts` (iOS) and `ATSApplicationFontsPath` (macOS) in
+`World/World/Info.plist` — macOS silently ignores `UIAppFonts`, so both keys are required for a font
+bundled the same way on every platform this target supports.
 
 ## Tech Stack
 
@@ -121,20 +132,13 @@ structure.
 ## Verification
 
 ```sh
-cd Shared
-swiftc -parse-as-library -target arm64-apple-macosx14.0 \
-  -emit-module -module-name SharedMotion \
-  Sources/Shared/Models/RodAction.swift \
-  Sources/Shared/Models/SpatialState.swift \
-  Sources/Shared/Models/HookPhase.swift \
-  Sources/Shared/Models/RodState.swift \
-  Sources/Shared/Debug/MotionDebugDecision.swift \
-  Sources/Shared/Gameplay/MotionProfile.swift \
-  Sources/Shared/Gameplay/CastResolver.swift \
-  Sources/Shared/Gameplay/RodMotionInterpreter.swift \
-  -o /tmp/SharedMotion.swiftmodule
+cd Shared && swift build
 git diff --check
 ```
+
+`Shared`'s sources are organized into `Models/{Device,Gameplay,Rod,Spatial}/`, `Gameplay/`, `Debug/`,
+`Protocols/`, and `Spatial/` — use `swift build` (reads `Package.swift`) rather than hardcoding a file
+list here, since individual model files have moved between subfolders as the package grew.
 
 Full Xcode/device validation may be blocked by local SourcePackages,
 Observation plugins, simulator, signing, or hardware availability.

@@ -4,9 +4,23 @@
 //
 
 import RealityKit
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
 import AppKit
+#endif
 import ImageIO
 import simd
+
+#if canImport(UIKit)
+private func platformColor(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) -> UIColor {
+    UIColor(red: red, green: green, blue: blue, alpha: alpha)
+}
+#elseif canImport(AppKit)
+private func platformColor(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) -> NSColor {
+    NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
+}
+#endif
 
 /// Assembles the stocked-lake environment from the individually-authored USDZ assets
 /// shipped by the asset repo. The core assets (dock, water, terrain, sky, horizon ring)
@@ -22,7 +36,7 @@ enum EnvironmentSceneBuilder {
     /// 135° azimuth (behind-left of the player), warm ~3200-4000K.
     private static let sunElevationDegrees: Float = 15
     private static let sunAzimuthDegrees: Float = 135
-    private static let sunColor = NSColor(srgbRed: 1.0, green: 0.82, blue: 0.62, alpha: 1.0)
+    private static let sunColor = platformColor(red: 1.0, green: 0.82, blue: 0.62, alpha: 1.0)
     private static let sunDistance: Float = 200
 
     private static let coreAssetNames = [
@@ -583,7 +597,7 @@ enum EnvironmentSceneBuilder {
         guard var materials = model.model?.materials else { return }
         for i in materials.indices {
             guard var pbm = materials[i] as? PhysicallyBasedMaterial else { continue }
-            pbm.baseColor.tint = NSColor(srgbRed: 0.65, green: 1.0, blue: 0.6, alpha: 1.0)
+            pbm.baseColor.tint = platformColor(red: 0.65, green: 1.0, blue: 0.6, alpha: 1.0)
             materials[i] = pbm
         }
         model.model?.materials = materials
