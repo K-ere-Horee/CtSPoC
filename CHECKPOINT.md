@@ -2621,3 +2621,90 @@ Files changed (this repo): `World/World/Assets/Environment/sky_dome.usdz`,
 `World/World/Reality/EnvironmentSceneBuilder.swift` (`tintTerrainGreen`'s color retuned to
 `(0.65, 1.0, 0.6)`, `makeSun()`'s shadow `depthBias` raised to `2.5`). Companion asset-repo changes:
 see `FishAssets/CHECKPOINT.md`/`Source_Log.md`, "CP42 follow-up #8."
+
+## Merge: `feat/asset-integration` synced onto `origin/main` (11-commit Gameplay V1 series)
+
+This local clone had been sitting at the old `641098c` tip since it was cloned, with the entire
+environment-integration effort above (asset pipeline, water shader, rod rig, sky/terrain fixes)
+accumulated as **uncommitted working-tree changes** — nothing from any of it had ever reached a git
+commit. Meanwhile `origin/main` had moved 11 commits ahead with a full Gameplay V1 build-out (cast
+meter, line tension, fish species/fight/catch, result screen) plus a documentation reorganization
+(architecture docs moved under `Architecture /`, new root `CLAUDE.md`/`GAMEPLAY_ARCHITECTURE_V1.md`,
+`AGENTS.md` extended with a Calibration/Casting/Gameplay-V1 contract section). Read the new root
+`CLAUDE.md` first, per its own instruction, before touching anything else — it documents the
+authoritative `RodState.orientation`-is-the-only-renderer-orientation-source contract (ADR-016
+"Calibration-Owned Orientation" in the new `Architecture /ARCHITECTURE_DECISIONS.md`) and the fixed
+camera-relative rod-root contract (ADR-018/ADR-019) that this session's own pre-merge
+`WorldViewModel.swift` violated (it recomputed orientation from raw Euler pitch/roll with local
+smoothing/clamping, and repositioned the rod root from live Nearby Interaction distance/direction —
+both explicitly disallowed by the new contract).
+
+**Sequence:** committed all of this session's outstanding environment work first (`58476c0`, 36
+files, everything under `World/World/Assets/Environment/` and `World/World/Reality/` was untracked
+until this commit), then `git merge origin/main`. Three real conflicts surfaced; everything else
+(`AGENTS.md`, `ContentView.swift`, both `.xcodeproj/project.pbxproj` files, `Shared/Package.swift`,
+the `Spatial_Controller_Architecture.md` → `Architecture /SPATIAL_CONTROLLER_DOCUMENT.md` rename)
+auto-merged cleanly — confirmed by inspecting each rather than assuming a clean auto-merge was
+correct just because git reported no conflict (the pbxproj files in particular were checked: this
+project uses Xcode 16 file-system-synchronized groups, so neither side's new source files needed
+explicit project-file entries at all, which is why both merged without a scratch).
+
+1. **`ARCHITECTURE_DECISIONS.md` (modify/delete conflict).** Root file had one local addition
+   (ADR-016 "World Explicitly Authors the First-Person Camera") but was deleted upstream in favor of
+   the expanded `Architecture /ARCHITECTURE_DECISIONS.md`. That file already has its own, different
+   ADR-016 ("Calibration-Owned Orientation") — a real numbering collision. Removed the root file and
+   appended the camera ADR to the new location renumbered as **ADR-030** (one past the highest
+   existing number, 029).
+2. **`Spatial_Controller_Architecture.md` — no manual work needed.** Git's rename detection matched
+   it against the new, much-shorter `Architecture /SPATIAL_CONTROLLER_DOCUMENT.md` and auto-applied
+   this session's 2-line addition (a camera-authorship cross-reference) automatically; the reference
+   target (ADR-016, now ADR-030) still exists post-renumbering, so nothing further to fix.
+3. **`CHECKPOINT.md` (content conflict).** Both branches only ever appended, at the same point (this
+   file's old, pre-fork end). Resolved by concatenation — `origin/main`'s 11-commit gameplay log
+   first, this branch's environment-integration entries after — not a real edit conflict, just two
+   parallel append points landing on the same line.
+4. **`World/World/ViewModels/WorldViewModel.swift` (content conflict, the real one — 6 hunks across
+   nearly the whole file).** Rewrote the conflicted regions by hand rather than picking one side
+   wholesale:
+   - `makeArrow()`/`makeSceneEntity()` (two overlapping placeholder-vs-real scene-builder functions)
+     collapsed into one `makeSceneEntity() async -> Entity`, matching what `ContentView.swift` calls:
+     `EnvironmentSceneBuilder.build()` for the real lake, `makePlayerCamera()`, `RodRigController.load()`
+     for the bone-driven rod/line, and the hook entity. Origin's placeholder blue water-plane and
+     boxes-and-cone "arrow" rod are gone — fully superseded by the real assets.
+   - `updateRodPose()` rewritten to follow the new contract exactly: `controllerEntity.position` is
+     now the fixed `dockAnchorPosition` constant (never derived from live NI distance/direction —
+     satisfies ADR-018/019, "only the hook moves"), and `controllerEntity.orientation` now reads
+     `RodState.orientation` (the quaternion) directly instead of reconstructing it from smoothed,
+     clamped Euler pitch/roll/yaw. This session's own `SmoothedRodPose` smoothing struct, the
+     `motionSmoothing`/`maxRigTiltAngle`/`clampedRigAngle` machinery, and the now-dead `controllerOffset`
+     constant were all removed as a result — grepped the rest of the repo first to confirm nothing
+     else referenced them. `RodRigController.applyBend(pitch:roll:)` still reads the *raw* `rodState.pitch`/
+     `.roll` directly (unclamped at this call site — the rig's own per-joint clamps already bound it),
+     which the new `AGENTS.md` contract explicitly allows: Euler fields may still drive secondary/
+     diagnostic visuals, just never the primary renderer orientation.
+   - `launchHook()` used to find the hook's launch point via `rodModel.findEntity(named: "Tip")` — a
+     plain child-entity name lookup that only worked against origin's placeholder rod (a literal
+     `Entity` named "Tip"). This session's real rig has no such named entity, only a skeletal joint
+     path. Added a small, contained fix in `RodRigController.swift`: a `tipEntity` marker pinned to
+     the Tip joint's head (zero offset, distinct from the line's tail-offset attach pin) exposed as a
+     public `let`, so `WorldViewModel` reads `rodRig?.tipEntity?.position(relativeTo: nil)` instead.
+   - `continueFishing()` (origin's result-screen dismiss handler) and this branch's `makePlayerCamera()`
+     just needed to both survive — they landed in the same diff region by coincidence, not by
+     conflicting logic; kept both.
+5. Post-merge build caught one real gap, not a merge-mechanics slip: `lineTension(for:)` (this
+   branch's own function, needed by `tick()`) didn't handle the new `.fishOnHook` case added to
+   `HookPhase` by the gameplay work — exhaustive-switch compile error. Added
+   `case .fishOnHook, .reeling: return 0.8` (same tension as the existing fight-adjacent state) and
+   an explicit `.result: return 0`.
+
+**Verified:** `git diff --check` clean, zero leftover conflict markers (`grep` confirmed on every
+touched file), `xcodebuild -workspace CtSPoC.xcworkspace -scheme World -destination 'platform=macOS'
+build` → **BUILD SUCCEEDED**, `xcodebuild ... -scheme Rod -destination 'generic/platform=iOS
+Simulator' build` → **BUILD SUCCEEDED**. Not yet verified: a live run of the merged app exercising
+both the environment/rod-rig rendering and the new gameplay loop (cast → hook → fight → catch →
+result) together — the two feature sets have each been verified independently (this branch's
+environment work visually, per earlier entries in this log; the gameplay series presumably by
+whoever landed those 11 commits) but never together in one running build until now.
+
+Merge commit: `713b84e` (parents `58476c0` — this session's environment-integration commit — and
+`9261cce` — origin/main's tip). Not pushed; local only, pending explicit go-ahead.
