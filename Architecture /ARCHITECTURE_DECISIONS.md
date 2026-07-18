@@ -11,6 +11,97 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-032 --- Cast Power Weighted by Backswing Distance, Not Flick Speed Alone
+
+## Decision
+
+Cast power — both `RodMotionInterpreter`'s live `castPower` (the charging
+meter) and, more importantly, `CastResolver.resolve(_:)`'s `CastSolution.
+power` (the value that actually drives `WorldViewModel.launchHook`'s hook
+velocity) — previously came from instantaneous rotation-rate magnitude
+alone: a single sample of angular velocity, taken once at the exact frame
+release was detected. How far back the player pulled the phone during
+the backswing was never measured or used.
+
+**`RodMotionInterpreter`** now tracks `backswingPeakDistance: Double`,
+the peak of `distance(current, profile.idlePose)` (the same wrapped
+pitch/roll/yaw distance metric already used for idle/cast/reel pose
+classification) reached since the current cast gesture began. It resets
+to `0` whenever classification freshly enters `.cast`
+(`previousClassification != .cast`) and otherwise only grows
+(`max(backswingPeakDistance, distances.idle)`) every frame the gesture
+stays in `.cast`, so it captures the deepest point of the backswing
+regardless of when it happened relative to the release.
+
+**`CastSnapshot`** (Shared, `CastResolver.swift`) gained a
+`backswingDistance: Float` field, populated from `backswingPeakDistance`
+at the moment `RodMotionInterpreter` builds the release snapshot. It is
+Rod-internal only — never transmitted over `NetworkMessage`, consumed
+solely by `RodViewModel`'s local `castResolver.resolve(snapshot)` call.
+
+**`CastConfig`** gained `minimumBackswingDistance`/
+`maximumBackswingDistance` (radians, default `0.12`/`1.0`), the
+normalization bounds for `backswingDistance`, mirroring the existing
+`minimumCastVelocity`/`maximumCastVelocity` bounds for flick speed.
+
+**Both `RodMotionInterpreter`'s live `castPower` and `CastResolver.
+resolve(_:)`'s final `power`** now use the same blend:
+
+```text
+distancePower = clamp01((backswingDistance - minBackswing) / (maxBackswing - minBackswing))
+flickPower    = clamp01((angularSpeed - minVelocity) / (maxVelocity - minVelocity))
+power = distancePower * (0.7 + 0.3 * flickPower)
+```
+
+Backswing distance sets the base — zero backswing means zero power no
+matter how fast the flick — and release-moment flick speed adds up to a
+30% bonus on top. `RodMotionInterpreter`'s live meter uses a local,
+uncalibrated approximation of the same shape (`rotationRateMagnitude / 5`
+for the flick term, matching its pre-existing simplification) so the
+on-screen charging meter tracks what the eventual release will actually
+produce; `CastResolver` is the authoritative, `CastConfig`-driven
+calculation that becomes the transmitted `CastSolution.power`.
+
+## Rationale
+
+Requested directly: "doesn't matter kalo aku narik ke belakang sejauh
+apapun, dia cuma nge register ketika iphone nya aku 'flick' dengan cepat,
+sementara target aku kan biar iphone nya ngitung seberapa kuat cast itu
+dari jarak yang dia tempuh sampai flick" (it doesn't matter how far back
+I pull, it only registers when I flick the phone fast — my goal is for
+the phone to compute cast strength from the distance it traveled up to
+the flick). The player also asked directly whether this was a hardware
+limitation from mixing flick and reel detection on one device; it isn't
+— casting and reeling are already disambiguated by proximity to separate
+calibrated poses (`profile.castPose`/`profile.reelPose`) before rotation
+rate is ever read, and CoreMotion already provides continuous orientation
+suitable for measuring displacement across a gesture, not just an
+instantaneous sample at release. The actual gap was a design/logic one:
+`castPower`'s only input was `rotationRateMagnitude`, sampled once at the
+release frame, and `CastResolver.resolve(_:)` — the function that
+produces the `CastSolution.power` actually consumed by `WorldViewModel.
+launchHook`, entirely separate from `RodMotionInterpreter`'s own
+`castPower` field — made the identical mistake with `snapshot.
+angularVelocity.length`. Fixing only the live meter (`RodMotionInterpreter`)
+would have made the on-screen number feel right while leaving actual hook
+physics governed by flick speed alone; both had to change together.
+A multiplicative blend (distance as the gate, flick as a bonus) was
+chosen over a flat average so a good, deliberate pull-back reliably
+produces a real cast regardless of how the release itself was flicked,
+mirroring how a real rod loads on the backswing and releases on the
+forward snap — closer to the player's own framing of the goal than a
+pure distance-only formula would have been, while still rewarding a
+crisp release.
+
+This is a first pass explicitly requested to "see how it feels" — the
+`0.12`/`1.0` backswing-distance bounds and the `0.7`/`0.3` blend weights
+are hand-picked, not calibrated per-player or measured on-device, and are
+expected to need retuning once played.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
 # ADR-031 --- Cast Distance, Fight Distance, and Search-Phase Reel State Fixes
 
 ## Decision

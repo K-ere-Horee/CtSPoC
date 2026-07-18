@@ -1870,3 +1870,80 @@ same reel-during-search scenario.
   physics formula (not measured on-device), and none of this entry's
   fixes (fight-distance buffer, search-phase reel state) have been
   played through their exact repros on a real device/simulator pair.
+
+## Gameplay V1 - Cast Power Weighted by Backswing Distance
+
+Date: 2026-07-18.
+
+Raised as a design question, then approved for implementation: "casting
+mechanism nya sekarang masih aga funky dan wonky. soalnya doesn't matter
+kalo aku narik ke belakang sejauh apapun, dia cuma nge register ketika
+iphone nya aku 'flick' dengan cepat, sementara target aku kan biar iphone
+nya ngitung seberapa kuat cast itu dari jarak yang dia tempuh sampai
+flick" (the casting mechanism still feels off — it doesn't matter how far
+back I pull, it only registers when I flick the phone fast, but my goal
+is for the phone to compute cast strength from the distance traveled up
+to the flick), plus a direct question about whether mixing flick and reel
+detection on one device was a hardware limitation. Investigated first:
+confirmed it wasn't (casting/reeling are already disambiguated by
+proximity to separate calibrated poses before rotation rate is read) and
+proposed a distance-plus-flick blend; player replied "Ok let me see how
+that works." Recorded as ADR-032 in `ARCHITECTURE_DECISIONS.md`.
+
+### Shared
+
+- `Shared/Sources/Shared/Gameplay/RodMotionInterpreter.swift`: added
+  `backswingPeakDistance: Double` (peak `distance(current, profile.
+  idlePose)` reached since the current cast gesture began — the same
+  wrapped pitch/roll/yaw metric already used for idle/cast/reel pose
+  classification), reset to `0` whenever classification freshly enters
+  `.cast` and otherwise only growing. Also reset in `updateProfile(_:)`
+  and `setIdlePose(_:)` alongside the existing per-gesture state.
+  `.cast`'s branch now computes `castPower` as `distancePower * (0.7 +
+  0.3 * flickPower)` instead of `rotationRateMagnitude / 5` alone
+  (`distancePower` from `backswingPeakDistance` against new
+  `minimumBackswingDistance`/`maximumBackswingDistance` constants,
+  `0.12`/`1.0` radians; `flickPower` is the same `rotationRateMagnitude /
+  5` term as before). `snapshot(input:orientation:)` now passes
+  `backswingDistance: Float(backswingPeakDistance)` into `CastSnapshot`.
+- `Shared/Sources/Shared/Gameplay/CastResolver.swift`: `CastSnapshot`
+  gained `backswingDistance: Float` (default `0`, Rod-internal only —
+  never transmitted over `NetworkMessage`). `CastConfig` gained
+  `minimumBackswingDistance`/`maximumBackswingDistance` (default
+  `0.12`/`1.0`, mirroring the existing `minimumCastVelocity`/
+  `maximumCastVelocity`). `CastResolver.resolve(_:)` — the function whose
+  output (`CastSolution.power`) actually drives `WorldViewModel.
+  launchHook`'s hook velocity, entirely separate from
+  `RodMotionInterpreter`'s own `castPower` field — now computes the same
+  `distancePower * (0.7 + 0.3 * flickPower)` blend instead of a bare
+  velocity-only `normalizedPower`. Fixing only `RodMotionInterpreter`
+  would have made the on-screen meter feel right while leaving actual
+  hook physics governed by flick speed alone; both had to change.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-032.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Cast Resolver Pipeline"
+  with the backswing-distance blend and its rationale.
+
+### Verification
+
+- `xcrun swiftc -typecheck` compiles Shared as both a macOS module and an
+  iOS-simulator module directly from `find Sources/Shared -name
+  "*.swift"` — no errors.
+- Typechecked against those modules: World's `WorldViewModel.swift`,
+  `ContentView.swift`, `FishCatalog.swift`, `FishCatchResult.swift`,
+  `FishFightController.swift`, `FishRecordStore.swift`,
+  `LineTensionView.swift`, `ResultView.swift`, `CastMeterView.swift`,
+  `TransportHost.swift` (macOS) and Rod's `RodViewModel.swift`,
+  `ContentView.swift`, `FishingHaptics.swift`, `HapticManager.swift`,
+  `MotionManager.swift`, `NearbyInteractionManager.swift`,
+  `TransportClient.swift` (iOS simulator) — no errors, same pre-existing
+  unrelated `controllerEntity` unused-binding warning on the World side.
+- `git diff --check` passes.
+- Explicitly a first pass to "see how it feels," not a tuned final
+  values: the `0.12`/`1.0` backswing-distance bounds and `0.7`/`0.3`
+  blend weights are hand-picked, not calibrated per-player or measured
+  on hardware. Not run on a real device/simulator pair yet — the actual
+  feel (whether backswing distance dominates enough, whether the flick
+  bonus is noticeable) is unverified until played.

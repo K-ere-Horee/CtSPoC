@@ -369,9 +369,30 @@ RodMotionInterpreter -> CastSnapshot -> RodState -> CastResolver
 ```
 
 `CastSnapshot` is immutable and contains corrected orientation, angular
-velocity, and timestamp. `CastResolver` computes horizontal direction,
-normalized power, and launch angle. Raw angular velocity is never exposed to
-gameplay as a balancing value.
+velocity, timestamp, and (ADR-032) `backswingDistance`: the peak angular
+distance from the calibrated idle pose reached during the gesture's
+backswing, tracked by `RodMotionInterpreter` and reset whenever a fresh
+cast gesture begins. `CastResolver` computes horizontal direction, launch
+angle, and normalized power. Raw angular velocity is never exposed to
+gameplay as a balancing value on its own — power is a blend where
+backswing distance is the base (zero backswing means zero power
+regardless of flick speed) and release-moment flick speed only adds up to
+a 30% bonus on top:
+
+```text
+power = distancePower * (0.7 + 0.3 * flickPower)
+```
+
+This mirrors how a real rod loads on the backswing and releases on the
+forward snap, and fixes a reported bug where cast power tracked only how
+fast the phone was flicked at release, ignoring how far back it was
+pulled beforehand. `RodMotionInterpreter`'s live `castPower` (the
+charging-phase meter) approximates the same blend locally so the
+on-screen meter reflects what the eventual release will produce;
+`CastResolver`, driven by `CastConfig`'s `minimum`/`maximumCastVelocity`
+and `minimum`/`maximumBackswingDistance`, remains the single
+authoritative calculation that becomes the transmitted `CastSolution.
+power`.
 
 Definition of Done for each sprint:
 
