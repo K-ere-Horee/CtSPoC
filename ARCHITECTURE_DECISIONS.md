@@ -278,6 +278,33 @@ Status: Accepted
 
 ------------------------------------------------------------------------
 
+# ADR-016 --- World Explicitly Authors the First-Person Camera
+
+## Decision
+
+`RealityView` in non-AR ("virtual") mode has no ARKit device camera to fall
+back on and provides no default first-person viewpoint of its own. World
+must always create and add an explicit `PerspectiveCamera` entity to the
+scene, and set `content.camera = .virtual` in the `RealityView` closure.
+
+## Rationale
+
+Without an explicit camera entity, RealityKit auto-frames the scene's
+bounding box from an arbitrary vantage point instead of the intended
+first-person view. This previously shipped as a bug: the player appeared to
+stand underwater looking up at the dock's underside.
+
+The camera's position/orientation must be derived from the asset repo's own
+authored viewpoint (the Blender `player_pov` camera), converted through the
+verified Blender-Z-up-to-RealityKit-Y-up axis mapping
+(`(x, y, z) -> (x, z, -y)`), not guessed. See `CHECKPOINT.md` ("Asset-
+Integration Environment, First-Person Camera, and Rod Motion Fixes") for the
+empirical derivation.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
 # Change Policy
 
 Any modification to these decisions should:

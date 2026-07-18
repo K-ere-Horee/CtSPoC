@@ -7,6 +7,18 @@
 This document defines the implementation rules for AI coding agents
 working on this repository.
 
+## Asset source repo
+
+The 3D assets `World` loads (`World/World/Assets/Environment/*.usdz`, plus fish) are authored in a
+**separate sibling repo**, `~/repos/new-blender-project` (Blender source + docs — start at its root
+`CLAUDE.md`). That repo's own `.usdz` exports are the source of truth; the files under
+`World/World/Assets/Environment/` are copies and must be kept byte-identical (`shasum` both sides
+after any change). If a shipped asset looks visually wrong (bad lighting, missing texture,
+malformed geometry) and nothing in this repo's own rendering/material code explains it, check
+whether the `.usdz` itself is at fault (`unzip` it, `usdcat` the `.usdc`) before assuming an
+app-side bug — see CHECKPOINT.md's "Sky Dome Flat/Gray Bug" entry for a worked example where this
+was exactly the case.
+
 Always prioritize correctness, architecture consistency, and small
 incremental changes over feature velocity.
 
