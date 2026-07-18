@@ -150,6 +150,13 @@ final class WorldViewModel: ObservableObject {
         updateRodPose()
     }
 
+    /// Called by World's result screen when the player dismisses it after a
+    /// catch, allowing the next cast.
+    func continueFishing() {
+        guard hookPhase == .result else { return }
+        setHookPhase(.idle)
+    }
+
     private func setHookPhase(_ phase: HookPhase) {
         guard hookPhase != phase else { return }
         hookPhase = phase
@@ -179,13 +186,20 @@ final class WorldViewModel: ObservableObject {
         case .flying:
             simulateFlyingHook(deltaTime: deltaTime)
         case .hookInWater:
-            if fishFight.updateSearching(deltaTime: deltaTime) {
+            switch fishFight.updateSearching(deltaTime: deltaTime) {
+            case .interested:
+                Task { await send(.fishingEvent(.fishInterested)) }
+            case .bite:
                 setHookPhase(.fishOnHook)
                 Task { await send(.fishingEvent(.fishBite)) }
+            case nil:
+                break
             }
             if rodState.action == .reeling {
                 reelHook(deltaTime: deltaTime)
             }
+        case .result:
+            break
         case .fishOnHook, .reeling:
             if rodState.action == .reeling {
                 reelHook(deltaTime: deltaTime)
@@ -290,7 +304,7 @@ final class WorldViewModel: ObservableObject {
             if caughtFish {
                 fishFight.resolveCatch()
             }
-            setHookPhase(.idle)
+            setHookPhase(caughtFish ? .result : .idle)
             if caughtFish {
                 Task { await send(.fishingEvent(.catchFish)) }
             }

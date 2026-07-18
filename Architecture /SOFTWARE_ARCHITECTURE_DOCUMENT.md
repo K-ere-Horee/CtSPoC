@@ -531,6 +531,73 @@ already handled by `FishingHaptics.swift`, but World never sent either
 before ADR-024. `HapticManager` has a distinct `fishEscaped()` pattern
 instead of aliasing to `lineBreak()`'s pattern.
 
+## Fish Interest, Result Screen, and Rod's Minimal V1 Interface
+
+Recorded in ADR-029.
+
+**Fish Interest.** `HookPhase` did not gain a case for this — reeling is
+already allowed throughout `.hookInWater` regardless of interest, so it is
+presentation-only state layered on the existing search phase.
+`FishFightController.updateSearching(deltaTime:)` returns
+`SearchEvent? { .interested, .bite }`, driven by two sequential timers
+(`interestTimer` then `biteTimer`, each `0.8...2.0s`) instead of one
+`1.5...4.0s` timer. `isFishInterested: Bool` is `@Published` for a future
+World visual cue (not built yet — fish still have no visual
+representation). `FishingEvent.fishInterested` fires once when interest
+starts; Rod's `FishingHaptics.interestPulse(now:)` throttles a repeating
+soft haptic (`HapticManager.fishInterested()`) while an internal flag is
+set, cleared by any other `FishingEvent` or by
+`RodViewModel.handle(.hookPhase:)` whenever the phase leaves
+`.hookInWater` (`stopInterest()`) — so a stale interest signal can't keep
+pulsing after the fish bites, escapes, or a new cast begins.
+`RodViewModel.updateAction()` calls `interestPulse()` unconditionally every
+motion sample, reusing the same recurring callback that drives
+`reelTick(reelSpeed:now:)`.
+
+**Result Screen.** `HookPhase` gains `.result`, entered only via
+`reelHook()`'s catch path (`resolveCatch()` then `.result` instead of
+`.idle`), and excluded from both `allowsCasting` and `allowsReeling` so a
+physical cast can't race the result screen off-screen before the player
+sees it. `WorldViewModel.continueFishing()` (guarded to
+`hookPhase == .result`) is the only way back to `.idle`, called by the new
+`World/World/Views/ResultView.swift` overlay's "Continue Fishing" button
+— "Return to Menu" from the product doc is not implemented, since there is
+no Main Menu yet to return to. Escape and line-break intentionally do not
+route through `.result`; they keep the direct transitions from ADR-028 —
+only "After a successful catch" gets the full result treatment per the
+product doc's own scoping, and gating every escape/line-break behind a
+dismissable modal would make repeated near-misses tedious.
+
+`FishCatchResult` gains `stars: Int` (1...5, from how close the catch
+weight is to the species' max), `coins: Int`
+(`species.value * (0.6 + 0.1 * stars)`), and `isNewRecord: Bool` — all
+zero/false for non-`.caught` outcomes, computed in
+`FishFightController.resolve(outcome:)` only when catching. New
+`World/World/Gameplay/FishRecordStore.swift` persists the heaviest catch
+per species ID to `UserDefaults` as JSON (same pattern as `RodViewModel`'s
+`MotionProfile` persistence), and `recordCatch(speciesID:weight:)`'s
+return value becomes `isNewRecord`.
+
+**Rod's Minimal V1 Interface.** `Rod/Rod/ContentView.swift`'s primary view
+now matches the product doc exactly: title, connection status, and three
+buttons (`Start Fishing`, the per-step calibration button, `End Fishing`).
+All previous debug rows move into a collapsed-by-default `DisclosureGroup`
+("Developer Details") instead of being deleted, matching the existing
+precedent of demoting rather than removing development tooling (e.g. the
+commented-out `MotionDebugView` section). `RodViewModel` gains
+`isFishing: Bool` and `startFishing()`/`endFishing()`; `startFishing()`
+only takes effect once `calibrationStep == .complete`.
+`updateAction()`'s existing `hookPhase.allowsCasting`/`allowsReeling` gate
+gains `!isFishing` ahead of both, so cast/reel gestures are only live
+between an explicit start and end rather than the moment calibration
+finishes.
+
+Known gap, not addressed this sprint: the product doc also specifies
+calibration instructions belong entirely in World, with Rod only
+capturing. Rod's `calibrationInstruction` text (unchanged by this sprint)
+still lives on Rod — pre-existing, and tracked under the still-open World
+Main Menu/Tutorial/Calibration-instructions gap.
+
 ## Dynamic Reel Speed
 
 Recorded in ADR-025. `RodMotionInterpreter`'s `.reel` classification

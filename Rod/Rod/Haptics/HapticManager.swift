@@ -62,6 +62,13 @@ final class HapticManager {
         ])
     }
 
+    /// A single gentle pulse, repeated slowly and externally by
+    /// `FishingHaptics.interestPulse(now:)` while a fish is interested but
+    /// hasn't bitten. Deliberately softer/duller than `fishBite()`.
+    func fishInterested() {
+        playTransient(intensity: 0.22, sharpness: 0.15)
+    }
+
     private func playTransient(intensity: Float, sharpness: Float) {
         playPattern([(intensity, sharpness, 0)])
     }

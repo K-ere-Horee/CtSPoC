@@ -17,4 +17,10 @@ struct FishCatchResult: Equatable {
     let weight: Double
     let length: Double
     let outcome: Outcome
+    /// 1...5. Zero for non-`.caught` outcomes.
+    let stars: Int
+    /// Zero for non-`.caught` outcomes.
+    let coins: Int
+    /// Always `false` for non-`.caught` outcomes.
+    let isNewRecord: Bool
 }

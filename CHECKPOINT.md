@@ -1544,3 +1544,142 @@ entry replaces the two separate, simpler mechanisms built across ADR-023/
 - Full Xcode/device build remains environment-blocked; the actual feel of
   the tug-of-war (reel-to-hold-steady vs. drift-away-when-idle) and the new
   safe-zone HUD have not been observed running yet.
+
+## Gameplay V1 Sprint - Result Screen, Rod Minimal UI, Fish Interest
+
+Date: 2026-07-18.
+
+Sprint scoped from a gap analysis against `GAMEPLAY_ARCHITECTURE_V1.md`
+requested earlier the same day ("apalagi yang belom ke develop dari
+architecture plan v1 itu?"). This entry develops the top three items:
+result screen, Rod's minimal production UI, and the Fish Interested phase.
+Recorded as ADR-029 in `ARCHITECTURE_DECISIONS.md`.
+
+### Shared
+
+- `Shared/Sources/Shared/Models/Gameplay/HookPhase.swift`: added `.result`
+  — excluded from both `allowsCasting` and `allowsReeling`, entered only
+  after a catch, exited only via `WorldViewModel.continueFishing()`.
+- `Shared/Sources/Shared/Models/Gameplay/FishingEvent.swift`: added
+  `.fishInterested`, sent once when a fish becomes interested but hasn't
+  bitten.
+
+### World: Fish Interest
+
+- `World/World/Gameplay/FishFightController.swift`: `updateSearching
+  (deltaTime:)` now returns `SearchEvent? { .interested, .bite }` instead
+  of `Bool`, driven by two sequential `0.8...2.0s` timers (`interestTimer`
+  then `biteTimer`) replacing the single `1.5...4.0s` timer, keeping total
+  time-to-bite in roughly the same range. Added
+  `isFishInterested: Bool` (`@Published`, reset alongside the rest of the
+  fight state in `resetForNewCast()` and `resolve(outcome:)`).
+- `World/World/ViewModels/WorldViewModel.swift`'s `.hookInWater` tick case
+  now switches on the `SearchEvent?` and sends `.fishInterested` or
+  `.fishBite` accordingly.
+
+### World: Result Screen
+
+- `World/World/Gameplay/FishCatchResult.swift`: added `stars: Int`,
+  `coins: Int`, `isNewRecord: Bool` (zero/false unless `.caught`).
+- `World/World/Gameplay/FishFightController.swift`'s `resolve(outcome:)`
+  computes them only for `.caught`: `stars` from how close the catch
+  weight is to the species' max (1...5), `coins` from
+  `species.value * (0.6 + 0.1 * stars)`, `isNewRecord` from the new
+  `FishRecordStore`.
+- Added `World/World/Gameplay/FishRecordStore.swift`: persists the
+  heaviest catch per species ID to `UserDefaults` as JSON (same pattern as
+  `RodViewModel`'s `MotionProfile` persistence); `FishFightController`
+  now takes one as an injectable dependency (defaulting to a real store).
+- `World/World/ViewModels/WorldViewModel.swift`: `reelHook()`'s catch path
+  now transitions to `.result` instead of `.idle` when a fish was caught
+  (empty retrieves still go straight to `.idle`, unchanged). Added
+  `continueFishing()`, guarded to `hookPhase == .result`, returning to
+  `.idle`. `tick()`'s switch gained `case .result: break` (must be
+  exhaustive over the expanded `HookPhase`).
+- Added `World/World/Views/ResultView.swift`: full-screen overlay (species
+  name, weight, length, 1-5 star row, coins, optional "NEW RECORD" badge,
+  "Continue Fishing" button). "Return to Menu" from the product doc is not
+  implemented — no Main Menu exists yet.
+- `World/World/ContentView.swift`: `body` split into a `ZStack` of the
+  existing `content` plus a conditional `ResultView` shown when
+  `hookPhase == .result`.
+- Escape and line-break deliberately do **not** route through `.result`
+  — they keep the direct transitions from ADR-028. This is scoped
+  narrower than the product doc's loop diagram on purpose: the diagram's
+  full result content is described in prose as following "a successful
+  catch" specifically, and gating every escape/line-break behind a
+  dismissable modal would make repeated near-misses tedious given there's
+  currently no cooldown between bites. The inline "Catch Results" HUD row
+  still surfaces those outcomes without blocking play.
+
+### Rod: Minimal V1 Interface
+
+- `Rod/Rod/ViewModel/RodViewModel.swift`: added `isFishing: Bool`
+  (`@Published private(set)`) and `startFishing()`/`endFishing()`.
+  `startFishing()` only takes effect once `calibrationStep == .complete`.
+  `updateAction()`'s existing `hookPhase.allowsCasting`/`allowsReeling`
+  gate gained a leading `!isFishing` condition, so cast/reel gestures are
+  only live between an explicit start and end, not the instant calibration
+  finishes.
+- `Rod/Rod/ContentView.swift` rewritten: primary view is now title,
+  connection status, and exactly three buttons (`Start Fishing`, the
+  existing per-step calibration button, `End Fishing`), matching
+  `GAMEPLAY_ARCHITECTURE_V1.md`'s Rod interface. All previous debug rows
+  (connection/spatial/motion status, calibration step/samples, raw
+  pitch/roll/yaw/action/reelSpeed/etc.) moved into a `DisclosureGroup`
+  ("Developer Details"), collapsed by default, rather than being deleted —
+  same precedent as the existing commented-out `MotionDebugView` section.
+- **Known gap, not addressed this sprint:** the product doc specifies
+  calibration instructions belong entirely in World; Rod's
+  `calibrationInstruction` text (unchanged by this sprint) still lives on
+  Rod. Pre-existing, not introduced here — tracked under the still-open
+  World Main Menu/Tutorial/Calibration-instructions gap.
+
+### Rod: Periodic Interested Haptic
+
+- `Rod/Rod/Haptics/HapticManager.swift`: added `fishInterested()`, a
+  single soft transient (`0.22`/`0.15`), deliberately duller than
+  `fishBite()`'s four-pulse pattern.
+- `Rod/Rod/Haptics/FishingHaptics.swift`: added `interestPulse(now:)`,
+  throttled to `1.1s` (same throttle idiom as the existing
+  `reelTick(reelSpeed:now:)`), a no-op unless an internal
+  `isFishInterested` flag is set. `handle(.fishInterested)` sets it; every
+  other `FishingEvent` case clears it. Added `stopInterest()` for an
+  external clear.
+- `RodViewModel.handle(_:)`'s `.hookPhase(phase)` case now calls
+  `fishingHaptics.stopInterest()` whenever `phase != .hookInWater`, so a
+  stale interest signal can't keep pulsing after the fish bites, escapes,
+  or a new cast begins. `updateAction()` calls `interestPulse()`
+  unconditionally every motion sample — the same recurring callback that
+  already drives `reelTick`.
+
+### Documentation
+
+- `CLAUDE.md`: `World/World` structure now lists `FishRecordStore` under
+  `Gameplay/` and `ResultView.swift` under `Views/`.
+- `ARCHITECTURE_DECISIONS.md`: added ADR-029.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added "Fish Interest, Result
+  Screen, and Rod's Minimal V1 Interface" between the existing "Fish
+  Species and Fight Simulation" and "Dynamic Reel Speed" sections.
+
+### Verification
+
+- Standard verification command from `CLAUDE.md` (`swiftc -parse-as-library`
+  over the fixed Shared model/gameplay file list) passes.
+- Rebuilt Shared as a macOS module and separately as an iOS-simulator
+  module, both directly from `find Sources/Shared -name "*.swift"`, and
+  used them to `xcrun swiftc -typecheck`:
+  - macOS: `WorldViewModel.swift`, `ContentView.swift`, `FishCatalog.swift`,
+    `FishCatchResult.swift`, `FishFightController.swift`,
+    `FishRecordStore.swift`, `LineTensionView.swift`, `ResultView.swift`,
+    `CastMeterView.swift`, `TransportHost.swift` — no errors (same
+    pre-existing, unrelated `controllerEntity` unused-binding warning as
+    every prior entry in this series).
+  - iOS simulator: `RodViewModel.swift`, `ContentView.swift`,
+    `FishingHaptics.swift`, `HapticManager.swift`, `MotionManager.swift`,
+    `NearbyInteractionManager.swift`, `TransportClient.swift` — no errors,
+    no warnings.
+- `git diff --check` passes.
+- Full Xcode/device build remains environment-blocked. None of the new
+  UI (Rod's minimal buttons, the result screen, the interested haptic
+  pulse) has been observed running on hardware yet.
