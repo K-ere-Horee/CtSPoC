@@ -45,11 +45,12 @@ struct ContentView: View {
                 content.camera = .virtual
                 let rod = await viewModel.makeSceneEntity()
                 content.add(rod)
-
-            } update: { _ in
-                viewModel.updateScene()
+                viewModel.attachFrameLoop(to: content)
             }
             .frame(minHeight: 320)
+            .overlay(alignment: .topLeading) {
+                fpsIndicator
+            }
 
             GroupBox("Controller State") {
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
@@ -113,6 +114,17 @@ struct ContentView: View {
         .padding(20)
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
+    }
+
+    private var fpsIndicator: some View {
+        Text(String(format: "%.0f FPS", viewModel.fps))
+            .font(.caption.monospacedDigit())
+            .fontWeight(.semibold)
+            .foregroundStyle(viewModel.fps >= 50 ? .green : viewModel.fps >= 30 ? .yellow : .red)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 6))
+            .padding(8)
     }
 
     private func row(_ title: String, _ value: String) -> some View {

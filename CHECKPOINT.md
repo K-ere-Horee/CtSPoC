@@ -2708,3 +2708,91 @@ whoever landed those 11 commits) but never together in one running build until n
 
 Merge commit: `713b84e` (parents `58476c0` — this session's environment-integration commit — and
 `9261cce` — origin/main's tip). Not pushed; local only, pending explicit go-ahead.
+
+## Controller lag fix, FPS debug indicator, and a stuck-error/casting investigation
+
+User report, live on real hardware after the merge above: "overall rod movement and controller feel
+laggy," plus (separately, later) a persistent red error on the Rod screen (`Rod.TransportClient
+.ClientError error 0`, i.e. `notConnected`) shown at the same time as a green "STREAMING" status, and
+"I can't do casting" / "I never got casting action status."
+
+**Root-caused three independent contributors to the laggy feel, not one:**
+
+1. **Every `NetworkMessage` — including the continuous ~30 Hz `RodState` stream — went out via
+   MultipeerConnectivity's `.reliable` mode** (`TransportHost.send`/`TransportClient.send`).
+   Reliable mode is TCP-like: ordered and retransmitted. A single dropped/delayed packet under any
+   real-world Wi-Fi/Bluetooth hiccup stalls every packet queued behind it (head-of-line blocking) —
+   and a stale orientation sample is worthless the instant a newer one exists, so retransmitting it
+   is pure added latency. **Fix:** `NetworkMessage.requiresReliableDelivery` (`Shared/Sources/Shared/
+   Models/Device/NetworkMessage.swift`) — `false` for `.state`, `true` for `.discoveryToken`/
+   `.fishingEvent`/`.hookPhase` (one-shot signals that must not be silently dropped). Both transports
+   now pick the mode per message instead of hardcoding `.reliable`.
+2. **`RodViewModel.publishState()` spawned a brand-new unstructured `Task` on every single motion
+   sample**, with no backpressure — if one send was momentarily slow, tasks could pile up and
+   complete out of step with real time. **Fix:** an `isSendingState` in-flight guard; a publish is
+   dropped (not queued) while a send is already outstanding, since only the newest state ever
+   matters.
+3. **World's simulation ran on a hand-rolled `Task.sleep(nanoseconds: 16_666_667)` loop**, completely
+   decoupled from RealityKit's actual render cadence — `Task.sleep` has no frame-pacing guarantee and
+   drifts under load. **Fix:** replaced with a real per-frame subscription,
+   `content.subscribe(to: SceneEvents.Update.self)`, wired up once from `ContentView`'s `RealityView`
+   `make` closure (`WorldViewModel.attachFrameLoop(to:)`); the rod/hook simulation now ticks with the
+   actual rendered `deltaTime` instead of an approximate, independent clock. `updateScene()`/
+   `startSimulation()`/`simulationTask` all removed as dead code once nothing called them anymore.
+
+**FPS debug indicator:** added per the user's explicit request — a small badge (top-left of the 3D
+view in `ContentView.swift`, green/yellow/red by a 50/30 fps threshold), driven by the same
+`SceneEvents.Update` subscription, averaged over a rolling 0.5 s window (`WorldViewModel.updateFPS`)
+so the displayed number doesn't flicker frame-to-frame.
+
+**The stuck red-error report turned out to be a separate, pre-existing bug, not caused by the lag
+fix:** `lastError` was set in `RodViewModel`/`WorldViewModel` on any send/connect failure but **never
+cleared anywhere** — so one transient MultipeerConnectivity disconnect (screen lock, distance,
+backgrounding — all normal on real hardware) left a permanent red banner even after the connection
+fully recovered, which is exactly what the screenshot showed (green "STREAMING" next to a stale red
+error). Fixed by clearing `lastError` on every successful `send()` and immediately when
+`connectionState` becomes `.ready` again, in both view models.
+
+**Defensive fix for a plausible "stuck cast" cause:** `.hookPhase` is a one-shot sync message, and
+MultipeerConnectivity does not retry a `send()` that failed outright (it just throws) — if that exact
+disconnect window ate a `.hookPhase` update, Rod's local copy would stay on a stale phase indefinitely,
+and since `HookPhase.allowsCasting` is only true when `hookPhase == .idle`, a stuck non-idle phase
+would silently block every future cast with no visible error at all. `WorldViewModel`'s
+`transport.onStateChange` now re-sends the current `hookPhase` every time a peer reconnects, so a
+dropped sync can no longer permanently wedge casting.
+
+**"I never got casting action status" — investigated, not fully resolved; re-enabled the actual
+diagnostic tool for it.** `RodMotionInterpreter.interpret()` only reports `action: .casting` on the
+single motion sample where the current pose classifies nearest to the calibrated `castPose` *and*
+forward acceleration crosses the calibrated threshold *simultaneously* — a real structural fragility,
+since `castPose` is captured (during calibration) as the average of the last 10 samples **before**
+the user presses "capture," i.e. roughly the arm's settled position *after* the swing, while the
+forward-acceleration spike happens *during* the swing, before that settled pose is reached. If those
+two conditions don't land in the same ~33 ms CoreMotion sample, the cast silently never fires,
+indistinguishable from a bug at the UI level. A complete diagnostic view for exactly this
+(`MotionDebugView` — shows the live selected pose, idle/cast/reel distances, and forward-acceleration
+pass/fail) already existed in `Rod/Rod/Views/MotionDebugView.swift`, fed live by
+`RodViewModel.debugRecorder`, but was commented out in `Rod/Rod/ContentView.swift`'s Developer
+Details section. Re-enabled it under a new "Cast/Reel Classifier" group. Whether the underlying
+casting issue is a calibration-quality problem (fixable by recalibrating with a larger, deliberate
+motion and holding the end pose before capturing) or something deeper is **not yet determined** —
+this needs a live session with the debug view open to read the actual `Selected Pose`/distance/
+`Forward Check` values during a real cast attempt, which has not happened yet.
+
+**Verified:** `xcodebuild -workspace CtSPoC.xcworkspace -scheme World -destination 'platform=macOS'
+build` → **BUILD SUCCEEDED**, `xcodebuild ... -scheme Rod -destination 'generic/platform=iOS
+Simulator' build` → **BUILD SUCCEEDED**, after every change in this entry. Screenshot-based visual
+confirmation of the FPS indicator was attempted once and failed (`screencapture`: "could not create
+image from display" — the same capture blocker present all session); not retried in a loop, per this
+session's own standing rule against polling for a capture opportunity. The lag fixes and stale-error
+fix are architecturally sound and build-verified but **not yet visually/behaviorally confirmed live**
+by either the user or the agent — flagging plainly rather than assuming success.
+
+Files changed: `Shared/Sources/Shared/Models/Device/NetworkMessage.swift` (`requiresReliableDelivery`),
+`World/World/Transport/TransportHost.swift` / `Rod/Rod/Transport/TransportClient.swift` (mode
+selection per message), `Rod/Rod/ViewModel/RodViewModel.swift` (`isSendingState` guard, `lastError`
+clearing on success/reconnect), `World/World/ViewModels/WorldViewModel.swift` (`attachFrameLoop`/
+`advance`/`updateFPS` replacing the `Task.sleep` loop, `fps` published property, `lastError`
+clearing, `hookPhase` resync on reconnect), `World/World/ContentView.swift` (FPS overlay, simplified
+`RealityView` to a `make`-only initializer), `Rod/Rod/ContentView.swift` (re-enabled
+`MotionDebugView` under Developer Details).

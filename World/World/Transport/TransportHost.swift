@@ -62,7 +62,8 @@ final class TransportHost: NSObject, TransportProtocol {
         }
 
         let data = try encoder.encode(message)
-        try session.send(data, toPeers: session.connectedPeers, with: .reliable)
+        let mode: MCSessionSendDataMode = message.requiresReliableDelivery ? .reliable : .unreliable
+        try session.send(data, toPeers: session.connectedPeers, with: mode)
     }
 }
 

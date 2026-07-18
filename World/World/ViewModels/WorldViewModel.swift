@@ -6,6 +6,7 @@
 //
 
 import RealityKit
+import _RealityKit_SwiftUI
 import Shared
 import SwiftUI
 import Combine
@@ -18,6 +19,7 @@ final class WorldViewModel: ObservableObject {
     @Published private(set) var connectionState: ConnectionState = .idle
     @Published private(set) var hookPhase: HookPhase = .idle
     @Published private(set) var lastError: String?
+    @Published private(set) var fps: Double = 0
 
     private let transport: TransportHost
 
@@ -80,8 +82,18 @@ final class WorldViewModel: ObservableObject {
     private var hookEntity: ModelEntity?
     private var hookVelocity = SIMD3<Float>.zero
     private var pendingCastSolution: CastSolution?
-    private var simulationTask: Task<Void, Never>?
     private var hasStarted = false
+
+    /// Drives the simulation from RealityKit's own per-frame scene update, with a real
+    /// `event.deltaTime` — replaces a previous hand-rolled `Task.sleep(nanoseconds: 16_666_667)`
+    /// loop, which ran on its own imprecise clock decoupled from the actual render cadence
+    /// (`Task.sleep` has no frame-pacing guarantee and drifts under load, which read as laggy/
+    /// uneven rod motion independent of any network latency). Set up once from the `RealityView`
+    /// `make` closure; gated by `hasStarted` rather than torn down on `stop()`, so the same
+    /// subscription survives `start()`/`stop()` cycles without needing to recreate it.
+    private var frameUpdateSubscription: EventSubscription?
+    private var fpsFrameCount = 0
+    private var fpsElapsedTime: TimeInterval = 0
 
     let fishFight = FishFightController()
 
@@ -91,7 +103,16 @@ final class WorldViewModel: ObservableObject {
         self.transport = transport
 
         transport.onStateChange = { [weak self] state in
-            Task { @MainActor in self?.connectionState = state }
+            Task { @MainActor in
+                self?.connectionState = state
+                guard let self, state == .ready else { return }
+                // A dropped `.hookPhase` message during a prior disconnect would otherwise leave
+                // Rod stuck believing an old phase forever (MultipeerConnectivity does not retry
+                // a `send()` that failed outright) — resync on every reconnect so a transient drop
+                // can't permanently block casting/reeling on the Rod side.
+                self.lastError = nil
+                Task { await self.send(.hookPhase(self.hookPhase)) }
+            }
         }
         transport.onMessage = { [weak self] message in
             Task { @MainActor in self?.handle(message) }
@@ -101,7 +122,6 @@ final class WorldViewModel: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
-        startSimulation()
 
         Task {
             do {
@@ -114,10 +134,37 @@ final class WorldViewModel: ObservableObject {
     }
 
     func stop() {
-        simulationTask?.cancel()
-        simulationTask = nil
         transport.disconnect()
         hasStarted = false
+    }
+
+    /// Called once from `ContentView`'s `RealityView` `make` closure. Subscribes to the scene's
+    /// real per-frame update event so the simulation ticks in lockstep with actual rendering
+    /// instead of a separate, imprecise timer.
+    func attachFrameLoop(to content: some RealityViewContentProtocol) {
+        guard frameUpdateSubscription == nil else { return }
+        frameUpdateSubscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
+            Task { @MainActor in
+                self?.advance(deltaTime: Float(event.deltaTime))
+            }
+        }
+    }
+
+    private func advance(deltaTime: Float) {
+        updateFPS(deltaTime: TimeInterval(deltaTime))
+        guard hasStarted else { return }
+        tick(deltaTime: deltaTime)
+    }
+
+    /// Rolling FPS measured over a half-second window rather than a raw
+    /// `1 / deltaTime` per frame, which would jump around too much to read at a glance.
+    private func updateFPS(deltaTime: TimeInterval) {
+        fpsFrameCount += 1
+        fpsElapsedTime += deltaTime
+        guard fpsElapsedTime >= 0.5 else { return }
+        fps = Double(fpsFrameCount) / fpsElapsedTime
+        fpsFrameCount = 0
+        fpsElapsedTime = 0
     }
 
     func makeSceneEntity() async -> Entity {
@@ -142,10 +189,6 @@ final class WorldViewModel: ObservableObject {
         root.addChild(hook)
 
         return root
-    }
-
-    func updateScene() {
-        updateRodPose()
     }
 
     /// `RealityView` in non-AR ("virtual") mode has no ARKit device camera to fall back on, and
@@ -187,15 +230,6 @@ final class WorldViewModel: ObservableObject {
         guard hookPhase != phase else { return }
         hookPhase = phase
         Task { await send(.hookPhase(phase)) }
-    }
-
-    private func startSimulation() {
-        simulationTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 16_666_667)
-                self?.tick(deltaTime: 1.0 / 60.0)
-            }
-        }
     }
 
     private func tick(deltaTime: Float) {
@@ -371,6 +405,7 @@ final class WorldViewModel: ObservableObject {
     private func send(_ message: NetworkMessage) async {
         do {
             try await transport.send(message)
+            lastError = nil
         } catch {
             lastError = error.localizedDescription
         }

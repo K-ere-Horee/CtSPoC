@@ -957,3 +957,31 @@ Integration Environment, First-Person Camera, and Rod Motion Fixes") for the
 empirical derivation.
 
 Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-031 --- Transport Delivery Mode Matches Message Freshness, Not a Blanket Default
+
+## Decision
+
+`NetworkMessage` declares `requiresReliableDelivery` per case. Continuous,
+high-frequency telemetry (`state`, the streamed `RodState`) sends unreliable:
+a stale sample is worthless once superseded, so retransmitting a dropped one
+only adds latency for every real sample queued behind it. Discrete, one-shot
+signals (`discoveryToken`, `fishingEvent`, `hookPhase`) stay reliable, since
+losing one of those silently breaks game state rather than just aging out.
+Both `TransportHost` and `TransportClient` read this flag to pick
+`MCSessionSendDataMode` instead of hardcoding `.reliable` for every send.
+
+## Rationale
+
+MultipeerConnectivity's `.reliable` mode is TCP-like: ordered and
+retransmitted. Sending the entire live motion stream this way meant any
+single dropped packet under real Wi-Fi/Bluetooth conditions caused
+head-of-line blocking — every subsequent, already-stale sample queued behind
+the retransmit — which read directly as controller/rod lag independent of
+frame rate or rendering. See `CHECKPOINT.md` ("Controller lag fix, FPS debug
+indicator, and a stuck-error/casting investigation") for the full
+investigation and the two other contributing causes found alongside this one.
+
+Status: Accepted
