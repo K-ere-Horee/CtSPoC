@@ -37,23 +37,29 @@ final class TransportClient: NSObject, TransportProtocol {
 
         session.delegate = self
         browser.delegate = self
+        #if DEBUG
         print("[CLIENT] Initialized")
+        #endif
     }
 
     func browser(
         _ browser: MCNearbyServiceBrowser,
         didNotStartBrowsingForPeers error: Error
     ) {
+        #if DEBUG
         print("========== BROWSER FAILED ==========")
         print(error)
         let nsError = error as NSError
         print(nsError.domain)
         print(nsError.code)
         print(nsError.userInfo)
+        #endif
     }
-    
+
     func connect() async throws {
+        #if DEBUG
         print("[CLIENT] Start browsing")
+        #endif
         browser.startBrowsingForPeers()
         onStateChange?(.searching)
     }
@@ -90,7 +96,9 @@ extension TransportClient: MCNearbyServiceBrowserDelegate {
 extension TransportClient: MCSessionDelegate {
 
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
+        #if DEBUG
         print("[CLIENT] \(peerID.displayName) -> \(state)")
+        #endif
         switch state {
         case .connected:
             onStateChange?(.ready)

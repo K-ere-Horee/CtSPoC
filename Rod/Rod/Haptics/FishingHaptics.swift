@@ -25,7 +25,9 @@ final class FishingHaptics {
             haptics.reelTick()
         case .fishBite:
             haptics.fishBite()
-        case .fishEscaped, .lineBreak:
+        case .fishEscaped:
+            haptics.fishEscaped()
+        case .lineBreak:
             haptics.lineBreak()
         case .catchFish:
             haptics.catchFish()

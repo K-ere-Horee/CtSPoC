@@ -12,10 +12,11 @@ public enum HookPhase: String, Codable, Sendable {
     case idle
     case flying
     case hookInWater
+    case fishOnHook
     case reeling
 }
 
 public extension HookPhase {
     var allowsCasting: Bool { self == .idle }
-    var allowsReeling: Bool { self == .hookInWater || self == .reeling }
+    var allowsReeling: Bool { self == .hookInWater || self == .fishOnHook || self == .reeling }
 }

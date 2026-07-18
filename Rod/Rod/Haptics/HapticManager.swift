@@ -54,6 +54,14 @@ final class HapticManager {
         playTransient(intensity: 0.9, sharpness: 1)
     }
 
+    func fishEscaped() {
+        playPattern([
+            (0.5, 0.4, 0),
+            (0.35, 0.3, 0.12),
+            (0.2, 0.2, 0.26)
+        ])
+    }
+
     private func playTransient(intensity: Float, sharpness: Float) {
         playPattern([(intensity, sharpness, 0)])
     }

@@ -414,6 +414,23 @@ the existing pose values.
 - Shared remains platform independent.
 - `git diff --check` passes.
 
+## Casting Architecture Documentation Audit
+
+Added the follow-up contract to the project guidance and architecture docs:
+
+- `AGENTS.md` now requires charging phase/power ownership in Rod/Shared,
+  World-owned HUD presentation, and strict separation between spatial rod
+  transforms and cast gameplay values.
+- `ARCHITECTURE_DECISIONS.md` records ADR-018 for gesture charging and the
+  stationary rod root/hook-only cast movement decision.
+- `Software_Architecture_Document_and_Implementation_Plan.md` documents the
+  live charging pipeline, persistent `CastSolution`, and transform boundary.
+- `SESSION_MEMORY.md` records the same contracts for terminal-based session
+  handoff.
+
+Verification: targeted Shared compilation and `git diff --check` pass. Full
+Xcode/device validation remains pending local build dependencies and hardware.
+
 ## Rod Orientation Refactor
 
 Roadmap source: `CtSPoC_Rod_Orientation_Refactor.md`
@@ -859,6 +876,69 @@ Design source: `Feature Proposal - Debug Cast Meter & Persistent Cast Solution`,
 - Runtime UI persistence and two-device meter/trajectory behavior remain
   pending hardware validation.
 
+## Casting Architecture Follow-up
+
+Design source: `Casting Architecture Follow-up - Gesture Charging, World HUD, and Rod Transform Separation`, 2026-07-18.
+
+### Gesture Charging
+
+- Added motion phases for `backswing`, `charging`, `forwardSwing`, `release`,
+  and `followThrough`.
+- `RodMotionInterpreter` reports live normalized cast power during the casting
+  gesture and freezes release power during FollowThrough.
+- `RodState` transports `motionPhase` and `castPower` so World can animate a
+  live HUD without reading CoreMotion.
+- `CastSolution` remains created only at release and remains the frozen
+  gameplay cast state.
+
+### World HUD
+
+- World Cast Meter consumes `RodState.motionPhase`, `RodState.castPower`, and
+  `RodState.castSolution`.
+- The meter is visible during charging/release phases and displays frozen
+  solution values during release/follow-through.
+- Rod remains free of gameplay HUD presentation.
+
+### Rod Transform Separation
+
+- `RodState.directionX/Y/Z` and `distance` now remain spatial-only.
+- World positions the rod from spatial state, while hook physics uses only
+  `CastSolution` direction, power, distance, and launch angle.
+- Hook and rod remain separate scene entities; casting/reeling changes only
+  hook position and velocity.
+
+### Verification
+
+- Shared charging/cast contracts compile with targeted `swiftc` verification.
+- `git diff --check` passes.
+- Full two-device charging HUD and stationary-rod runtime validation remains
+  pending hardware execution.
+
+## Session Memory Restoration
+
+Restored `SESSION_MEMORY.md` after it was absent from the working tree. The
+memory now includes the complete project structure, tech stack, gesture
+charging phases, corrected calibration pipeline, CastSolution ownership,
+World HUD ownership, stationary-rod invariant, documentation rules, and
+targeted verification commands.
+
+## Terminal Session Memory
+
+Added `SESSION_MEMORY.md` as the compact handoff document for local
+terminal-based AI sessions. It summarizes project boundaries, source-of-truth
+contracts, calibration and CastResolver flow, HookPhase rules, UI ownership,
+verification commands, current feature state, and documentation entry points.
+
+The memory file now also documents the technology stack and complete project
+structure, including the responsibilities of SwiftUI, RealityKit, CoreMotion,
+Nearby Interaction, MultipeerConnectivity, Core Haptics, and the Shared local
+Swift package.
+
+The session workflow now explicitly requires every task to update the proper
+architecture/design documentation and append a new `CHECKPOINT.md` entry in a
+git-commit-like format covering scope, file/flow changes, verification, and
+remaining limitations. Previous checkpoint history must remain intact.
+
 ## Cast Meter Architecture Refactor
 
 Design source: `Cast Meter Architecture Refactor - Single Source of Truth & World HUD`, 2026-07-17.
@@ -885,3 +965,423 @@ Design source: `Cast Meter Architecture Refactor - Single Source of Truth & Worl
 - World HUD reads the single `CastSolution` state from `RodState`.
 - Shared cast contracts compile with targeted `swiftc` verification.
 - `git diff --check` passes.
+
+## Gameplay Architecture V1 Documentation Update
+
+Design source: `Catch the Scott - Gameplay Architecture V1`, 2026-07-18.
+
+Documentation-only update. No Swift, Xcode project, asset, or runtime
+structure was modified.
+
+- Added `GAMEPLAY_ARCHITECTURE_V1.md` as the product and gameplay source of
+  truth.
+- Documented the core principle: Rod is an input device and World is the game.
+- Defined World ownership of menus, tutorials, calibration guidance, HUD,
+  hook/fish simulation, line tension, results, and progression.
+- Defined Rod's minimal V1 surface: motion, calibration, cast/reel intent,
+  buttons, connection status, and haptic output.
+- Documented the complete gameplay loop from connection through catch/escape,
+  result, and continuing fishing.
+- Added the fish-interest, bite, fight, line-tension, haptic-rhythm, fish
+  selection, and equipment progression contracts.
+- Updated AGENTS, architecture decisions, software architecture, spatial
+  controller architecture, and terminal session memory to reference the V1
+  contract and documentation-only workflow.
+
+Verification: confirmed the change set contains Markdown files only and
+`git diff --check` passes. Code compilation was intentionally not run because
+this task explicitly requested documentation changes only.
+
+## World Controller and Hook Architecture Refactor
+
+Design source: `World Controller & Hook Architecture Refactor`, 2026-07-18.
+
+Investigation found `WorldViewModel.updateRodPose()` positioning `RodRoot`
+with `RodState.direction * distance`, which made the controller behave like a
+cast projectile. The implementation now:
+
+- keeps `RodRoot` at a fixed camera-relative offset;
+- applies only `RodState.orientation` in `updateRodPose()`;
+- removes controller dependence on cast direction and cast distance;
+- keeps `CastSolution` consumption inside hook launch velocity calculation;
+- preserves hook-only movement for flight, splash, reeling, and reset;
+- removes the unused rod-origin calculation from hook launch.
+
+Architecture documentation now records ADR-019 and updates AGENTS, the
+implementation plan, and session memory with the controller/hook ownership
+boundary.
+
+Verification: `git diff --check` and targeted Shared compilation pass. Full
+Xcode/device runtime validation remains pending because local package
+resolution and simulator services are unavailable in this environment.
+
+## Documentation Errata and Dead Code Cleanup
+
+Date: 2026-07-18.
+
+Follow-up housekeeping after a full-repository review. Content under
+`Architecture /` is treated as a development log and is not required to track
+current implementation state; only a genuine indexing error was corrected
+there. The remaining work removed code paths with no live callers.
+
+### Documentation
+
+- Renumbered the duplicate `ADR-014 --- Debug First` to `ADR-021` in
+  `ARCHITECTURE_DECISIONS.md` (it collided with the existing
+  `ADR-014 --- Nearby Interaction Ownership`). No other content in that file,
+  `SOFTWARE_ARCHITECTURE_DOCUMENT.md`, or `SPATIAL_CONTROLLER_DOCUMENT.md` was
+  changed; their drift against the current `RodState` shape and folder layout
+  is accepted as historical log content.
+
+### Dead Code Removed
+
+- Deleted `Shared/Sources/Shared/Models/PeerInfo.swift` and
+  `Shared/Sources/Shared/Models/MotionPacket.swift`: neither type had any
+  remaining reference outside their own declaration.
+- Deleted `Shared/Sources/Shared/Debug/MotionRecording.swift`: the file
+  contained only a header comment, no implementation.
+- Removed `NetworkMessage.hello` and `NetworkMessage.motion` cases; both were
+  never constructed anywhere in Rod or World, and `RodViewModel`'s message
+  switch only ever discarded them. `RodViewModel.handle(_:)` now matches only
+  the remaining unhandled case, `.state`.
+- Removed `WorldViewModel.loadRodEntity()`: an alternate Rod.usdz loading path
+  superseded by `makeArrow()`/`makeSceneEntity()`, never called.
+- Removed `WorldViewModel.modelPitch/modelYaw/modelRoll` and
+  `updateModelOrientation()`, and the `#if DEBUG` `orientationSlider(_:value:)`
+  helper in `World/ContentView.swift` that only existed to drive those
+  properties. None of this was reachable from the current view body.
+- Gated remaining development `print()` diagnostics behind `#if DEBUG` in
+  `Rod/Rod/Transport/TransportClient.swift`,
+  `World/World/Transport/TransportHost.swift`, and
+  `Rod/Rod/ViewModel/RodViewModel.swift`, so they no longer compile into
+  release builds. Also removed a stale commented-out alternate
+  `didNotStartAdvertisingPeer` implementation in `TransportHost.swift`.
+
+### Explicitly Out of Scope
+
+Per direction, the commented-out `MotionDebugView` section in
+`Rod/ContentView.swift` and the commented-out `CastMeterView` section in
+`World/ContentView.swift` were left untouched — both are fully implemented
+and considered intentionally disabled rather than dead.
+
+### Verification
+
+- Targeted Shared compilation (`swiftc -parse-as-library`, full model set
+  including `NetworkMessage`) passes with no errors or warnings.
+- `git diff --check` passes.
+- `grep` confirms no remaining references to `PeerInfo`, `MotionPacket`,
+  `MotionRecording`, `loadRodEntity`, `updateModelOrientation`,
+  `modelPitch`/`modelYaw`/`modelRoll`, or `orientationSlider` anywhere in the
+  Swift sources.
+- Full Xcode/device build remains environment-blocked as in prior checkpoints.
+
+## Gameplay V1 - Fish Spawn (Fish A)
+
+Date: 2026-07-18.
+
+Design source: `GAMEPLAY_ARCHITECTURE_V1.md`, first implementation slice
+requested for the fish system, scoped to spawning a single fish entity.
+Recorded as ADR-022 in `ARCHITECTURE_DECISIONS.md`.
+
+### Scope
+
+- Added `World/World/Gameplay/FishManager.swift`, a `@MainActor` manager that
+  owns one `ModelEntity` named `"Fish A"`: spawn, despawn, and idle swim
+  motion. It is World-only; Rod and Shared are untouched.
+- The fish body is a `ModelEntity` sphere mesh (`generateSphere`) scaled
+  non-uniformly (`[1, 0.6, 2.2]`) to approximate an elongated fish shape,
+  since this RealityKit SDK has no capsule mesh primitive and no fish asset
+  exists yet. Matches the existing primitive-mesh convention used for the rod
+  arrow and hook.
+- `WorldViewModel` now holds `sceneRoot` (captured at the end of
+  `makeSceneEntity()`) and a `FishManager` instance created in `init()` with
+  the existing `waterHeight`.
+- `setHookPhase(_:)` calls `fishManager.spawn(in: sceneRoot)` when the phase
+  transitions from `.flying` to `.hookInWater`, and `fishManager.despawn()`
+  when the phase returns to `.idle`. `tick(deltaTime:)` calls
+  `fishManager.update(deltaTime:)` every frame; the update is a no-op while
+  no fish is spawned.
+- Fish A swims in a slow circular idle loop around a randomized point in the
+  water plane, chosen at spawn time, and orients to face its direction of
+  travel. There is no searching, fish interest, bite, fight, or species data
+  yet — those remain future work per `GAMEPLAY_ARCHITECTURE_V1.md`.
+
+### Documentation
+
+- `CLAUDE.md` project structure now lists
+  `World/World/Gameplay/FishManager.swift`.
+- Added ADR-022 to `ARCHITECTURE_DECISIONS.md` (Fish Spawn Ownership).
+- Added a "Fish Spawn (Fish A)" subsection to the "Gameplay Architecture V1"
+  section of `SOFTWARE_ARCHITECTURE_DOCUMENT.md`.
+
+### Verification
+
+- `xcrun swiftc -typecheck` on `FishManager.swift` standalone passes (no
+  Shared dependency; imports only `RealityKit` and `simd`).
+- Targeted Shared `swiftc -parse-as-library` compilation (per the standard
+  verification command set) passes.
+- `git diff --check` passes.
+- `WorldViewModel.swift` remains at 289 lines, under the 300-line ViewModel
+  guideline in `AGENTS.md`.
+- Full Xcode/device build and in-scene visual verification remain
+  environment-blocked, as in prior checkpoints; the fish spawn/despawn/swim
+  behavior has not been observed running.
+
+## Gameplay V1 - Hook Phase Fish Grab (Reverted Visual Fish)
+
+Date: 2026-07-18.
+
+Direction change from the prior entry, the same day: no visual fish in
+World for now. Priority is making `HookPhase` actually reflect the real
+game state (e.g. a fish grab) before any rendering. Recorded as ADR-023 in
+`ARCHITECTURE_DECISIONS.md`, which marks ADR-022 as superseded rather than
+deleting it.
+
+### Scope
+
+- Deleted `World/World/Gameplay/FishManager.swift` and its directory. No
+  fish entity, mesh, or RealityKit visual exists in World anymore.
+- Reverted `WorldViewModel`'s `sceneRoot`/`fishManager` wiring added for the
+  visual slice.
+- Added `HookPhase.fishOnHook` in
+  `Shared/Sources/Shared/Models/HookPhase.swift`, between `hookInWater` and
+  `reeling`. `allowsReeling` now includes `.fishOnHook`.
+- `WorldViewModel` now tracks fish attachment as private simulation state
+  (`biteTimer: Float`, `hasFishOnHook: Bool`), not as part of `HookPhase`
+  itself:
+  - `updateBiteTimer(deltaTime:)` runs every tick while `.hookInWater`;
+    on expiry (`biteTimer <= 0`) it sets `hasFishOnHook = true`, transitions
+    to `.fishOnHook`, and sends `FishingEvent.fishBite`.
+  - `tick(deltaTime:)` gained a `.fishOnHook` case (reels like
+    `.hookInWater`) and the `.reeling` case now returns to `.fishOnHook`
+    instead of unconditionally `.hookInWater` when `hasFishOnHook` is true.
+  - `simulateFlyingHook()` resets `hasFishOnHook = false` and
+    `biteTimer = Float.random(in: 1.5...4.0)` on every splash, so each cast
+    gets an independent, randomized chance to hook a fish.
+  - `reelHook(deltaTime:)` sends `FishingEvent.catchFish` only when the hook
+    reaches the rod with `hasFishOnHook == true`, then clears the flag; an
+    empty retrieve from `.hookInWater` (never bitten) sends no event.
+- `FishingEvent.fishBite` and `.catchFish` were already defined and already
+  handled by `Rod/Rod/Haptics/FishingHaptics.swift`, but World never sent
+  either one before this change — this is their first real use.
+- Explicitly not implemented yet: fish interest (as distinct from bite),
+  line tension, escape (`fishEscaped`/`lineBreak` remain unsent), species
+  data, and any visual/RealityKit representation of a fish. A bite always
+  succeeds if reeled in.
+
+### Documentation
+
+- `CLAUDE.md` project structure reverted (no `Gameplay/FishManager.swift`
+  entry).
+- `ARCHITECTURE_DECISIONS.md`: ADR-022 marked Superseded by new ADR-023
+  (Hook Phase Reflects a Real Fish Grab, No Visual Fish Yet). Neither ADR
+  entry was deleted.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: replaced the "Fish Spawn (Fish A)"
+  subsection with "Hook Phase Fish Grab (No Visual Fish Yet)" describing the
+  new state machine.
+
+### Verification
+
+- Targeted Shared `swiftc -parse-as-library` compilation, expanded to
+  include `FishingEvent.swift`, `NetworkMessage.swift`, `ConnectionState.swift`,
+  `SpatialStatus.swift`, and `Transport.swift` alongside the standard set,
+  passes with no errors.
+- `grep` confirms `WorldViewModel.swift`'s `switch hookPhase` is the only
+  exhaustive switch over `HookPhase` in the repository, and it already
+  handles `.fishOnHook`.
+- `git diff --check` passes.
+- Full Xcode/device build and in-scene/haptic runtime verification remain
+  environment-blocked; the bite/catch event flow and Rod haptic response
+  have not been observed running end to end.
+
+## Gameplay V1 - Escape/Line-Break Haptics and Dynamic Reel Speed
+
+Date: 2026-07-18.
+
+Confirmed on-device: hook/fish-bite/reel now work end to end (prior
+checkpoint entry's flow was validated). This entry covers two follow-ups
+raised from that test: (1) `fishEscaped`/`lineBreak` haptics were defined
+but never triggered by any real game state, and (2) `RodState.reelSpeed`
+read as a constant 1.000 or 0.000 instead of scaling with how fast the
+player physically rotates the controller. Recorded as ADR-024 and ADR-025
+in `ARCHITECTURE_DECISIONS.md`.
+
+### Fish Escape and Line Break (ADR-024)
+
+- `World/World/ViewModels/WorldViewModel.swift` gained `biteExpireTimer`,
+  `lineStrainTimer`, and constants `biteExpireDuration` (2.5s),
+  `lineBreakReelThreshold` (0.9 reel speed), `lineBreakSustainDuration`
+  (1.2s).
+- `updateBiteExpiry(deltaTime:)` runs while `.fishOnHook` and the player is
+  not reeling; on expiry it clears `hasFishOnHook`, returns `HookPhase` to
+  `.hookInWater` with a fresh `biteTimer`, and sends
+  `FishingEvent.fishEscaped`.
+- `updateLineStrain(deltaTime:)` runs while `.reeling` with
+  `hasFishOnHook == true`; it accumulates only while
+  `rodState.reelSpeed >= lineBreakReelThreshold` and resets to zero
+  otherwise. Sustaining the threshold for `lineBreakSustainDuration`
+  disables the hook, clears `hasFishOnHook`, returns `HookPhase` to `.idle`,
+  and sends `FishingEvent.lineBreak`.
+- Pausing reeling mid-fight (the `.reeling` case's `else` branch) now resets
+  `biteExpireTimer` to `biteExpireDuration` before returning to
+  `.fishOnHook`, so the escape clock doesn't keep draining silently through
+  a reel/pause boundary.
+- `simulateFlyingHook()` resets both new timers to zero alongside the
+  existing `hasFishOnHook`/`biteTimer` reset on every splash.
+- `Rod/Rod/Haptics/HapticManager.swift` gained `fishEscaped()`, a fading
+  three-pulse pattern distinct from the sharp single-transient
+  `lineBreak()`. `Rod/Rod/Haptics/FishingHaptics.swift`'s `handle(_:)` no
+  longer aliases `.fishEscaped` to `.lineBreak`'s haptic; each case now maps
+  to its own method.
+
+### Dynamic Reel Speed (ADR-025)
+
+- Root cause: `RodMotionInterpreter`'s `.reel` case computed
+  `speed = min(1, rotationRateMagnitude / max(profile.reelRotationRate, 1))`.
+  `reelRotationRate` (the calibrated minimum threshold) is almost always
+  under 1.0, so `max(_, 1)` floored the denominator at a near-constant `1`,
+  and real reeling motion easily exceeds 1 rad/s — so `speed` saturated to
+  `1.0` almost immediately past the detection threshold.
+- `Shared/Sources/Shared/Gameplay/MotionProfile.swift`: added
+  `reelFullRotationRate: Double` alongside the existing `reelRotationRate`.
+- `Shared/Sources/Shared/Gameplay/RodMotionInterpreter.swift`: `.reel` now
+  computes
+  `speed = clamp((rotationRateMagnitude - reelRotationRate) / (reelFullRotationRate - reelRotationRate), 0...1)`,
+  a continuous ramp instead of a saturating ratio.
+- `Rod/Rod/ViewModel/RodViewModel.swift`'s reel-calibration step
+  (`calibrateMotion()`, `.reel` branch) now also records `peakRate` (the max
+  rotation rate magnitude across the demonstrated reel samples, not just
+  the average) and sets
+  `reelFullRotationRate = max(reelRotationRate + 0.3, peakRate)`. The
+  player's own demonstrated peak becomes the 1.0 reference instead of an
+  arbitrary constant.
+- `MotionProfile` is `Codable` and persisted via `UserDefaults`;
+  `RodViewModel.loadMotionProfile()` already uses `try?` around decode, so a
+  profile saved before this change safely falls back to requiring
+  recalibration rather than crashing.
+
+### Verification
+
+- Targeted Shared `swiftc -parse-as-library` compilation (standard set plus
+  `FishingEvent`, `NetworkMessage`, `ConnectionState`, `SpatialStatus`,
+  `Transport`) passes.
+- Built `Shared` as an iOS-simulator module
+  (`-sdk iphonesimulator -target arm64-apple-ios17.0-simulator`) and used it
+  to `swiftc -typecheck` `Rod/Rod/Haptics/FishingHaptics.swift`,
+  `Rod/Rod/Haptics/HapticManager.swift`, and the full
+  `Rod/Rod/ViewModel/RodViewModel.swift` alongside its sibling sensor/
+  transport files (`MotionManager.swift`, `NearbyInteractionManager.swift`,
+  `TransportClient.swift`) — all pass with no errors.
+- `git diff --check` passes.
+- Full Xcode/device build remains environment-blocked; the escape/
+  line-break event flow, the two new haptic patterns, and the dynamic reel
+  speed feel have not been observed running on hardware yet.
+
+## Gameplay V1 - FishSpecies Model, Continuous Line Tension, Catch HUD
+
+Date: 2026-07-18.
+
+Follow-up requested after confirming the escape/line-break/reel-speed work:
+(1) a real 0...1 tension bar instead of the prior binary sustained-threshold
+timer, (2) World HUD showing catch success and running catch count, and (3)
+fish separated into their own data model so species can carry base
+modifiers and be swapped for real assets later. Recorded as ADR-026 in
+`ARCHITECTURE_DECISIONS.md`.
+
+### FishSpecies Data Model
+
+- Added `Shared/Sources/Shared/Models/FishSpecies.swift`: `Codable`,
+  `Sendable`, `Identifiable` struct (`id`, `name`, `weightRange`,
+  `lengthRange`, `resistance: Double` 0...1, `value: Int`), plus
+  `FishSpeciesRange` (a `Codable` min/max pair — `ClosedRange` does not
+  synthesize `Codable`, so it can't be used directly in a `Codable` model).
+  No mesh, asset name, or RealityKit reference; Shared still imports only
+  Foundation.
+- Added `World/World/Gameplay/FishCatalog.swift`: the World-owned content
+  list (`static let all: [FishSpecies]`, currently one entry, `"fish_a"` /
+  "Fish A") and `randomSpecies()`. Adding a species means appending one
+  entry here; nothing else in the fight simulation is species-specific
+  code, only data.
+
+### FishFightController (Extracted From WorldViewModel)
+
+- Added `World/World/Gameplay/FishFightController.swift`, a `@MainActor`
+  `ObservableObject` owning all fish-fight state: `hasFishOnHook`,
+  `lineTension: Float` (`@Published`, 0...1), `caughtCount`,
+  `lastCatchResult: FishCatchResult?`, plus the private bite/escape timers
+  and the currently-hooked species/weight/length.
+- `WorldViewModel.tick(deltaTime:)` now calls into it instead of managing
+  bite/escape/tension timers inline:
+  `updateSearching(deltaTime:)`, `updateWaiting(deltaTime:)`,
+  `pauseFight()`, `updateFighting(deltaTime:reelSpeed:)`, `resolveCatch()`,
+  `resetForNewCast()`. `WorldViewModel` still owns `HookPhase` transitions,
+  the hook entity, and sending `FishingEvent`; the controller has no
+  transport, entity, or `HookPhase` knowledge.
+- `lineTension` replaces the prior `lineStrainTimer`/threshold/sustain-
+  duration mechanic (ADR-024) with a continuous value: it rises while
+  reeling above a per-species safe reel speed
+  (`effectiveSafeReelSpeed`) at a per-species rate
+  (`effectiveTensionRiseRate`), decays otherwise, and breaks the line at
+  1.0. Species `resistance` also scales the bite grace period
+  (`effectiveBiteExpireDuration`) — a stronger fish gives less time to
+  react to a bite and snaps the line faster under strain.
+- `World/World/Gameplay/FishCatchResult.swift`: a small, non-`Codable`,
+  World-only struct (`speciesName`, `weight`, `length`,
+  `outcome: .caught/.escaped/.lineBreak`) used purely for HUD display, set
+  by `FishFightController` whenever a bite resolves.
+
+### World HUD
+
+- Added `World/World/Views/LineTensionView.swift`: a green/yellow/red
+  0...1 bar bound to `fishFight.lineTension`, visible whenever
+  `fishFight.hasFishOnHook`; shows a "SNAPPING" label past 0.8.
+- `World/World/ContentView.swift` now constructs `WorldViewModel` in an
+  explicit `init()` and separately observes `viewModel.fishFight` as its
+  own `@ObservedObject`, so `FishFightController`'s `@Published` state
+  drives the view independently of `WorldViewModel`'s. Added a "Catch
+  Results" `GroupBox` showing `fishFight.caughtCount` and the last resolved
+  outcome (species name, weight in kg, length in cm, and
+  caught/escaped/line-broke label).
+
+### Documentation
+
+- `CLAUDE.md`: `Shared/Models` note now mentions `FishSpecies`;
+  `World/World` structure now lists `Gameplay/` (FishFightController,
+  FishCatalog, FishCatchResult) and `LineTensionView.swift`.
+- `ARCHITECTURE_DECISIONS.md`: added ADR-026.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: replaced the stale
+  `WorldViewModel`-owned bite-timer description (now moved) and the ADR-024
+  binary-timer section with a single "Fish Species and Fight Simulation"
+  section describing the current design.
+
+### Unrelated Concurrent Change Observed
+
+- While this task was in progress, `Shared/Sources/Shared/Models/` was
+  reorganized into subfolders (`Device/`, `Gameplay/`, `Rod/`, `Spatial/`)
+  outside of this session's edits (some of it already `git add`-staged).
+  This was left untouched — it did not originate from this task, and
+  Swift Package Manager does not care about subfolder layout within a
+  target's source directory, so it does not affect anything above.
+  `FishSpecies.swift` was added directly to `Shared/Sources/Shared/Models/`
+  (not into any of those subfolders) and remains there.
+
+### Verification
+
+- Rebuilt the Shared package as a macOS module and as an iOS-simulator
+  module directly from `find Sources/Shared -name "*.swift"` (so the
+  in-flight subfolder reorganization above didn't require hardcoded
+  paths); both build cleanly.
+- `xcrun swiftc -typecheck -target arm64-apple-macosx15.0` against the
+  macOS Shared module for `WorldViewModel.swift`, `ContentView.swift`,
+  `FishCatalog.swift`, `FishCatchResult.swift`, `FishFightController.swift`,
+  `LineTensionView.swift`, `CastMeterView.swift`, and `TransportHost.swift`
+  passes with no errors (one pre-existing, unrelated warning about an
+  unused `controllerEntity` binding in `launchHook(solution:)`).
+- `xcrun swiftc -typecheck -sdk iphonesimulator -target
+  arm64-apple-ios17.0-simulator` against the iOS Shared module for
+  `RodViewModel.swift`, `FishingHaptics.swift`, `HapticManager.swift`,
+  `MotionManager.swift`, `NearbyInteractionManager.swift`, and
+  `TransportClient.swift` passes with no errors.
+- `git diff --check` passes.
+- Full Xcode/device build and the actual on-screen tension bar/catch HUD
+  have not been observed running yet.

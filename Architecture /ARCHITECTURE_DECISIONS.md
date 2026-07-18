@@ -1,0 +1,664 @@
+# ARCHITECTURE_DECISIONS.md
+
+# CtS PoC - Architecture Decision Record (ADR)
+
+Version: 1.0
+
+This document records architectural decisions that are considered stable
+for the Catch the Scott Spatial Controller PoC. Future changes should
+preserve these decisions unless there is a compelling technical reason
+to revise them.
+
+------------------------------------------------------------------------
+
+# ADR-026 --- FishSpecies Data Model and Continuous Line Tension
+
+## Decision
+
+Two related changes replace ADR-024's binary line-break timer with a real
+tension meter and separate fish data from fight logic:
+
+**`FishSpecies` (Shared).** Added
+`Shared/Sources/Shared/Models/FishSpecies.swift`: a `Codable` data-only
+struct (`id`, `name`, `weightRange`, `lengthRange`, `resistance` 0...1,
+`value`) plus `FishSpeciesRange` (a `Codable` replacement for `ClosedRange`,
+which does not synthesize `Codable`). It carries no mesh, asset name, or
+RealityKit reference — Shared still never imports rendering frameworks. The
+World-owned content list (`World/World/Gameplay/FishCatalog.swift`, one
+entry today: `"fish_a"`) is where species are defined and tuned; asset
+wiring is deferred until 3D fish assets exist.
+
+**Continuous line tension.** `FishFightController` (new,
+`World/World/Gameplay/FishFightController.swift`, an `ObservableObject`)
+replaces the boolean `lineStrainTimer`/threshold/sustain-duration mechanic
+with a `lineTension: Float` (0...1) that rises while reeling above a
+per-species "safe" reel speed and decays otherwise, breaking the line at
+1.0. `biteTimer`/`hasFishOnHook`/`biteExpireTimer`/catch bookkeeping also
+moved out of `WorldViewModel` into this controller, which
+`WorldViewModel.tick(deltaTime:)` now drives through a small explicit
+interface (`updateSearching`, `updateWaiting`, `pauseFight`,
+`updateFighting`, `resolveCatch`, `resetForNewCast`); `WorldViewModel`
+still owns `HookPhase` transitions and sending `FishingEvent` over
+transport, since fight state itself has no transport or hook-entity
+knowledge. `WorldViewModel` also gained `caughtCount` and
+`lastCatchResult: FishCatchResult?` (`World/World/Gameplay/
+FishCatchResult.swift`) for HUD display.
+
+Species `resistance` now scales three constants: bite grace period
+(`effectiveBiteExpireDuration`), the safe reel speed before tension rises
+(`effectiveSafeReelSpeed`), and the tension rise rate
+(`effectiveTensionRiseRate`) — a stronger fish gives less reaction time and
+snaps the line faster under strain.
+
+**World HUD additions.** `World/World/Views/LineTensionView.swift` renders
+`fishFight.lineTension` as a green/yellow/red 0...1 bar, visible whenever
+`fishFight.hasFishOnHook`. `ContentView` adds a "Catch Results" section
+showing `fishFight.caughtCount` and the last resolved outcome (species
+name, weight, length, caught/escaped/line-broke). `ContentView` now
+observes `WorldViewModel.fishFight` directly as a second `@ObservedObject`
+(constructed in `init()` from the same instance `WorldViewModel` owns), so
+its `@Published` fight state drives the HUD independently of
+`WorldViewModel`'s own `@Published` properties.
+
+## Rationale
+
+A binary "sustained fast reel for N seconds" rule cannot be shown to the
+player as a meaningful 0...1 bar — it is just off or (after N seconds) on.
+A continuously accumulating/decaying value is both a more honest fishing-
+game mechanic and the only thing a tension bar can actually visualize.
+Moving fish/fight state into `FishFightController` was necessary before
+adding it: `WorldViewModel` was already at the file-size guideline in
+`AGENTS.md` after ADR-023/024, and fish bite/escape/tension/catch
+bookkeeping is a cohesive unit of behavior that does not need
+`WorldViewModel`'s transport, hook-entity, or `HookPhase` internals to
+operate — it only needs `deltaTime` and `reelSpeed` in, and yes/no
+transition signals out. Splitting `FishSpecies` (data) from `FishCatalog`
+(World-owned content) from `FishFightController` (simulation) from
+`FishCatchResult` (HUD projection) keeps each piece swappable
+independently — the stated reason for the split is that fish will soon get
+real assets and more species, and the data model must not assume a
+particular mesh or rendering approach.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-024 --- Escape Timer and Reel-Speed Line Break
+
+## Decision
+
+Building on ADR-023's `fishOnHook` state, World now implements minimal line
+tension without a full tension bar, using two independent timers owned by
+`WorldViewModel`:
+
+-   `biteExpireTimer` counts down while `.fishOnHook` and the player is not
+    reeling. On expiry the fish escapes: `hasFishOnHook` clears,
+    `HookPhase` returns to `.hookInWater` (a fresh `biteTimer` starts, so the
+    hook keeps fishing rather than forcing a recast), and
+    `FishingEvent.fishEscaped` sends. Pausing mid-fight resets this timer
+    to `biteExpireDuration` (2.5s) rather than continuing to drain it, so a
+    deliberate pause and an unaddressed bite are treated the same way.
+-   `lineStrainTimer` accumulates only while actively reeling with
+    `hasFishOnHook == true` and `RodState.reelSpeed` at or above
+    `lineBreakReelThreshold` (0.9). Sustaining that for
+    `lineBreakSustainDuration` (1.2s) snaps the line: the hook disables,
+    `hasFishOnHook` clears, `HookPhase` returns to `.idle` (the line is
+    gone; a new cast is required), and `FishingEvent.lineBreak` sends.
+    Dropping below the threshold at any point resets the timer to zero.
+
+`FishingEvent.fishEscaped` and `.lineBreak` were previously defined and
+already handled by `Rod/Rod/Haptics/FishingHaptics.swift`, but World never
+sent either one before this change. `HapticManager` gained a distinct
+`fishEscaped()` pattern (a fading three-pulse taper) instead of aliasing to
+the sharp single-transient `lineBreak()` pattern, so the two failure modes
+feel different to the player.
+
+## Rationale
+
+A real tension bar (per `GAMEPLAY_ARCHITECTURE_V1.md`) needs UI, a
+resistance-per-species model, and a sustained safe-zone mechanic that is out
+of scope for this task. Two independent timers give the same core pressure
+—react to a bite in time, then don't reel too aggressively—without any of
+that. Making pausing reset the escape timer (rather than a monotonic clock
+since the bite) keeps the rule simple: the fish is only lost through
+inaction, never through unlucky timing across a reel/pause boundary.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-025 --- Reel Speed Scales Continuously With Rotation Rate
+
+## Decision
+
+`RodMotionInterpreter`'s `.reel` classification previously computed
+`reelSpeed` as
+`min(1, input.rotationRateMagnitude / max(profile.reelRotationRate, 1))`.
+Because `profile.reelRotationRate` (the calibrated minimum reel-detection
+threshold, `max(0.2, averageRate * 0.45)`) is almost always well under 1.0,
+the `max(_, 1)` floor made the denominator effectively constant at `1`, and
+real device rotation rates during an actual reeling motion routinely exceed
+1 rad/s. `reelSpeed` therefore saturated to `1.0` almost immediately after
+crossing the detection threshold, reading as binary 0/1 rather than a
+dynamic value.
+
+`MotionProfile` gains `reelFullRotationRate`, captured during reel
+calibration in `RodViewModel.calibrateMotion()` as
+`max(reelRotationRate + 0.3, peakRate)`, where `peakRate` is the maximum
+rotation rate magnitude observed across the player's demonstrated reel
+samples (previously only the average was used). `reelSpeed` is now a linear
+ramp between the two calibrated references:
+
+```text
+speed = clamp((rotationRateMagnitude - reelRotationRate)
+              / (reelFullRotationRate - reelRotationRate), 0...1)
+```
+
+`reelRotationRate` remains 0 speed (the minimum motion still recognized as
+reeling); `reelFullRotationRate` (the player's own demonstrated peak) is
+1.0. Spinning faster than that still clamps at 1.0; spinning at the
+threshold reads near 0. `MotionProfile` is Codable and persisted to
+`UserDefaults`; `RodViewModel.loadMotionProfile()` already discards
+undecodable stored profiles with `try?`, so profiles saved before this
+change safely fall back to requiring recalibration rather than crashing.
+
+## Rationale
+
+The player-reported symptom was reel speed reading constant at 1.000 or
+0.000 instead of tracking how fast they physically spin the controller.
+The fix keeps the existing per-player calibration model (Rod owns sensing
+and motion interpretation per `AGENTS.md`) but uses the player's own
+demonstrated range as both ends of the scale, instead of an arbitrary
+floor that happened to make the scale collapse for most real rotation
+rates.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-001 --- World/Rod Separation
+
+## Decision
+
+Split the application into two independent apps.
+
+-   World (macOS)
+-   Rod (iPhone)
+
+## Rationale
+
+The renderer and the controller have different responsibilities.
+
+Benefits:
+
+-   Easier testing
+-   Independent deployment
+-   Cleaner architecture
+-   Reusable controller
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-022 --- Fish Spawn Ownership (Fish A)
+
+## Decision
+
+Fish spawning is a World-only concern with no Shared or Rod involvement.
+`World/World/Gameplay/FishManager.swift` owns a single fish entity's spawn,
+despawn, and idle swim motion. It is instantiated and driven by
+`WorldViewModel`, keeping `WorldViewModel` itself under the ViewModel file
+size guideline.
+
+Fish A spawns when `HookPhase` transitions from `.flying` to `.hookInWater`
+and despawns when the phase returns to `.idle`. It has no interest, bite, or
+fight behavior yet; it only exists and swims in a slow idle loop near a
+randomized point in the water. Fish selection, species data, resistance, and
+the searching/interested/bite state machine described in
+`GAMEPLAY_ARCHITECTURE_V1.md` remain unimplemented and are deferred to a
+future task.
+
+The fish body uses a non-uniformly scaled sphere primitive, matching the
+existing primitive-mesh approach used for the rod arrow and hook (no capsule
+mesh primitive is available on this RealityKit SDK, and no fish asset exists
+yet).
+
+## Rationale
+
+Keeping fish spawn logic in a dedicated manager preserves `WorldViewModel`'s
+role as a coordinator rather than a growing gameplay implementation, and
+keeps the fish system isolated so future searching/interest/bite/fight work
+can extend `FishManager` without touching hook or controller logic.
+
+Status: Superseded by ADR-023. Direction changed the same day: no visual
+fish entity for now, in favor of getting the `HookPhase` state machine
+itself to reflect a real fish grab first. `FishManager.swift` was removed.
+
+------------------------------------------------------------------------
+
+# ADR-023 --- Hook Phase Reflects a Real Fish Grab, No Visual Fish Yet
+
+## Decision
+
+Before any fish is rendered in World, `HookPhase` (Shared) must accurately
+represent whether a fish is actually attached to the hook, so that gameplay
+state and Rod haptics are truthful rather than cosmetic. This reverses
+ADR-022's visual-first approach.
+
+`HookPhase` gains a `fishOnHook` case between `hookInWater` and `reeling`:
+
+```text
+idle -> flying -> hookInWater -> fishOnHook -> reeling -> idle
+                (searching)      (bite)       (fight)   (catch)
+```
+
+`WorldViewModel` tracks the attachment as private simulation state, not as
+part of `HookPhase` itself:
+
+-   `biteTimer` counts down while `hookInWater` (searching). On expiry,
+    `hasFishOnHook` becomes `true`, the phase moves to `.fishOnHook`, and
+    `FishingEvent.fishBite` is sent — the first real use of that existing
+    but previously unsent event.
+-   Reeling is allowed from `hookInWater` (retrieve an empty hook, no event)
+    or from `fishOnHook`/`reeling` (retrieve a hooked fish).
+-   When the hook reaches the rod, `FishingEvent.catchFish` is sent only if
+    `hasFishOnHook` was true — also a first real use of an existing,
+    previously unsent event.
+-   `biteTimer` and `hasFishOnHook` reset on every new splash
+    (`simulateFlyingHook`), so each cast gets an independent chance to hook
+    a fish.
+
+No fish entity, mesh, or RealityKit visual exists yet. No searching/interest
+distinction, line tension, or escape logic exists yet — a bite always
+succeeds if reeled in. Those remain future work per
+`GAMEPLAY_ARCHITECTURE_V1.md`.
+
+## Rationale
+
+The gameplay loop and Rod haptics (`FishingHaptics.handle(_:)` already
+switches on every `FishingEvent` case, including `fishBite` and
+`catchFish`) were built against events that World never actually sent.
+Rendering a fish in the scene before the underlying state machine reflects
+a real bite/catch would make the visual a lie layered on top of a
+non-functional loop. Fixing `HookPhase`/`FishingEvent` truthfulness first
+means any future visual or haptic work has a correct state machine to
+attach to.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-020 --- Rod as Controller, World as Game
+
+## Decision
+
+Catch the Scott is a two-device experience with a strict product boundary:
+Rod is a physical input device and World is the complete game. World owns
+menus, tutorials, calibration instructions, HUD, hook/fish simulation,
+results, and progression. Rod owns motion, calibration capture, cast/reel
+intent, buttons, connection status, and haptic output.
+
+No gameplay information may be rendered on Rod in V1. World is the sole owner
+of gameplay state and player-facing feedback. Rod receives only the input
+commands and typed feedback events required to operate the physical
+controller.
+
+## Rationale
+
+Keeping the iPhone visually quiet preserves the intended illusion that the
+player is holding a fishing rod rather than using a second game screen. It
+also prevents gameplay rules, fish state, and presentation logic from being
+duplicated across devices.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-017 --- Cast Resolver Boundary
+
+## Decision
+
+Cast motion is captured once as an immutable `CastSnapshot` containing the
+corrected orientation, angular velocity vector, and timestamp. `CastResolver`
+converts that snapshot into a `CastSolution` containing normalized power,
+horizontal direction, and launch angle.
+
+The motion interpreter detects the release but does not perform gameplay
+balancing. World/gameplay consumes the solution and never reads CoreMotion.
+
+## Rationale
+
+Separating motion interpretation from gameplay translation allows cast power,
+distance, arc, VFX, audio, and haptics to be balanced without changing the
+controller sensor pipeline.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-002 --- Shared Swift Package
+
+## Decision
+
+All shared models and protocols live inside the Shared Swift Package.
+
+## Rationale
+
+Avoid code duplication.
+
+World and Rod communicate using identical models.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-003 --- RodState is the Single Source of Truth
+
+## Decision
+
+All controller information is represented by one model.
+
+``` swift
+RodState
+```
+
+Gameplay and rendering consume RodState only.
+
+No duplicate motion state may exist.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-004 --- Separation of Motion and Spatial Data
+
+## Decision
+
+CoreMotion and Nearby Interaction remain independent.
+
+Motion:
+
+-   Pitch
+-   Roll
+-   Yaw
+
+Spatial:
+
+-   Distance
+-   Direction
+
+RodState combines both domains.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-005 --- RealityKit Exists Only in World
+
+## Decision
+
+RealityKit rendering belongs exclusively to World.
+
+Rod never renders the simulation.
+
+## Rationale
+
+Rod is a physical controller.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-006 --- Rod Never Depends on Reality
+
+Rod must never import:
+
+-   RealityKit
+-   ARKit
+
+Its responsibility is sensing and input.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-007 --- Shared Must Be Platform Independent
+
+Shared may import:
+
+-   Foundation
+
+Shared must not import:
+
+-   SwiftUI
+-   RealityKit
+-   CoreMotion
+-   NearbyInteraction
+-   CoreHaptics
+-   UIKit
+-   AppKit
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-008 --- MVVM
+
+Use MVVM throughout the project.
+
+Views remain passive.
+
+Business logic belongs in ViewModels and Managers.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-009 --- Composition Over Inheritance
+
+Prefer composition and protocols.
+
+Avoid deep inheritance hierarchies.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-010 --- Incremental Delivery
+
+Implementation proceeds sprint-by-sprint.
+
+Each sprint must:
+
+-   Build
+-   Run
+-   Be testable
+
+No sprint may depend on unfinished work.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-011 --- Gameplay Deferred
+
+Fishing mechanics are intentionally postponed.
+
+Priority:
+
+1.  Spatial session
+2.  Motion
+3.  Synchronization
+4.  Reality visualization
+5.  Gesture recognition
+6.  Gameplay
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-012 --- Apple-First APIs
+
+Use the latest stable Apple SDKs.
+
+Prefer:
+
+-   Nearby Interaction
+-   RealityKit
+-   CoreMotion
+-   CoreHaptics
+-   Swift Concurrency
+
+Avoid deprecated APIs in new implementations.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-013 --- Loose Coupling
+
+World and Rod communicate only through shared contracts.
+
+------------------------------------------------------------------------
+
+# ADR-014 --- Nearby Interaction Ownership
+
+## Decision
+
+Rod owns the Nearby Interaction session. World receives the resulting spatial
+state through `RodState` over the shared transport contract.
+
+## Rationale
+
+The current macOS SDK marks `NISession` and its peer configuration APIs as
+unavailable on macOS. Keeping the NI implementation on Rod preserves the
+physical-controller model while allowing World to run as a native macOS app.
+
+No project may import the other project.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-021 --- Debug First
+
+Every subsystem should expose observable debug information before
+gameplay is implemented.
+
+Examples:
+
+-   Session state
+-   Distance
+-   Direction
+-   Pitch
+-   Roll
+-   Yaw
+-   Update frequency
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-015 --- Reusable Spatial Controller
+
+The long-term objective is not a fishing game.
+
+The objective is a reusable spatial controller framework capable of
+supporting multiple interaction paradigms such as:
+
+-   Fishing rod
+-   Tennis racket
+-   Baseball bat
+-   Golf club
+-   Sword
+-   Other spatial interaction experiences
+
+Fishing is the first consumer of the framework.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# Change Policy
+
+Any modification to these decisions should:
+
+1.  Explain why the existing decision is insufficient.
+2.  Describe the proposed alternative.
+3.  Document trade-offs.
+4.  Be approved before implementation.
+
+Architectural consistency takes priority over short-term implementation
+convenience.
+
+------------------------------------------------------------------------
+
+# ADR-019 --- Controller Root and Hook Simulation Separation
+
+## Decision
+
+World keeps `RodRoot` at a fixed camera-relative offset and applies only
+`RodState.orientation` to its orientation. Cast direction, power, and distance
+are consumed exclusively by hook launch and simulation. Reeling updates the
+hook position and never repositions the rod root.
+
+## Rationale
+
+The controller is the player's hand representation, while the hook is the
+gameplay projectile. Coupling the rod root to cast distance caused the rod to
+move forward during casting and snap back after reeling. Separate entity
+ownership keeps the controller attached to the player and makes future fishing
+line rendering independent of controller movement.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-018 --- Gesture Charging and Transform Separation
+
+## Decision
+
+The Rod/Shared motion layer owns gesture phases (`Idle`, `Backswing`,
+`Charging`, `Forward Swing`, `Release`, and `Follow Through`) and publishes
+live normalized `castPower` in `RodState`. A release is resolved once into a
+persistent `CastSolution`; World consumes that solution for hook physics and
+HUD presentation.
+
+Rod spatial state and cast gameplay state are separate contracts. Nearby
+Interaction distance/direction control the rod root. Cast direction, power,
+and distance control only the hook trajectory and cast HUD. World must not
+reconstruct cast values from raw motion or use cast distance to move the rod.
+
+## Rationale
+
+Mixing cast output into the rod transform made the controller visibly translate
+when a cast was released. Keeping the rod root spatial and the hook dynamic
+preserves stable controller rendering while allowing the cast to travel.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-016 --- Calibration-Owned Orientation
+
+## Decision
+
+Calibration belongs to the Rod/Shared motion pipeline. The calibration layer
+captures and persists an Idle reference quaternion, applies its inverse to each
+current device orientation, and publishes the corrected orientation in
+`RodState.orientation`.
+
+World consumes that orientation as-is. World does not know whether a
+calibration reference exists and does not apply offsets or reconstruct the
+calibrated orientation from Euler angles.
+
+Gameplay-relative pose may be derived separately from corrected motion, but it
+must not become the renderer's orientation source.
+
+## Rationale
+
+Using relative Euler values for both gameplay and rendering caused the rod to
+appear to snap when calibration ended. A normalized quaternion contract keeps
+the visual pipeline stable and makes the ownership boundary explicit.
+
+Status: Accepted

@@ -19,10 +19,6 @@ final class WorldViewModel: ObservableObject {
     @Published private(set) var hookPhase: HookPhase = .idle
     @Published private(set) var lastError: String?
 
-    @Published var modelPitch: Float = .pi
-    @Published var modelYaw: Float = 0
-    @Published var modelRoll: Float = 0
-
     private var rodModel: Entity?
 
     private let transport: TransportHost
@@ -30,6 +26,7 @@ final class WorldViewModel: ObservableObject {
     private let gravity: Float = 2.2
     private let castSpeed: Float = 2.4
     private let reelSpeed: Float = 3.0
+    private let controllerOffset = SIMD3<Float>(0, -0.15, -0.60)
 
     private var controllerEntity: Entity?
     private var hookEntity: ModelEntity?
@@ -37,6 +34,8 @@ final class WorldViewModel: ObservableObject {
     private var pendingCastSolution: CastSolution?
     private var simulationTask: Task<Void, Never>?
     private var hasStarted = false
+
+    let fishFight = FishFightController()
 
     init(
         transport: TransportHost
@@ -136,7 +135,6 @@ final class WorldViewModel: ObservableObject {
 
         controllerEntity = rodRoot
         rodModel = rod
-        updateModelOrientation()
         hookEntity = hook
 
         rodRoot.addChild(rod)
@@ -148,15 +146,6 @@ final class WorldViewModel: ObservableObject {
         return root
     }
 
-    func updateModelOrientation() {
-        guard let rod = rodModel else { return }
-
-        rod.orientation =
-            simd_quatf(angle: modelRoll, axis: [0,0,1]) *
-            simd_quatf(angle: modelYaw, axis: [0,1,0]) *
-            simd_quatf(angle: modelPitch, axis: [1,0,0])
-    }
-
     func updateScene() {
         updateRodPose()
     }
@@ -165,21 +154,6 @@ final class WorldViewModel: ObservableObject {
         guard hookPhase != phase else { return }
         hookPhase = phase
         Task { await send(.hookPhase(phase)) }
-    }
-
-    private func loadRodEntity() async -> Entity {
-        do {
-            let entity = try await ModelEntity(named: "Rod")
-
-            entity.scale = .one
-            return entity
-        } catch {
-            lastError = "Failed loading Rod.usdz: \(error.localizedDescription)"
-            return ModelEntity(
-                mesh: .generateBox(size: 0.18),
-                materials: [SimpleMaterial(color: .red, isMetallic: false)]
-            )
-        }
     }
 
     private func startSimulation() {
@@ -205,14 +179,34 @@ final class WorldViewModel: ObservableObject {
         case .flying:
             simulateFlyingHook(deltaTime: deltaTime)
         case .hookInWater:
+            if fishFight.updateSearching(deltaTime: deltaTime) {
+                setHookPhase(.fishOnHook)
+                Task { await send(.fishingEvent(.fishBite)) }
+            }
             if rodState.action == .reeling {
                 reelHook(deltaTime: deltaTime)
+            }
+        case .fishOnHook:
+            if rodState.action == .reeling {
+                reelHook(deltaTime: deltaTime)
+            } else if fishFight.updateWaiting(deltaTime: deltaTime) {
+                setHookPhase(.hookInWater)
+                Task { await send(.fishingEvent(.fishEscaped)) }
             }
         case .reeling:
             if rodState.action == .reeling {
                 reelHook(deltaTime: deltaTime)
+                if fishFight.hasFishOnHook,
+                   fishFight.updateFighting(deltaTime: deltaTime, reelSpeed: rodState.reelSpeed) {
+                    hookEntity?.isEnabled = false
+                    setHookPhase(.idle)
+                    Task { await send(.fishingEvent(.lineBreak)) }
+                }
             } else {
-                setHookPhase(.hookInWater)
+                if fishFight.hasFishOnHook {
+                    fishFight.pauseFight()
+                }
+                setHookPhase(fishFight.hasFishOnHook ? .fishOnHook : .hookInWater)
             }
         }
     }
@@ -220,11 +214,9 @@ final class WorldViewModel: ObservableObject {
     private func updateRodPose() {
         guard let controllerEntity else { return }
 
-        let x = rodState.directionX ?? 0
-        let y = rodState.directionY ?? 0
-        let z = rodState.directionZ ?? -0.5
-        let distance = rodState.distance ?? 0.5
-        controllerEntity.position = [x * distance, y * distance, -abs(z * distance)]
+        // The rod represents the player's controller. Gameplay must only move
+        // the hook, so the rod root stays at a stable camera-relative offset.
+        controllerEntity.position = controllerOffset
 
         controllerEntity.orientation = simd_quatf(
             ix: Float(rodState.orientation.x),
@@ -245,8 +237,6 @@ final class WorldViewModel: ObservableObject {
         }
 
         let tipPosition = tip.position(relativeTo: nil)
-        let rodOrigin = controllerEntity.position(relativeTo: nil)
-
         hookEntity.isEnabled = true
         hookEntity.position = tipPosition
         let angle = solution.launchAngle
@@ -267,6 +257,7 @@ final class WorldViewModel: ObservableObject {
         guard hookEntity.position.y <= waterHeight else { return }
         hookEntity.position.y = waterHeight
         hookVelocity = .zero
+        fishFight.resetForNewCast()
         setHookPhase(.hookInWater)
         Task { await send(.fishingEvent(.hookSplash)) }
     }
@@ -278,7 +269,14 @@ final class WorldViewModel: ObservableObject {
         let distance = simd_length(directionToRod)
         guard distance > 0.12 else {
             hookEntity.isEnabled = false
+            let caughtFish = fishFight.hasFishOnHook
+            if caughtFish {
+                fishFight.resolveCatch()
+            }
             setHookPhase(.idle)
+            if caughtFish {
+                Task { await send(.fishingEvent(.catchFish)) }
+            }
             return
         }
 
