@@ -65,6 +65,33 @@ so gameplay difficulty and haptic feel can't silently drift apart from each othe
 `maxExpectedCastDistance` deliberately stayed a private `FishFightController` constant, not part
 of the config — it's cast physics (tied to `WorldViewModel.castSpeed`), not fight tuning.
 
+**Tier differentiation was too weak — resistance now has its own multipliers.** Both
+`effectiveFishPullRate = baseFishPullRate * (1 + resistance)` and `fishPullSpeed = basePullSpeed *
+(1 + resistance * 0.5)` used an implicit multiplier of `1.0`/`0.5` on `resistance`, so
+`resistance`'s contribution was smaller than (pull rate) or comparable to (pull speed) the base
+term itself — every species/tier produced a similar net tension rate regardless of how tough it
+was supposed to be. `FishFightConfig` gained three new fields:
+`pullRateResistanceMultiplier` (3.0), `pullSpeedResistanceMultiplier` (1.8), and
+`escapeAllowanceResistancePenalty` (3.5, with a `minEscapeDistanceAllowance` floor of 2.0 m so it
+can never over-tighten). Formulas become:
+
+```text
+effectiveFishPullRate = baseFishPullRate * (1 + resistance * pullRateResistanceMultiplier)
+fishPullSpeed         = basePullSpeed * (1 + resistance * pullSpeedResistanceMultiplier)
+effectiveEscapeAllowance = max(minEscapeDistanceAllowance,
+                                escapeDistanceAllowance - resistance * escapeAllowanceResistancePenalty)
+```
+
+At `resistance == 0` (any tier's smallest possible roll) all three formulas are unchanged and
+identical across every species — a small individual is weak regardless of species, which is
+correct and not the thing being fixed. At a max-size roll, the new multipliers produce a real
+spread (worked out by hand, net tension rate at full reel speed): `fish_a` ~+0.24/s (comfortable,
+~2 s to snap), `fish_b` ~+0.15/s (~3.3 s, noticeably tighter), `fish_c` ~+0.06/s (~8 s, razor-thin
+margin), `scott` ~**-0.03/s** — full-speed reeling alone can no longer even hold Scott's line,
+forcing genuine tension modulation rather than "hold the reel button." The escape allowance
+similarly tightens from ~4.8 m (`fish_a`) down to ~2.7 m (`scott`), so a powerful fish also
+punishes a slack moment harder, not just a sustained-tension mistake.
+
 **Continuous tension haptics on Rod.** `FishingEvent` gained `reelTensionLow/Medium/High`.
 `FishFightController.tensionBand` derives the band from `lineTension` (< 0.55 low, 0.55–0.8
 medium, ≥ 0.8 high); `WorldViewModel.syncTensionBand()` (every tick) sends an event only on band
@@ -120,6 +147,16 @@ defaults are what they are.
 Every number here — reel/pull rates, the 6 m escape allowance, band thresholds, haptic
 intervals — is a first-pass, hand-reasoned default, not a play-tested one. That's the explicit
 point of making them config: the player is expected to keep adjusting them directly.
+
+The resistance-multiplier fix was reported directly, in the same message that confirmed 0.55
+solved the "impossible" problem: "sepertinya udah cukup susah, namun, tingkat loncatan dari fish
+A - B - C - Scott masih kerasa gaada bedanya" (seems hard enough now, but the difficulty jump
+from Fish A to B to C to Scott still doesn't feel like there's a difference). Diagnosed by working
+the same net-tension-rate formula used for the 0.55 correction across all four species side by
+side (see the Decision section's table) — confirmed the spread was only ~35% between the weakest
+and strongest tier at full reel speed, with every tier sharing an identical floor, which is
+exactly a "no real difference" symptom. The fix is a config change like everything else in this
+ADR, not a code restructure: three new multiplier fields, same formulas otherwise.
 
 Status: Accepted, pending live confirmation (see the matching `CHECKPOINT.md` entry).
 

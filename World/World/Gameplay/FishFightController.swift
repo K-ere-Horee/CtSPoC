@@ -166,7 +166,7 @@ final class FishFightController: ObservableObject {
         if fightStartDistance == nil {
             fightStartDistance = hookDistance
         }
-        if let start = fightStartDistance, hookDistance > start + config.escapeDistanceAllowance {
+        if let start = fightStartDistance, hookDistance > start + effectiveEscapeDistanceAllowance {
             resolve(outcome: .escaped)
             return .escaped
         }
@@ -201,7 +201,7 @@ final class FishFightController: ObservableObject {
     /// controller has no entity/position knowledge itself.
     var fishPullSpeed: Float {
         guard hasFishOnHook else { return 0 }
-        return config.basePullSpeed * (1 + resistance * 0.5)
+        return config.basePullSpeed * (1 + resistance * config.pullSpeedResistanceMultiplier)
     }
 
     /// Call when the hook reaches the rod while a fish is attached.
@@ -290,7 +290,16 @@ final class FishFightController: ObservableObject {
     }
 
     private var effectiveFishPullRate: Float {
-        config.baseFishPullRate * (1 + resistance)
+        config.baseFishPullRate * (1 + resistance * config.pullRateResistanceMultiplier)
+    }
+
+    /// `escapeDistanceAllowance`, tightened for tougher fish — see
+    /// `FishFightConfig.escapeAllowanceResistancePenalty`'s doc comment.
+    private var effectiveEscapeDistanceAllowance: Float {
+        max(
+            config.minEscapeDistanceAllowance,
+            config.escapeDistanceAllowance - resistance * config.escapeAllowanceResistancePenalty
+        )
     }
 
     /// Species `resistance` is a ceiling, not a flat value: the actual fight

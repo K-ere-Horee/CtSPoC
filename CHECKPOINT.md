@@ -4307,3 +4307,89 @@ this was the actual reported symptom, not a vaguer "feels hard."
   tune from are all unverified — this is explicitly a config the player
   is expected to keep adjusting directly, not a claim of correct final
   balance.
+
+## Tier Differentiation: Resistance Multipliers Added to FishFightConfig
+
+Date: 2026-07-19.
+
+Direct follow-up in the same session, confirming the previous entry's
+0.55 fix worked and reporting the next problem: "oke now, sepertinya
+udah cukup susah, namun, tingkat loncatan dari fish A - B - C - Scott
+masih kerasa gaada bedanya" (ok now, seems hard enough, but the
+difficulty jump from Fish A to B to C to Scott still doesn't feel like
+there's a difference). Amended ADR-039 in place again — same
+still-uncommitted feature.
+
+### Diagnosis
+
+Worked the net-tension-rate formula (same method as the previous
+entry's 0.55 correction) across all four species side by side at full
+reel speed. Found the spread between weakest (`fish_a`) and strongest
+(`scott`) was only ~35% (+0.400 down to +0.258 net/s), and every tier
+shared an identical floor at low `sizeRatio` — confirming the reported
+symptom exactly. Root cause: `effectiveFishPullRate = baseFishPullRate *
+(1 + resistance)` and `fishPullSpeed = basePullSpeed * (1 + resistance *
+0.5)` used an implicit multiplier of `1.0`/`0.5` on `resistance`, and
+`baseFishPullRate` (0.15) was large enough relative to `resistance`'s
+own max contribution (up to `0.95` for Scott) that species/tier barely
+mattered next to the shared base term.
+
+### Shared: FishFightConfig
+
+- Added three fields: `pullRateResistanceMultiplier` (3.0),
+  `pullSpeedResistanceMultiplier` (1.8), `escapeAllowanceResistancePenalty`
+  (3.5) — plus `minEscapeDistanceAllowance` (2.0 m) as a floor so the
+  penalty can never over-tighten the escape allowance. All four
+  documented inline with the reasoning, same as every other field in
+  this file.
+
+### World: FishFightController
+
+- `effectiveFishPullRate`: `baseFishPullRate * (1 + resistance)` →
+  `baseFishPullRate * (1 + resistance * config.pullRateResistanceMultiplier)`.
+- `fishPullSpeed`: `basePullSpeed * (1 + resistance * 0.5)` →
+  `basePullSpeed * (1 + resistance * config.pullSpeedResistanceMultiplier)`.
+- New `effectiveEscapeDistanceAllowance` computed property:
+  `max(minEscapeDistanceAllowance, escapeDistanceAllowance - resistance *
+  escapeAllowanceResistancePenalty)`, now used in `updateFight`'s
+  distance-escape check instead of the flat `config.escapeDistanceAllowance`.
+  A tougher fish now gives less rope before a run counts as spooled, not
+  just a faster tension climb.
+
+Hand-worked result at a max-size roll (full reel speed, net tension
+rate): `fish_a` ~+0.24/s (~2 s to snap, comfortable), `fish_b` ~+0.15/s
+(~3.3 s, noticeably tighter), `fish_c` ~+0.06/s (~8 s, razor-thin
+margin), `scott` ~**-0.03/s** — full-speed reeling alone can no longer
+even hold Scott's line. Escape allowance similarly tightens ~4.8 m
+(`fish_a`) → ~2.7 m (`scott`). At `resistance == 0` (any tier's smallest
+roll) all formulas are unchanged and identical across species — correct
+and untouched, since a small individual being weak regardless of
+species was never the complaint.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: extended ADR-039's Decision with the new
+  formulas and worked numbers; extended Rationale with the diagnosis.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: tension-safe-zone formula block
+  updated with the new multipliers and the `effectiveEscapeAllowance`
+  formula; added a paragraph explaining why the multipliers were needed;
+  "Fish Fight Tuning Config" section updated to mention the three new
+  fields.
+
+### Verification
+
+- Rebuilt `Shared` (now including the expanded `FishFightConfig.swift`)
+  as both `arm64-apple-macosx26.0` and `arm64-apple-ios26.0-simulator`
+  modules from `find Sources/Shared -name "*.swift"` — no errors on
+  either.
+- `xcrun swiftc -typecheck` against those modules: full `World/World`
+  file list (macOS) and full `Rod/Rod` file list (iOS simulator) — both
+  clean.
+- The net-tension-rate/escape-allowance numbers above were computed with
+  a standalone Python calculation before writing the fix, same method as
+  the previous entry — not run in the app.
+- Not run: any live session. Whether 3.0/1.8/3.5 are the right
+  multipliers (vs. needing further adjustment either direction), and
+  whether Scott's fight now feels appropriately climactic rather than
+  frustrating, are both unverified — same explicit expectation as every
+  other entry in this config: the player is expected to keep tuning it.

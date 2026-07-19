@@ -571,10 +571,13 @@ loses the fish. `FishFightController.lineTension: Float` (0...1) starts at
 ```text
 reelPull = isReeling ? reelSpeed * config.baseReelTensionRate(0.55) : 0
 lineTension += (reelPull - effectiveFishPullRate) * deltaTime
-effectiveFishPullRate = config.baseFishPullRate(0.15) * (1 + resistance)
+effectiveFishPullRate = config.baseFishPullRate(0.15)
+                         * (1 + resistance * config.pullRateResistanceMultiplier(3.0))
 
-hookDistance > fightStartDistance + config.escapeDistanceAllowance(6 m)
-                 -> .escaped (fish took too much line — ADR-039)
+hookDistance > fightStartDistance + effectiveEscapeAllowance -> .escaped (too much line — ADR-039)
+effectiveEscapeAllowance = max(config.minEscapeDistanceAllowance(2 m),
+                                config.escapeDistanceAllowance(6 m)
+                                  - resistance * config.escapeAllowanceResistancePenalty(3.5))
 lineTension <= 0 -> .escaped (line went slack)
 lineTension >= 1 -> .lineBreak (reeled too hard)
 
@@ -583,25 +586,38 @@ Either .escaped case -> hook disabled, HookPhase .idle (a fresh cast is required
 ```
 
 All the named constants above (`initialTension`, `baseFishPullRate`,
-`baseReelTensionRate`, `basePullSpeed`, `escapeDistanceAllowance`, and the
+`baseReelTensionRate`, `pullRateResistanceMultiplier`, `basePullSpeed`,
+`pullSpeedResistanceMultiplier`, `escapeDistanceAllowance`,
+`escapeAllowanceResistancePenalty`, `minEscapeDistanceAllowance`, and the
 tension-band thresholds/haptic parameters below) live in `FishFightConfig`
 (Shared, new) — see "Fish Fight Tuning Config" below.
 
 Not reeling drains tension toward 0 (the fish is winning); reeling raises
 it, and reeling too hard for too long pushes it past 1. The fish also
 physically drags the hook: `FishFightController.fishPullSpeed: Float`
-(species-scaled m/s, `config.basePullSpeed` 1.0, zero unless hooked) is
-read by `WorldViewModel.driftHookAway(deltaTime:)` while the player
-rests, and — ADR-039's tug-of-war — *subtracted from the player's reel
-speed inside `reelHook(deltaTime:)`* while reeling: a net-negative speed
-moves the hook away even mid-reel, so a strong fish gains line against
-weak reeling and can win outright via the distance escape above. The
-controller publishes a speed only, it never touches RealityKit. Tension
-and physical hook position move together: ignoring a hooked fish drains
-tension *and* lets it swim away; over-reeling snaps the line;
-under-reeling loses the tug-of-war. Species `resistance` scales
-`effectiveFishPullRate` and `fishPullSpeed` together, so a tougher fish is
-harder on every axis at once.
+(species-scaled m/s, `config.basePullSpeed(0.7) * (1 + resistance *
+config.pullSpeedResistanceMultiplier(1.8))`, zero unless hooked) is read
+by `WorldViewModel.driftHookAway(deltaTime:)` while the player rests, and
+— ADR-039's tug-of-war — *subtracted from the player's reel speed inside
+`reelHook(deltaTime:)`* while reeling: a net-negative speed moves the hook
+away even mid-reel, so a strong fish gains line against weak reeling and
+can win outright via the distance escape above. The controller publishes
+a speed only, it never touches RealityKit. Tension and physical hook
+position move together: ignoring a hooked fish drains tension *and* lets
+it swim away; over-reeling snaps the line; under-reeling loses the
+tug-of-war.
+
+`resistance`'s contribution to `effectiveFishPullRate`/`fishPullSpeed`/
+the escape allowance is scaled by its own multiplier per formula
+(`pullRateResistanceMultiplier`/`pullSpeedResistanceMultiplier`/
+`escapeAllowanceResistancePenalty`) rather than being added in directly
+— added in this pass (ADR-039) after the original 1.0/0.5 implicit
+multipliers produced too small a spread between species/tiers to feel
+different (a `baseFishPullRate` floor that dominated `resistance`'s
+contribution). At `resistance == 0` every species is identical (a small
+individual is weak regardless of species, unchanged); at a max-size roll
+the multipliers now produce a real difficulty curve across `fish_a` ->
+`fish_b` -> `fish_c` -> `scott`.
 
 **Tension-band haptics (ADR-039).** `FishFightController.tensionBand`
 (`nil` outside a fight; below `config.tensionBandMediumThreshold` is low,
@@ -620,11 +636,12 @@ fish size.
 
 **Fish Fight Tuning Config (ADR-039).**
 `Shared/Sources/Shared/Gameplay/FishFightConfig.swift` collects every
-number above — line-tension constants, the distance-escape allowance,
-the two tension-band thresholds, and all nine Rod haptic-band parameters
-(interval/intensity/sharpness × low/medium/high) — into one `Codable`/
-`Equatable` struct, each field documented inline, meant to be hand-edited
-directly rather than read as opaque defaults. `FishFightController.init`
+number above — line-tension constants, the three resistance multipliers,
+the distance-escape allowance, the two tension-band thresholds, and all
+nine Rod haptic-band parameters (interval/intensity/sharpness ×
+low/medium/high) — into one `Codable`/`Equatable` struct, each field
+documented inline, meant to be hand-edited directly rather than read as
+opaque defaults. `FishFightController.init`
 and `FishingHaptics.init` both take `config: FishFightConfig =
 FishFightConfig()`; existing zero-argument call sites are unaffected, and
 both classes read the *same* config values so World's simulated
