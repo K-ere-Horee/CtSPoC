@@ -4393,3 +4393,28 @@ species was never the complaint.
   whether Scott's fight now feels appropriately climactic rather than
   frustrating, are both unverified — same explicit expectation as every
   other entry in this config: the player is expected to keep tuning it.
+
+## Session Handoff: WINDOW_1.md
+
+Date: 2026-07-19.
+
+Requested directly as the context window neared its limit: "since
+context windownya udah mau abis, bisa ga simpen semua progress kedalam
+1 .md baru, namanya WINDOW_1 aja" (since the context window is about
+to run out, can all the progress be saved into one new .md, just call
+it WINDOW_1). Documentation-only — no Swift/project files touched.
+
+Added `WINDOW_1.md` (project root): a navigation summary covering
+ADR-030 through ADR-039, not a replacement for the full detail already
+in `ARCHITECTURE_DECISIONS.md`/`CHECKPOINT.md`. Content: a table
+pointing to every ADR from this window, an expanded section on
+ADR-039's two live-tested corrections (reel tension rate, tier
+differentiation) since that's the freshest and most likely area to
+need further tuning, the still-open ADR-030/031 numbering-collision
+issue, and an explicit statement of what "verified" has meant
+throughout this window (`swiftc -typecheck` on macOS + iOS-simulator
+targets only — no `xcodebuild`, no device/simulator run, except the
+specific live-play moments already quoted in the ADRs).
+
+No verification needed beyond confirming the file exists and reads
+correctly — pure documentation, no code path affected.
