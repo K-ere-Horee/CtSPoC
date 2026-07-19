@@ -11,6 +11,106 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-035 --- Transport Replaced: MultipeerConnectivity to CoreBluetooth
+
+## Decision
+
+`Rod/Rod/Transport/TransportClient.swift` and `World/World/Transport/TransportHost.swift` are
+fully rewritten on CoreBluetooth. No `import MultipeerConnectivity` remains anywhere in either
+target. `TransportProtocol` (Shared) and `NetworkMessage` (Shared) are unchanged in shape —
+this is an internal swap of what implements the protocol, not a redesign of who calls it.
+
+**Roles**, matching the previous client/host split (Rod is the side that actively broadcasts
+itself; World reacts to whichever peer shows up):
+
+- **Rod = BLE peripheral** (`CBPeripheralManager`). Advertises one custom GATT service and three
+  characteristics, all defined as plain UUID strings in `SessionConfiguration` (Shared) so both
+  sides share the same identifiers without Shared importing CoreBluetooth:
+  - `bleStateCharacteristicUUID` — Rod → World, **notify**, unreliable. Carries the ~30 Hz
+    `RodState` stream.
+  - `bleReliableOutCharacteristicUUID` — Rod → World, **indicate**, reliable. Carries
+    `.discoveryToken`.
+  - `bleCommandCharacteristicUUID` — World → Rod, **write-with-response**, reliable. Carries
+    `.fishingEvent`/`.hookPhase`. (World writing into a characteristic Rod exposes is the only
+    way a BLE central can push data to a peripheral — there is no "central notifies" primitive.)
+- **World = BLE central** (`CBCentralManager`). Scans for the service, connects, subscribes to
+  the two Rod → World characteristics, writes to the command characteristic.
+
+**Message-flow inventory** (confirmed by grepping actual `.send(`/`case` call sites in
+`RodViewModel.swift`/`WorldViewModel.swift` before writing any replacement code, per this
+migration's own instructions — not assumed from memory): Rod sends `.state` and
+`.discoveryToken`; World sends `.hookPhase` and `.fishingEvent`; World's `handle(_:)` only acts
+on `.state`, ignoring everything else it receives (unchanged).
+
+**Payload framing (`Shared/Sources/Shared/Protocols/BLEFraming.swift`, new).** A JSON-encoded
+`NetworkMessage` may exceed one BLE packet once the ATT MTU is accounted for. `BLEFraming`
+prefixes a payload with a 4-byte big-endian length header and splits it into MTU-sized chunks;
+`BLEMessageReassembler` accumulates chunks fed from repeated delivery callbacks and yields
+complete messages once enough bytes have arrived. Pure `Data` manipulation, no CoreBluetooth
+import, so it's usable from both Rod's and World's transport layers without Shared taking on a
+platform dependency. Verified correct via a standalone roundtrip test (single-chunk, multi-chunk,
+sequential messages through one reassembler, empty payload, and coalesced multi-message delivery
+— all pass) before being wired into either transport file.
+
+**The unreliable (`.state`) path never fragments.** If an encoded state sample doesn't fit in one
+packet, it's dropped outright rather than risking a desynced multi-chunk stream on a channel with
+no delivery guarantee — a fresher sample is always ~33 ms away, matching the semantics
+`NetworkMessage.requiresReliableDelivery`'s doc comment already documents for this path. The two
+reliable paths (indicate/write-with-response) may fragment safely, since both have CoreBluetooth's
+own per-packet acknowledgment: indicate via `updateValue` returning `false` until
+`peripheralManagerIsReady(toUpdateSubscribers:)` fires, write-with-response via
+`didWriteValueFor`/`error` per chunk. Both reliable sends are queued (FIFO, one logical message's
+chunks fully drained before the next starts) so overlapping calls — e.g. two `.fishingEvent`s
+sent close together — can't interleave and corrupt each other's chunk sequence.
+
+**`@MainActor` on both transport classes and on `TransportProtocol` itself.** Both CoreBluetooth
+managers are constructed with `queue: nil` (main queue), so every delegate callback already lands
+on the main queue in practice; isolating the classes (and the protocol they conform to) to
+`@MainActor` — matching `RodViewModel`/`WorldViewModel`, the only two callers — makes that
+explicit and lets the mutable send-queue state be touched from both delegate callbacks and direct
+`send()` calls without a separate lock, instead of leaving a real (if currently benign) data race
+implicit. CoreBluetooth's delegate protocols are Objective-C and carry no such isolation of their
+own; the conformances use `@preconcurrency` (the standard bridge for implementing an unisolated
+ObjC delegate protocol from an actor-isolated Swift type), avoiding warnings that are hard errors
+under Swift 6.
+
+**Reconnection**: both sides keep trying continuously rather than requiring the caller to retry.
+Rod leaves advertising running after a central unsubscribes (never stops it outside
+`disconnect()`); World restarts scanning after any disconnect/failed-connect while still "wanting"
+a connection. This matches the previous MPC behavior of leaving the browser/advertiser active
+continuously once `connect()` was called.
+
+**Platform entitlements.** `Info.plist` (`Rod`/`World`): removed `NSBonjourServices`. Both
+targets' `project.pbxproj`: `INFOPLIST_KEY_NSLocalNetworkUsageDescription` replaced with
+`INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription`. World specifically: `ENABLE_RESOURCE_ACCESS_
+BLUETOOTH` flipped `NO` → `YES` — World runs sandboxed on macOS (`ENABLE_APP_SANDBOX = YES`), and
+this build setting is the sandbox entitlement gate for CoreBluetooth; leaving it `NO` would have
+silently blocked the central role at the OS level regardless of any code-level correctness. Also
+tightened `ENABLE_INCOMING_NETWORK_CONNECTIONS`/`ENABLE_OUTGOING_NETWORK_CONNECTIONS` to `NO` —
+grepped confirmed World has no other networking (`URLSession`/`Network.framework`), so these
+existed only for MPC's local-network transport and are no longer needed.
+
+## Rationale
+
+Per the supplied migration brief (`MIGRATION_transport_to_corebluetooth.md`, not committed to the
+repo, provided as a task document): a known MultipeerConnectivity bug on iOS 26 makes connection
+pairing flaky specifically when Bluetooth is involved in establishing the connection — exactly
+the Bluetooth-heavy, no-Wi-Fi-infrastructure scenario this project targets (fishing outdoors).
+Apple's own migration guidance recommends moving off MPC's `NSStream`-dependent transport, and
+CoreBluetooth's GATT notify/write model is a closer fit for this payload shape (small, frequent
+messages at ~30 Hz) than MPC's general-purpose session/stream abstraction was.
+
+Explicitly a **full replacement**, not a hybrid — the brief was clear that no MultipeerConnectivity
+import should remain when this is done, confirmed by grep.
+
+Status: Accepted, pending live-hardware verification (see the "Explicitly not yet verified"
+section of the matching `CHECKPOINT.md` entry — this ADR records the design and code-level
+verification that's actually complete; the migration brief's own test plan requires a Step 0/Step
+1 baseline-vs-CoreBluetooth latency comparison on real devices with Wi-Fi off, which has not been
+run).
+
+------------------------------------------------------------------------
+
 # ADR-034 --- Cast Direction Clamped to a Forward Cone, Bobber Doubled in Size
 
 ## Decision

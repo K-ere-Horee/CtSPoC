@@ -3563,3 +3563,240 @@ where it is).
   against it for every `World/World` Swift file — no errors (confirms
   nothing else still referenced the now-commented-out ray code).
 - `git diff --check` clean on `WorldViewModel.swift`.
+
+## Migration: MultipeerConnectivity to CoreBluetooth
+
+Date: 2026-07-19.
+
+Requested via a supplied migration brief
+(`~/Downloads/MIGRATION_transport_to_corebluetooth.md`, not committed to the
+repo — a task document, not project documentation) with explicit
+instructions: "let's go, hajar. jangan dulu push pr di akhir atau
+commit, let me do all that stuff" (go for it — but don't push a PR or
+commit at the end, I'll handle that). **This entry's changes are staged
+in the working tree only; nothing was committed or pushed, per that
+instruction.** Recorded as ADR-035 in `ARCHITECTURE_DECISIONS.md`.
+
+### Investigation (before writing any replacement code, per the brief's own instruction)
+
+Grepped actual `.send(`/`case` call sites in `RodViewModel.swift` and
+`WorldViewModel.swift` rather than trusting the brief's own
+reconstructed summary. Confirmed: Rod sends `.state` (~30 Hz) and
+`.discoveryToken` (once, on NI token availability); World sends
+`.hookPhase` and `.fishingEvent` (both one-shot gameplay signals);
+World's `handle(_:)` only acts on `.state`, ignoring everything else it
+receives. This inventory is what the GATT layout below is designed
+around.
+
+### Shared
+
+- `Shared/Sources/Shared/Spatial/SessionConfiguration.swift`: removed
+  the MPC-only `serviceType` Bonjour string; added `bleServiceUUID`,
+  `bleStateCharacteristicUUID`, `bleReliableOutCharacteristicUUID`,
+  `bleCommandCharacteristicUUID` — plain `String`s (not `CBUUID`), so
+  Shared still never imports CoreBluetooth.
+- `Shared/Sources/Shared/Protocols/Transport.swift`: `TransportProtocol`
+  marked `@MainActor` (see Concurrency below).
+- Added `Shared/Sources/Shared/Protocols/BLEFraming.swift`:
+  `BLEFraming.chunks(for:maxChunkSize:)` (4-byte big-endian length
+  header + MTU-sized chunking) and `BLEMessageReassembler` (accumulates
+  fed chunks, yields complete messages). Pure `Data`/Foundation, no
+  CoreBluetooth import. Verified correct via a standalone Swift script
+  (single-chunk, multi-chunk, sequential messages through one
+  reassembler, empty payload, coalesced multi-message delivery — all
+  passed) before wiring it into either transport file — the one piece of
+  this migration verifiable without hardware, so verified thoroughly.
+
+### Rod (`Rod/Rod/Transport/TransportClient.swift`, full rewrite)
+
+- BLE peripheral (`CBPeripheralManager`, `queue: nil`). Advertises one
+  service with three characteristics (`state`: notify; `reliableOut`:
+  indicate; `command`: write). `send(_:)` routes `.state` through a
+  never-fragments unreliable path (drops the sample if it doesn't fit
+  one packet — see rationale in ADR-035) and
+  `.discoveryToken`/`.fishingEvent`/`.hookPhase` through a fragmenting,
+  FIFO-queued reliable path using CoreBluetooth's own indicate
+  backpressure.
+- Reconnection: advertising is left running after a central
+  unsubscribes (never stopped outside `disconnect()`), matching MPC's
+  previous continuous-browsing/advertising behavior.
+- Every CoreBluetooth delegate selector used was cross-checked against
+  the actual SDK header
+  (`CoreBluetooth.framework/Headers/CBPeripheralManager.h`) rather than
+  relied on from memory — caught and fixed one wrong guess
+  (`peripheralManagerDidStartAdvertising(_:error:)`, not
+  `peripheralManager(_:didStartAdvertisingError:)` as first written; a
+  wrong ObjC-bridged delegate signature compiles fine as an unused
+  method and just silently never fires, so this needed verifying
+  against the header, not just against the compiler).
+
+### World (`World/World/Transport/TransportHost.swift`, full rewrite)
+
+- BLE central (`CBCentralManager`, `queue: nil`). Scans for the service,
+  connects to the first match, discovers the three characteristics,
+  subscribes to `state`/`reliableOut`, writes to `command`. `.ready` is
+  reported once both characteristics are subscribed and `command` is
+  known.
+- Reconnection: scanning restarts automatically after any
+  disconnect/failed-connect while a connection is still wanted, same
+  rationale as Rod's side.
+- Same header cross-check discipline as Rod's file; all `CBCentralManagerDelegate`/
+  `CBPeripheralDelegate` signatures used matched on the first attempt.
+
+### Concurrency
+
+`TransportProtocol` (Shared), `TransportClient`, and `TransportHost` are
+all `@MainActor`. Root cause this avoids: both classes have mutable
+send-queue state touched both by CoreBluetooth delegate callbacks and by
+direct `send()` calls from arbitrary `Task` contexts — without
+isolation, that's a real data race regardless of what the compiler
+flags (the app targets build in Swift 5 language mode, `SWIFT_VERSION =
+5.0`, so this would NOT have been a compile error, just a latent bug).
+`@MainActor` on the classes matches their only two callers
+(`RodViewModel`/`WorldViewModel`, already `@MainActor`) and is backed by
+constructing both managers with `queue: nil` (main queue), so
+CoreBluetooth's own callback delivery matches the isolation
+declaration. `@MainActor` on `TransportProtocol` itself removes an
+actor-isolation-crossing warning (confirmed: "this is an error in the
+Swift 6 language mode") that appeared on first typecheck; CoreBluetooth's
+own ObjC delegate protocol conformances use `@preconcurrency` instead,
+since those protocols aren't Shared's to annotate.
+
+### Platform entitlements
+
+- `Rod/Rod/Info.plist` / `World/World/Info.plist`: removed
+  `NSBonjourServices`.
+- Both `project.pbxproj`s: `INFOPLIST_KEY_NSLocalNetworkUsageDescription`
+  replaced with `INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription`.
+- `World/World.xcodeproj/project.pbxproj` specifically:
+  `ENABLE_RESOURCE_ACCESS_BLUETOOTH` flipped `NO` → `YES`. World runs
+  App Sandboxed on macOS (`ENABLE_APP_SANDBOX = YES`) and this build
+  setting is the sandbox's CoreBluetooth entitlement gate — left at `NO`,
+  it would have silently blocked the central role at the OS level no
+  matter how correct the code was. Caught by reading the pbxproj
+  directly rather than assuming; easy to miss since it produces no
+  build error, only a runtime permission failure.
+- Also tightened `ENABLE_INCOMING_NETWORK_CONNECTIONS`/
+  `ENABLE_OUTGOING_NETWORK_CONNECTIONS` to `NO` on World — grepped and
+  confirmed no `URLSession`/`Network.framework` usage anywhere in World,
+  so these existed only for MPC's local-network transport.
+
+### Verification actually completed
+
+- `grep -rn "^import MultipeerConnectivity"` across `Rod`/`World`/
+  `Shared` — zero matches (full removal confirmed).
+- `grep` for `NSBonjourServices`/`NSLocalNetworkUsageDescription`/the old
+  `_cts-poc` Bonjour string across every `.plist`/`.pbxproj` — zero
+  matches.
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an
+  `arm64-apple-ios26.0-simulator` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors on either platform.
+- `xcrun swiftc -typecheck` against those modules: every `World/World`
+  Swift file including the new `TransportHost.swift`, on **both** macOS
+  and iOS-simulator targets (World's `SUPPORTED_PLATFORMS` lists all
+  three) — macOS clean; iOS-simulator surfaced a pre-existing,
+  unrelated `import AppKit` in `EnvironmentSceneBuilder.swift` (from the
+  earlier asset-integration merge, confirmed via `git diff`/`git log`
+  that this session never touched that file) that would break an
+  iOS-simulator build regardless of this migration — flagged, not
+  fixed, out of scope. Every `Rod/Rod` Swift file including the new
+  `TransportClient.swift`, iOS-simulator — clean.
+- `plutil -lint` on both `.pbxproj`s and both `Info.plist`s — all OK.
+- `git diff --check` clean on every text file touched.
+- Every CoreBluetooth delegate method signature used was cross-checked
+  character-for-character against the installed SDK's Objective-C
+  headers (`CoreBluetooth.framework/Headers/*.h`), not written from
+  memory — this class of bug (a plausible-looking but wrong ObjC-bridged
+  selector) compiles silently and just never fires at runtime, so
+  typechecking alone would not have caught it.
+
+### Explicitly NOT yet verified — live-hardware test plan not run
+
+The migration brief is explicit that `xcodebuild`/typecheck success is
+not sufficient on its own for this change, and this entry does not claim
+otherwise. None of the following has been done, and all of it needs a
+live session on physical devices, not just this environment:
+
+- **No Step 0 baseline was captured.** The brief calls for measuring
+  current MPC latency/reliability with Wi-Fi off *before* touching code;
+  this session went straight to the rewrite, so there is no baseline
+  number to compare against.
+- **No live connect/discovery test.** Advertise → scan → connect →
+  subscribe has never actually run between two devices.
+- **No live `RodState` streaming test.** Whether the hook/rod actually
+  follows motion correctly over this transport is unverified.
+- **No latency measurement.** `RodState.timestamp`-based send-vs-receive
+  latency, compared against a (missing) Step 0 baseline, has not been
+  measured.
+- **No Wi-Fi-off test** — the actual motivating scenario for this
+  migration has not been exercised at all.
+- **No reconnect test.** The `hookPhase` resync-on-reconnect and
+  `lastError`-clearing behavior (both hard-won fixes from earlier
+  sessions) are preserved in the code by inspection — the resync call
+  site in `WorldViewModel`'s `onStateChange` handler is untouched — but
+  not confirmed live under this transport.
+- **No full V1 gameplay loop test** (connect → calibrate → cast →
+  search → interest/bite → fight → catch/escape → result → continue)
+  over CoreBluetooth.
+- **MTU/chunking is untested under real BLE timing.** The framing
+  protocol is verified correct in isolation (see the Shared section
+  above), but real-world negotiated MTU, connection interval, and
+  whether the unreliable `.state` path's "drop if it doesn't fit"
+  behavior is ever actually triggered in practice are all unknown until
+  run on hardware.
+- **Payload size was estimated, not measured.** `RodState`'s JSON size
+  with an active `CastSolution` was reasoned about but never actually
+  encoded and measured against a real negotiated MTU value.
+
+None of the migration brief's acceptance criteria are confirmed met yet
+except the static ones (no `import MultipeerConnectivity` remains). This
+is a code-complete, typecheck-clean migration — not a verified one.
+
+## Fix: EnvironmentSceneBuilder Cross-Platform Color Build Break
+
+Date: 2026-07-19.
+
+Follow-up on the `import AppKit` gap flagged (not fixed) in the previous
+entry. The player attempted their own fix by swapping `NSColor(srgbRed:...)`
+to `CGColor(srgbRed:...)` at both call sites and removing the `AppKit`
+import, then reported the resulting Xcode errors directly: "Cannot
+assign value of type 'CGColor' to type 'NSColor'"
+(`tintTerrainGreen`, line 586) and "Cannot convert value of type
+'CGColor' to expected argument type 'DirectionalLightComponent.Color'
+(aka 'NSColor')" (`makeSun`, line 654).
+
+### Root cause
+
+`DirectionalLightComponent.Color` and `PhysicallyBasedMaterial.
+BaseColor.tint` are both RealityKit type aliases for the platform's
+native color type — `NSColor` on macOS, `UIColor` on iOS/iPadOS — not
+`CGColor`. Swapping to `CGColor` satisfied neither alias on either
+platform; it was the wrong direction for a cross-platform fix, not just
+an incomplete one.
+
+### Fix
+
+- `World/World/Reality/EnvironmentSceneBuilder.swift`: added a
+  `PlatformColor` typealias (`NSColor`/`UIColor` behind `#if
+  canImport(AppKit)`/`#elseif canImport(UIKit)`) and a private
+  `srgbColor(_:_:_:_:)` helper building the correct concrete type per
+  platform. Both call sites (`sunColor`, `tintTerrainGreen`'s tint)
+  now go through this helper instead of constructing `NSColor`/`CGColor`
+  directly.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an
+  `arm64-apple-ios26.0-simulator` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules for the full
+  `World/World` Swift file list (same list as the transport migration
+  entry above), on **both** macOS and iOS-simulator — clean on both.
+  This closes the gap the previous entry flagged: World's
+  `SUPPORTED_PLATFORMS` (iphoneos/iphonesimulator/macosx) claim is now
+  actually true for this file, not just for the transport layer.
+- `git diff --check` clean.
+- Not run: an actual Xcode build (this was verified via `swiftc
+  -typecheck` against hand-built Shared modules, the same method used
+  throughout this session — no live device/simulator run of World on
+  iOS has happened, only the compile-correctness check).

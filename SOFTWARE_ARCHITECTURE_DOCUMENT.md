@@ -749,3 +749,58 @@ calibrated minimum (`reelRotationRate`, 0.0) and the player's own
 demonstrated peak (`reelFullRotationRate`, 1.0). Reel speed now tracks how
 fast the player actually spins the controller instead of jumping straight
 to maximum.
+
+------------------------------------------------------------------------
+
+## CoreBluetooth Transport (ADR-035)
+
+`TransportProtocol`/`NetworkMessage` (Shared) are unchanged; only what implements the protocol
+changed. `TransportClient` (Rod) and `TransportHost` (World) are full CoreBluetooth rewrites,
+replacing MultipeerConnectivity entirely — no `import MultipeerConnectivity` remains in either
+target.
+
+**Roles**, preserving the previous client/host split: Rod is the BLE **peripheral**
+(`CBPeripheralManager`) — it advertises and pushes data, the "active broadcaster" role World's
+`Rod is an input device` framing already implies. World is the BLE **central**
+(`CBCentralManager`) — it scans, connects, and reacts.
+
+**GATT layout** (UUIDs as plain `String`s in `SessionConfiguration`, Shared — not `CBUUID`, so
+Shared stays free of a CoreBluetooth import):
+
+```text
+Rod (peripheral)                                    World (central)
+  state characteristic     --- notify,   unreliable --->   (.state, ~30 Hz)
+  reliableOut characteristic --- indicate, reliable  --->   (.discoveryToken)
+  command characteristic   <--- write-with-response, reliable ---   (.hookPhase / .fishingEvent)
+```
+
+World writing into a characteristic Rod exposes is the only way a BLE central can push data to a
+peripheral — there is no "central notifies" primitive, which is why the World → Rod direction is
+a write rather than mirroring Rod's notify/indicate.
+
+**Framing.** `Shared/Sources/Shared/Protocols/BLEFraming.swift` prefixes an encoded
+`NetworkMessage` with a 4-byte length header and splits it into MTU-sized chunks;
+`BLEMessageReassembler` accumulates delivered chunks and yields complete messages once enough
+bytes have arrived — needed because a JSON-encoded message (particularly `.state` with an active
+`CastSolution`) may exceed one BLE packet. The unreliable `.state` path deliberately never
+fragments — an oversized sample is dropped outright rather than risking a multi-chunk stream
+desyncing on a channel with no delivery guarantee, matching `NetworkMessage.
+requiresReliableDelivery`'s existing "stale sample is worthless" reasoning. The two reliable
+paths may fragment safely, relying on CoreBluetooth's own per-chunk acknowledgment (indicate's
+`updateValue`/`peripheralManagerIsReady`, write-with-response's `didWriteValueFor`) and a FIFO
+send queue so overlapping logical messages can't interleave.
+
+**Concurrency.** `TransportProtocol`, `TransportClient`, and `TransportHost` are all `@MainActor`
+— both CoreBluetooth managers are constructed with `queue: nil`, so delegate callbacks already
+land on the main queue in practice; the isolation makes that explicit and matches the only two
+callers (`RodViewModel`/`WorldViewModel`, both already `@MainActor`). CoreBluetooth's delegate
+protocols are Objective-C and unisolated; the conformances use `@preconcurrency`, the standard
+bridge for this exact pattern.
+
+**Reconnection** is automatic on both sides while a session is still wanted: Rod keeps
+advertising after a central unsubscribes, World restarts scanning after any
+disconnect/failed-connect — matching MPC's previous behavior of leaving the browser/advertiser
+running continuously once `connect()` was called, rather than requiring the caller to retry.
+
+Full rationale, the message-flow inventory used to design the GATT layout, and the platform
+entitlement changes (`Info.plist`, `ENABLE_RESOURCE_ACCESS_BLUETOOTH`) are in ADR-035.
