@@ -4416,5 +4416,124 @@ throughout this window (`swiftc -typecheck` on macOS + iOS-simulator
 targets only — no `xcodebuild`, no device/simulator run, except the
 specific live-play moments already quoted in the ADRs).
 
+- `Click Sound.wav` -> `ui_click.wav`
+- `Fishing rod (Throw).wav` -> `cast_throw.wav`
+- `Water Splash.wav` -> `hook_splash.wav`
+- `Bubble Sound.wav` -> `fish_interested_loop.wav`
+- `Fishing Rod (Pull).wav` -> `fish_bite.wav`
+- `Reel Sound.wav` -> `reel_loop.wav`
+- `Fish Splash.wav` -> `catch_splash.wav`
+- `LAKE  - (Sound Effect).mp3` -> `ambience_lake.mp3`
+
+Deleted `Click Sound.wav.asd` (Ableton analysis junk, not an audio
+file) and removed the now-empty repo-root `SFX/`.
+
+### World: New Audio/ Files
+
+- `SoundManager.swift` (new) — low-level AVFoundation playback,
+  `@MainActor`, one preloaded `AVAudioPlayer` per `Sound` case with
+  `prepareToPlay()` called at init. `play`/`startLoop`/`stopLoop`/
+  `stopAllLoops`/`setVolume` primitives. `#if os(iOS)` wraps
+  `AVAudioSession` configuration (`.ambient` + `.mixWithOthers`) since
+  the session type doesn't exist on macOS.
+- `FishingSounds.swift` (new) — event router mirroring
+  `Rod/Rod/Haptics/FishingHaptics.swift`'s shape: `handle(_ event:
+  FishingEvent)` switch, plus `castLaunched()`, `uiClick()`,
+  `updateReelLoop(active:)`, `handlePhaseChange(_:)`,
+  `handleScreenChange(isPlaying:)`, `stopAll()`.
+
+### World: WorldViewModel.swift
+
+- Added `let sounds = FishingSounds(sounds: SoundManager())`.
+- Added a single `emit(_ event: FishingEvent)` funnel that calls both
+  `sounds.handle(event)` and the existing `send(.fishingEvent(event))`,
+  replacing all seven previous raw `send` call sites (`.fishInterested`/
+  `.fishBite` in `tick`, `.fishEscaped`/`.lineBreak` in
+  `resolveFightFailure`, the tension-band event in `syncTensionBand`,
+  `.hookSplash` in `simulateFlyingHook`, `.catchFish` in `reelHook`) so
+  sound and the Rod-bound transport send can't drift apart.
+- `launchHook(solution:)` calls `sounds.castLaunched()` directly before
+  `setHookPhase(.flying)` — World never emits a `.cast` `FishingEvent`
+  (Rod generates it locally from motion), so this is the one sound not
+  routed through `emit(_:)`.
+- `tick(deltaTime:)` calls `sounds.updateReelLoop(active:)` every frame
+  based on `rodState.action`/`hookPhase`, not on an event — so an
+  empty-line retrieve during `.hookInWater` also gets the reel sound.
+- `setHookPhase(_:)` calls `sounds.handlePhaseChange(phase)` on every
+  transition as a belt-and-suspenders stop for stale bubble/reel loops,
+  covering `continueFishing()`, `returnToMenu()`, and the disconnect
+  fail-safe in `transport.onStateChange` for free.
+- `start()`, `handle(_:)` (on the `.playing` edge), and `returnToMenu()`
+  each call `sounds.handleScreenChange(isPlaying:)` to start/keep the
+  lake ambience loop running per `FishingSounds.Config.
+  ambiencePlaysInMenu`. `stop()` calls `sounds.stopAll()`.
+
+### World: ContentView.swift
+
+- `ResultView`'s "Continue Fishing" and `LevelUpBannerView`'s dismiss
+  button both now call `viewModel.sounds.uiClick()` before their
+  existing action. `MainMenuView` has no buttons (ADR-038 — Rod owns
+  session start), so nothing to wire there.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: new ADR-040 at the top, above ADR-039.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added `Audio/` to World's folder
+  list and a new "World Audio Subsystem (ADR-040)" section at the end.
+
+### Verification
+
+- `cd Shared && swift build` — clean, Shared untouched.
+- `git diff --check` — no whitespace errors.
+- `xcodebuild -workspace CtSPoC.xcworkspace -scheme World -destination
+  'platform=macOS' build` — first attempt failed on code signing (no
+  "Mac Development" certificate on this machine, unrelated to this
+  change); rebuilt with `CODE_SIGNING_ALLOWED=NO
+  CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO` and hit one real
+  compile error: `FishingSounds.init`'s default parameter value
+  `SoundManager()` was rejected ("call to main actor-isolated
+  initializer... in a synchronous nonisolated context") because
+  World's target sets `-default-isolation=MainActor`, and default
+  argument expressions aren't automatically isolated to the enclosing
+  actor. Fixed by dropping the default and constructing
+  `FishingSounds(sounds: SoundManager())` explicitly in
+  `WorldViewModel`'s stored property initializer instead. Rebuilt
+  clean after the fix.
+- Confirmed all 8 `.wav`/`.mp3` files present in the built
+  `World.app/Contents/Resources/`.
+- Launched the built `World.app` directly and confirmed it stays
+  running with no crash and nothing audio-related in the system log
+  while sitting on the main menu (where the ambience loop starts
+  immediately).
+- Not run: a full manual gameplay pass with Rod connected end-to-end
+  (cast/splash/interest/bite/reel/catch/escape/line-break all audible
+  in the right sequence, loop start/stop timing feel, rapid-retrigger
+  behavior). iOS-device audio behavior — the silent switch,
+  `AVAudioSession` interruptions from calls or backgrounding — is
+  entirely unverified and needs on-device testing with Rod.
+
+
+## Session Handoff: WINDOW_1.md
+
+Date: 2026-07-19.
+
+Requested directly as the context window neared its limit: "since
+context windownya udah mau abis, bisa ga simpen semua progress kedalam
+1 .md baru, namanya WINDOW_1 aja" (since the context window is about
+to run out, can all the progress be saved into one new .md, just call
+it WINDOW_1). Documentation-only — no Swift/project files touched.
+
+Added `WINDOW_1.md` (project root): a navigation summary covering
+ADR-030 through ADR-039, not a replacement for the full detail already
+in `ARCHITECTURE_DECISIONS.md`/`CHECKPOINT.md`. Content: a table
+pointing to every ADR from this window, an expanded section on
+ADR-039's two live-tested corrections (reel tension rate, tier
+differentiation) since that's the freshest and most likely area to
+need further tuning, the still-open ADR-030/031 numbering-collision
+issue, and an explicit statement of what "verified" has meant
+throughout this window (`swiftc -typecheck` on macOS + iOS-simulator
+targets only — no `xcodebuild`, no device/simulator run, except the
+specific live-play moments already quoted in the ADRs).
+
 No verification needed beyond confirming the file exists and reads
 correctly — pure documentation, no code path affected.
