@@ -474,14 +474,15 @@ unclamped, exposed below the clamp) measured the true raw bias at
 still empirical rather than derived from rig geometry, with a small ~6°
 residual pending the next live reading.
 
-**Debug: camera follows the hook mid-flight.** `WorldViewModel.
-updateCameraFollow()`, called every `tick()`, swings `playerCamera` to
-trail behind/above the hook and look directly at it while
-`hookPhase == .flying`, snapping back to the normal fixed player pose
-(`resetCameraToPlayerPose(_:)`) the instant flight ends. Temporary — for
-visually judging cast direction/distance during tuning, not intended
-player-facing behavior. Does not affect the launch-heading clamp above,
-since that's computed once at launch before the hook (and camera) start
+**Camera follows the hook.** `WorldViewModel.updateCameraFollow()`,
+called every `tick()`, swings `playerCamera` to trail behind/above the
+hook and look directly at it while `hookPhase` is `.flying`,
+`.fishOnHook`, or `.reeling`, snapping back to the normal fixed player
+pose (`resetCameraToPlayerPose(_:)`) in every other phase. Began as a
+flight-only debug aid; promoted to intended player-facing behavior for
+the whole cast-and-fight arc by ADR-039 ("biar proses reel nya jadi
+lebih dramatis"). Does not affect the launch-heading clamp above, since
+that's computed once at launch before the hook (and camera) start
 moving.
 
 ------------------------------------------------------------------------
@@ -538,8 +539,8 @@ state directly and drives the controller from `tick(deltaTime:)`:
 .hookInWater                 -> fishFight.updateSearching(deltaTime:)
   -> returns true              -> HookPhase .fishOnHook, send .fishBite
 .fishOnHook / .reeling       -> reeling ? reelHook() : driftHookAway()
-  (merged switch case)       -> fishFight.updateFight(deltaTime:, isReeling:, reelSpeed:)
-  -> returns .escaped          -> HookPhase .hookInWater, send .fishEscaped
+  (merged switch case)       -> fishFight.updateFight(deltaTime:, isReeling:, reelSpeed:, hookDistance:)
+  -> returns .escaped          -> hook disabled, HookPhase .idle, send .fishEscaped (ADR-039)
   -> returns .lineBreak        -> hook disabled, HookPhase .idle, send .lineBreak
 reelHook() reaches rod       -> fishFight.resolveCatch(), send .catchFish
   (hasFishOnHook)
@@ -552,43 +553,106 @@ transport, entity, or `HookPhase` knowledge.
 
 **Species data.** `Shared/Sources/Shared/Models/FishSpecies.swift` is a
 `Codable`, Foundation-only struct (`id`, `name`, `weightRange`,
-`lengthRange`, `resistance` 0...1, `value`) plus `FishSpeciesRange` (a
-`Codable` min/max pair, since `ClosedRange` does not synthesize `Codable`).
-It carries no mesh or asset reference. `World/World/Gameplay/
-FishCatalog.swift` is the World-owned content list (`all: [FishSpecies]`,
-one entry today, `"fish_a"`) and `randomSpecies()` picker; adding a species
-is a one-line addition there.
+`lengthRange`, `resistance` 0...1, `value`, `tier` — see ADR-037) plus
+`FishSpeciesRange` (a `Codable` min/max pair, since `ClosedRange` does not
+synthesize `Codable`). It carries no mesh or asset reference. `World/World/
+Gameplay/FishCatalog.swift` is the World-owned content list (`all:
+[FishSpecies]`, one per tier as of ADR-037) and `randomSpecies
+(unlockedTiers:)` picker, filtered by `ProgressionStore.unlockedTiers`;
+adding a species is a one-line addition there.
 
 **Tension safe zone — the fish physically fights back.** Matches
 `GAMEPLAY_ARCHITECTURE_V1.md`'s own line-tension description: the player
 keeps tension in a safe zone; sustained tension too high *or* too low
 loses the fish. `FishFightController.lineTension: Float` (0...1) starts at
 `initialTension` (0.5) on a bite and updates every tick in
-`updateFight(deltaTime:isReeling:reelSpeed:)`:
+`updateFight(deltaTime:isReeling:reelSpeed:hookDistance:)`:
 
 ```text
-reelPull = isReeling ? reelSpeed * baseReelTensionRate(0.5) : 0
+reelPull = isReeling ? reelSpeed * config.baseReelTensionRate(0.55) : 0
 lineTension += (reelPull - effectiveFishPullRate) * deltaTime
-effectiveFishPullRate = baseFishPullRate(0.15) * (1 + resistance)
+effectiveFishPullRate = config.baseFishPullRate(0.15)
+                         * (1 + resistance * config.pullRateResistanceMultiplier(3.0))
 
+hookDistance > fightStartDistance + effectiveEscapeAllowance -> .escaped (too much line — ADR-039)
+effectiveEscapeAllowance = max(config.minEscapeDistanceAllowance(2 m),
+                                config.escapeDistanceAllowance(6 m)
+                                  - resistance * config.escapeAllowanceResistancePenalty(3.5))
 lineTension <= 0 -> .escaped (line went slack)
 lineTension >= 1 -> .lineBreak (reeled too hard)
+
+Either .escaped case -> hook disabled, HookPhase .idle (a fresh cast is required —
+                          ADR-039's revision; previously only .lineBreak did this)
 ```
+
+All the named constants above (`initialTension`, `baseFishPullRate`,
+`baseReelTensionRate`, `pullRateResistanceMultiplier`, `basePullSpeed`,
+`pullSpeedResistanceMultiplier`, `escapeDistanceAllowance`,
+`escapeAllowanceResistancePenalty`, `minEscapeDistanceAllowance`, and the
+tension-band thresholds/haptic parameters below) live in `FishFightConfig`
+(Shared, new) — see "Fish Fight Tuning Config" below.
 
 Not reeling drains tension toward 0 (the fish is winning); reeling raises
 it, and reeling too hard for too long pushes it past 1. The fish also
 physically drags the hook: `FishFightController.fishPullSpeed: Float`
-(species-scaled m/s, zero unless hooked) is read by
-`WorldViewModel.driftHookAway(deltaTime:)`, which moves the hook entity
-away from the rod along the same rod-to-hook axis
-`reelHook(deltaTime:)` already uses, just reversed — the controller
-publishes a speed only, it never touches RealityKit. Reeling still closes
-that same distance via the existing `reelHook`/catch-distance logic, so
-tension and physical hook position now move together: ignoring a hooked
-fish both drains tension *and* visibly lets it swim away with the hook.
-Species `resistance` scales `effectiveFishPullRate` and `fishPullSpeed`
-together, so a tougher fish both drains tension faster and drags the hook
-away faster when not countered.
+(species-scaled m/s, `config.basePullSpeed(0.7) * (1 + resistance *
+config.pullSpeedResistanceMultiplier(1.8))`, zero unless hooked) is read
+by `WorldViewModel.driftHookAway(deltaTime:)` while the player rests, and
+— ADR-039's tug-of-war — *subtracted from the player's reel speed inside
+`reelHook(deltaTime:)`* while reeling: a net-negative speed moves the hook
+away even mid-reel, so a strong fish gains line against weak reeling and
+can win outright via the distance escape above. The controller publishes
+a speed only, it never touches RealityKit. Tension and physical hook
+position move together: ignoring a hooked fish drains tension *and* lets
+it swim away; over-reeling snaps the line; under-reeling loses the
+tug-of-war.
+
+`resistance`'s contribution to `effectiveFishPullRate`/`fishPullSpeed`/
+the escape allowance is scaled by its own multiplier per formula
+(`pullRateResistanceMultiplier`/`pullSpeedResistanceMultiplier`/
+`escapeAllowanceResistancePenalty`) rather than being added in directly
+— added in this pass (ADR-039) after the original 1.0/0.5 implicit
+multipliers produced too small a spread between species/tiers to feel
+different (a `baseFishPullRate` floor that dominated `resistance`'s
+contribution). At `resistance == 0` every species is identical (a small
+individual is weak regardless of species, unchanged); at a max-size roll
+the multipliers now produce a real difficulty curve across `fish_a` ->
+`fish_b` -> `fish_c` -> `scott`.
+
+**Tension-band haptics (ADR-039).** `FishFightController.tensionBand`
+(`nil` outside a fight; below `config.tensionBandMediumThreshold` is low,
+below `config.tensionBandHighThreshold` is medium, at/above it is high)
+is watched by `WorldViewModel.syncTensionBand()` every tick, which sends
+`FishingEvent.reelTensionLow/Medium/High` only on band *transitions* —
+never streaming raw tension over the reliable World→Rod path. Rod's
+`FishingHaptics` stores the band and pulses continuously at the band's
+config-driven rhythm (default spaced 0.5 s / regular 0.28 s / rapid
+0.11 s taps, intensity rising with the band), driven by the same
+every-motion-sample callback as the interest pulse and cleared by
+fight-ending events plus a `stopFight()` guard on `HookPhase` leaving the
+fight phases. This is the product doc's "resistance through rhythm as
+well as intensity" spec, keyed to live fight state rather than static
+fish size.
+
+**Fish Fight Tuning Config (ADR-039).**
+`Shared/Sources/Shared/Gameplay/FishFightConfig.swift` collects every
+number above — line-tension constants, the three resistance multipliers,
+the distance-escape allowance, the two tension-band thresholds, and all
+nine Rod haptic-band parameters (interval/intensity/sharpness ×
+low/medium/high) — into one `Codable`/`Equatable` struct, each field
+documented inline, meant to be hand-edited directly rather than read as
+opaque defaults. `FishFightController.init`
+and `FishingHaptics.init` both take `config: FishFightConfig =
+FishFightConfig()`; existing zero-argument call sites are unaffected, and
+both classes read the *same* config values so World's simulated
+difficulty and Rod's haptic rhythm can't drift apart. `maxExpectedCastDistance`
+stayed a private `FishFightController` constant — it's cast physics tied
+to `WorldViewModel.castSpeed`, not fight tuning.
+
+**Fight camera (ADR-039).** `updateCameraFollow()` tracks the hook
+through `.flying`, `.fishOnHook`, and `.reeling` — the whole cast and
+fight are watched up close — snapping back to the fixed player pose in
+every other phase.
 
 `resistance` itself (ADR-030) is not read straight off the species — it is
 scaled by how big *this* catch rolled within the species' own range, so two
@@ -698,9 +762,10 @@ motion sample, reusing the same recurring callback that drives
 physical cast can't race the result screen off-screen before the player
 sees it. `WorldViewModel.continueFishing()` (guarded to
 `hookPhase == .result`) is the only way back to `.idle`, called by the new
-`World/World/Views/ResultView.swift` overlay's "Continue Fishing" button
-— "Return to Menu" from the product doc is not implemented, since there is
-no Main Menu yet to return to. Escape and line-break intentionally do not
+`World/World/Views/ResultView.swift` overlay's "Continue Fishing" button.
+"Return to Menu" was initially left unimplemented here since no Main Menu
+existed yet to return to — see ADR-036, where it was added alongside the
+Main Menu itself. Escape and line-break intentionally do not
 route through `.result`; they keep the direct transitions from ADR-028 —
 only "After a successful catch" gets the full result treatment per the
 product doc's own scoping, and gating every escape/line-break behind a
@@ -734,7 +799,8 @@ Known gap, not addressed this sprint: the product doc also specifies
 calibration instructions belong entirely in World, with Rod only
 capturing. Rod's `calibrationInstruction` text (unchanged by this sprint)
 still lives on Rod — pre-existing, and tracked under the still-open World
-Main Menu/Tutorial/Calibration-instructions gap.
+Tutorial/Calibration-instructions gap (Main Menu itself is no longer part
+of this gap — see ADR-036).
 
 ## Dynamic Reel Speed
 
@@ -804,3 +870,113 @@ running continuously once `connect()` was called, rather than requiring the call
 
 Full rationale, the message-flow inventory used to design the GATT layout, and the platform
 entitlement changes (`Info.plist`, `ENABLE_RESOURCE_ACCESS_BLUETOOTH`) are in ADR-035.
+
+------------------------------------------------------------------------
+
+## World Main Menu (ADR-036)
+
+`WorldViewModel.Screen` (`.mainMenu`/`.playing`) gates what `ContentView` shows on top of the
+always-mounted RealityKit scene — the Main Menu and Result screen are `ZStack` overlays, not a
+replacement view hierarchy, so returning to the menu never re-triggers
+`EnvironmentSceneBuilder.build()`'s asset loading (~200 scattered instances plus the core
+dock/water/terrain/rod-rig assets).
+
+```text
+.mainMenu (default)
+   -> RodState.isFishing flips true (player pressed "Start Fishing" on Rod)
+   -> .playing
+
+.playing
+   -> hookPhase == .result -> "Continue Fishing" (continueFishing()) -> .playing, hookPhase == .idle
+   -> RodState.isFishing flips false (player pressed "End Fishing" on Rod,
+      or Rod disconnects) -> returnToMenu() -> .mainMenu, hookPhase == .idle
+```
+
+**Screen transitions are Rod-driven, not World-button-driven, as of ADR-038** — see that ADR and
+its own section below for the full design. `World/World/Views/MainMenuView.swift`: title,
+subtitle, and a status row reflecting every `ConnectionState` case (no button); solid black
+background, deliberately opaque so gameplay never visibly renders through the title screen.
+
+Rod is never disconnected by returning to the menu — `content`'s transport lifecycle
+(`.onAppear`/`.onDisappear`) is tied to `ContentView`'s own lifetime, not to `screen`, so the
+connection established while the Main Menu was first shown persists across any number of
+menu/play round-trips within one app session.
+
+Closed the "Return to Menu... no Main Menu yet" gap noted in the Result Screen section above and
+in `CHECKPOINT.md`'s Rod's Minimal V1 Interface entry — first by adding a World-side button here,
+then (ADR-038) by removing that same button once Rod became the session's sole authority.
+
+------------------------------------------------------------------------
+
+## Fish Tiers and Progression (ADR-037)
+
+`FishSpecies` (Shared) gained `tier: FishTier` (`.small`/`.medium`/`.big`/`.boss`).
+`World/World/Gameplay/FishCatalog.swift` now defines one species per tier — `fish_a` (`.small`),
+`fish_b` (`.medium`), `fish_c` (`.big`), `scott` (`.boss`) — each a rough, explicitly-unbalanced
+scale-up of the previous tier's weight/length/resistance/value; `randomSpecies(unlockedTiers:)`
+filters the pool to what's currently unlocked instead of returning any species unconditionally.
+
+**`World/World/Gameplay/ProgressionStore.swift`** (new) persists cumulative catches per tier the
+same way `FishRecordStore` persists catch records, and derives:
+
+```text
+level: Int                                     — 1, 2, or 3, from the catch counts below
+unlockedTiers: Set<FishTier>                   — which FishCatalog entries randomSpecies(unlockedTiers:) may pick
+progressTowardNextLevel: (caught: Int, needed: Int)?  — nil once level 3 (nothing left to unlock)
+
+Level 1 (start):        .small catchable
+-> 10 .small caught ->  Level 2: .medium also catchable
+-> 10 .medium caught -> Level 3: .big AND .boss (Scott) also catchable
+```
+
+**`FishFightController`** takes a `ProgressionStore` (injectable/defaulted, same pattern as
+`recordStore`). Publishes `currentLevel: Int` and `levelUpAnnouncement: String?`
+(`dismissLevelUpAnnouncement()` clears it) alongside the existing `caughtCount`/
+`lastCatchResult`. `resolve(outcome:)`'s `.caught` branch — the single place a successful catch
+is already processed for stars/coins/records — also calls `progressionStore.recordCatch(tier:)`
+and sets `levelUpAnnouncement` if the returned level is higher than `currentLevel` was.
+
+**HUD**: the "Caught" `GroupBox` in `ContentView` gained a "Level N · x/10 to next tier" row.
+New `World/World/Views/LevelUpBannerView.swift` — a dismissible, non-auto-fading toast pinned to
+the top of the screen — renders whenever `levelUpAnnouncement` is set; it can appear stacked
+above `ResultView` (the catch that crosses a threshold is still a normal catch too), since
+neither view gates the other.
+
+`.boss` (Scott) is deliberately its own tier rather than the top of `.big`'s weight range — a
+distinct, singular, narratively-flagged encounter per the product ask, not just another random
+roll from the same pool as regular big fish — and unlocks at the same Level 3 threshold as
+`.big`, since three levels were specified, not four.
+
+------------------------------------------------------------------------
+
+## Rod Owns the Session Boundary (ADR-038)
+
+`RodState` (Shared) gained `isFishing: Bool`, riding along in the existing ~30 Hz `.state`
+stream — no new message type. `WorldViewModel.handle(_:)` compares each incoming
+`state.isFishing` against the previous value: rising edge starts the session
+(`screen = .playing`), falling edge ends it (`returnToMenu()`).
+
+```text
+Rod:   RodViewModel.isFishing (local)  --(RodState.isFishing, every .state)-->  World
+World: handle(_:) edge-detects isFishing  ->  screen = .playing / returnToMenu()
+```
+
+`returnToMenu()` (now `private`) is no longer gated to `hookPhase == .result` — pressing "End
+Fishing" on Rod works at any point during a session, not just after a catch — so it resets
+whatever fight/hook state was mid-flight (hook velocity, hook entity, `fishFight.
+resetForNewCast()`, `hookPhase` back to `.idle`) before switching `screen`. It's also called as a
+fail-safe from `transport.onStateChange` on `.disconnected`/`.failed`, since a dropped connection
+means no further `.state` messages ever arrive to flip `isFishing` — without this, `screen` would
+stay stuck on `.playing` with no controller left to end it.
+
+Both of World's own session-control buttons are gone as a direct consequence: `MainMenuView`'s
+"Start Fishing" (calling the now-deleted `startGame()`) and `ResultView`'s "Return to Menu"
+(added one ADR ago, in ADR-036) — keeping either would just get silently overridden back by the
+next `.state` message, since Rod's `isFishing` wouldn't have actually changed. `MainMenuView` is
+now purely a status display.
+
+Rod's own `ContentView.swift`: the old three-button stack (Start/Calibrate/End, with Start and
+End both always present but oppositely enabled) becomes one button whose label/action/style
+swaps on `isFishing` — "Start Fishing" or "End Fishing", never both. Calibrate moved out of that
+stack into a `ToolbarItem(placement: .topBarTrailing)` in the phone's top-right corner, reusing
+the existing per-step `calibrationButtonTitle` text rather than duplicating it.

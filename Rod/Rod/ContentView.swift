@@ -32,38 +32,8 @@ struct ContentView: View {
                         .foregroundStyle(viewModel.connectionState == .streaming ? .green : .secondary)
                 }
 
-                VStack(spacing: 12) {
-                    Button {
-                        viewModel.startFishing()
-                    } label: {
-                        Label("Start Fishing", systemImage: "play.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(viewModel.isFishing || viewModel.calibrationStep != .complete)
-
-                    Button {
-                        viewModel.calibrateMotion()
-                    } label: {
-                        Label(calibrationButtonTitle, systemImage: "scope")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .disabled(!viewModel.hasMotionSample || viewModel.isFishing)
-
-                    Button {
-                        viewModel.endFishing()
-                    } label: {
-                        Label("End Fishing", systemImage: "stop.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .disabled(!viewModel.isFishing)
-                }
-                .padding(.horizontal, 32)
+                fishingButton
+                    .padding(.horizontal, 32)
 
                 if viewModel.calibrationStep != .complete {
                     Text(calibrationInstruction)
@@ -90,9 +60,48 @@ struct ContentView: View {
                 .padding(.bottom, 12)
             }
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        viewModel.calibrateMotion()
+                    } label: {
+                        Label(calibrationButtonTitle, systemImage: "scope")
+                    }
+                    .disabled(!viewModel.hasMotionSample || viewModel.isFishing)
+                }
+            }
         }
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
+    }
+
+    /// Single button whose label/action swaps with `isFishing`, rather than two always-present
+    /// Start/End buttons — matches the player's own framing: "bukan start fishing atau end
+    /// fishing [sekaligus], tapi start fishing, terus ketika mancing ada button end fishing" (not
+    /// both Start and End Fishing at once, just Start Fishing, then an End Fishing button once
+    /// actually fishing).
+    @ViewBuilder
+    private var fishingButton: some View {
+        if viewModel.isFishing {
+            Button {
+                viewModel.endFishing()
+            } label: {
+                Label("End Fishing", systemImage: "stop.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+        } else {
+            Button {
+                viewModel.startFishing()
+            } label: {
+                Label("Start Fishing", systemImage: "play.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(viewModel.calibrationStep != .complete)
+        }
     }
 
     private var developerDetails: some View {

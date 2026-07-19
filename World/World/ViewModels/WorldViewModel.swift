@@ -15,6 +15,17 @@ import simd
 @MainActor
 final class WorldViewModel: ObservableObject {
 
+    /// Per `GAMEPLAY_ARCHITECTURE_V1.md`: World owns the Main Menu, and "Return to Menu" is one
+    /// of the two choices offered from the result screen. `ContentView` keeps the RealityKit
+    /// scene (`content`) mounted for the whole app session regardless of `screen` — only an
+    /// overlay is shown/hidden — so returning to the menu and starting again doesn't reload the
+    /// environment/rod rig from disk a second time.
+    enum Screen {
+        case mainMenu
+        case playing
+    }
+
+    @Published private(set) var screen: Screen = .mainMenu
     @Published private(set) var rodState = RodState()
     @Published private(set) var connectionState: ConnectionState = .idle
     @Published private(set) var hookPhase: HookPhase = .idle
@@ -37,7 +48,9 @@ final class WorldViewModel: ObservableObject {
     /// rather than at world origin (which is now the middle of an 80x60 m lake).
     private let waterHeight: Float = 0
     private let gravity: Float = 4.0
-    private let castSpeed: Float = 3.6
+    /// Raised 3.6 -> 5.0 (ADR-039, "rod casting nya kurang jauh"): max-power ballistic range goes
+    /// from ~13 m to ~24 m. `FishFightController.maxExpectedCastDistance` was retuned to match.
+    private let castSpeed: Float = 5.0
     private let reelSpeed: Float = 3.0
 
     /// Half-angle (radians) of the allowed cast cone around the camera's fixed forward direction
@@ -125,6 +138,8 @@ final class WorldViewModel: ObservableObject {
     private var hookVelocity = SIMD3<Float>.zero
     private var castLaunchPosition = SIMD3<Float>.zero
     private var pendingCastSolution: CastSolution?
+    /// Last tension band sent to Rod (ADR-039); `nil` outside a fight. See `syncTensionBand()`.
+    private var lastSentTensionBand: FishFightController.TensionBand?
     private var hasStarted = false
 
     /// Drives the simulation from RealityKit's own per-frame scene update, with a real
@@ -148,7 +163,17 @@ final class WorldViewModel: ObservableObject {
         transport.onStateChange = { [weak self] state in
             Task { @MainActor in
                 self?.connectionState = state
-                guard let self, state == .ready else { return }
+                guard let self else { return }
+                if state == .disconnected || state == .failed {
+                    // Rod is now the sole authority for the session boundary (ADR-038), driven by
+                    // `RodState.isFishing` arriving over `.state` — but a dropped connection means
+                    // no more `.state` messages ever arrive, so `screen` would otherwise stay stuck
+                    // on `.playing` forever with no controller left to press "End Fishing." Fail
+                    // safe back to the menu instead.
+                    self.returnToMenu()
+                    return
+                }
+                guard state == .ready else { return }
                 // A dropped `.hookPhase` message during a prior disconnect would otherwise leave
                 // Rod stuck believing an old phase forever (MultipeerConnectivity does not retry
                 // a `send()` that failed outright) — resync on every reconnect so a transient drop
@@ -285,15 +310,17 @@ final class WorldViewModel: ObservableObject {
         )
     }
 
-    /// Debug aid: while the hook is mid-flight, swing the camera to trail behind and above it,
-    /// looking straight at it, so its actual world position/trajectory is visible instead of a
-    /// small yellow dot far off in the static player view. Snaps back to the normal player pose
-    /// the moment `.flying` ends (splash, or any other phase). Temporary, for judging cast
-    /// direction/distance by eye — not the intended player-facing camera behavior.
+    /// Swings the camera to trail behind and above the hook, looking straight at it. Originally a
+    /// flight-only debug aid; now also active through the whole fight (`.fishOnHook`/`.reeling`,
+    /// ADR-039 — "camera langsung geser lagi ke hook biar proses reel nya jadi lebih dramatis"),
+    /// so the tug-of-war (fish dragging line out, player reeling it back) is watched up close
+    /// instead of as a distant dot. Snaps back to the player pose for every other phase —
+    /// including `.result` and the splash-wait, so the camera returns home between bites.
     private func updateCameraFollow() {
         guard let playerCamera, let hookEntity else { return }
 
-        guard hookPhase == .flying else {
+        let followsHook = hookPhase == .flying || hookPhase == .fishOnHook || hookPhase == .reeling
+        guard followsHook else {
             resetCameraToPlayerPose(playerCamera)
             return
         }
@@ -311,6 +338,22 @@ final class WorldViewModel: ObservableObject {
     func continueFishing() {
         guard hookPhase == .result else { return }
         setHookPhase(.idle)
+    }
+
+    /// Reactive, not button-driven (ADR-038): called from `handle(_:)` when `RodState.isFishing`
+    /// flips true/false, and as a fail-safe from `transport.onStateChange` if Rod disconnects
+    /// mid-session. Unlike the old button-driven version this isn't gated to
+    /// `hookPhase == .result` — the player can press "End Fishing" on Rod at any point, not just
+    /// after a catch — so it resets whatever fight/hook state was in progress. Does not disconnect
+    /// Rod; the transport connection is left running so starting again doesn't need to
+    /// rediscover/reconnect.
+    private func returnToMenu() {
+        guard screen != .mainMenu else { return }
+        hookVelocity = .zero
+        hookEntity?.isEnabled = false
+        fishFight.resetForNewCast()
+        setHookPhase(.idle)
+        screen = .mainMenu
     }
 
     private func setHookPhase(_ phase: HookPhase) {
@@ -361,17 +404,50 @@ final class WorldViewModel: ObservableObject {
             if let failure = fishFight.updateFight(
                 deltaTime: deltaTime,
                 isReeling: rodState.action == .reeling,
-                reelSpeed: rodState.reelSpeed
+                reelSpeed: rodState.reelSpeed,
+                hookDistance: hookDistanceFromRod()
             ) {
                 resolveFightFailure(failure)
             }
         }
+
+        syncTensionBand()
     }
 
+    private func hookDistanceFromRod() -> Float {
+        guard let controllerEntity, let hookEntity else { return 0 }
+        return simd_length(controllerEntity.position - hookEntity.position)
+    }
+
+    /// Sends a `FishingEvent` to Rod whenever the fight's tension band changes (ADR-039), so Rod
+    /// can pulse continuously at the right rhythm without World streaming raw tension. Cleared
+    /// without sending when the fight ends — the fight-ending events (`fishEscaped`/`catchFish`/
+    /// `lineBreak`) already stop Rod's fight haptics on their own.
+    private func syncTensionBand() {
+        let band = fishFight.tensionBand
+        guard band != lastSentTensionBand else { return }
+        lastSentTensionBand = band
+
+        guard let band else { return }
+        let event: FishingEvent = switch band {
+        case .low: .reelTensionLow
+        case .medium: .reelTensionMedium
+        case .high: .reelTensionHigh
+        }
+        Task { await send(.fishingEvent(event)) }
+    }
+
+    /// Both failures now reset the hook to `.idle` (a fresh cast is required) instead of
+    /// `.escaped` staying `.hookInWater` — requested directly: "kalo tension kerendahan (slack),
+    /// reset langsung bobber ke posisi awal (alias ga hookInWater lagi)." A slack-tension escape
+    /// and a distance-spooled escape (ADR-039) both report as `.escaped`; both get the same
+    /// treatment, since in either case the line/hook is no longer somewhere fishing can sensibly
+    /// continue from without recasting.
     private func resolveFightFailure(_ failure: FishFightController.FightFailure) {
         switch failure {
         case .escaped:
-            setHookPhase(.hookInWater)
+            hookEntity?.isEnabled = false
+            setHookPhase(.idle)
             Task { await send(.fishingEvent(.fishEscaped)) }
         case .lineBreak:
             hookEntity?.isEnabled = false
@@ -560,9 +636,20 @@ final class WorldViewModel: ObservableObject {
             return
         }
 
-        let speed = max(0.35, rodState.reelSpeed * reelSpeed)
-        let step = min(distance, speed * deltaTime)
-        hookEntity.position += simd_normalize(directionToRod) * step
+        // Tug-of-war (ADR-039): the hooked fish's pull speed is subtracted from the player's reel
+        // speed, so a strong fish gains line even while the player is actively (but weakly)
+        // reeling — net-negative speed moves the hook AWAY. Combined with the distance-escape
+        // check in `updateFight`, weak reeling against a strong fish is now a losing strategy
+        // rather than a slow guaranteed win. Empty retrieves (`fishPullSpeed` is 0 with no fish)
+        // behave exactly as before.
+        let playerSpeed = max(0.35, rodState.reelSpeed * reelSpeed)
+        let netSpeed = playerSpeed - fishFight.fishPullSpeed
+        if netSpeed >= 0 {
+            let step = min(distance, netSpeed * deltaTime)
+            hookEntity.position += simd_normalize(directionToRod) * step
+        } else {
+            hookEntity.position -= simd_normalize(directionToRod) * (-netSpeed * deltaTime)
+        }
 
         // Only a hooked fish makes this a "fight" reel. Retrieving an empty
         // line during `.hookInWater` must stay `.hookInWater` — otherwise
@@ -575,11 +662,20 @@ final class WorldViewModel: ObservableObject {
 
     private func handle(_ message: NetworkMessage) {
         guard case let .state(state) = message else { return }
+        let wasFishing = rodState.isFishing
         rodState = state
         if let solution = state.castSolution, state.action == .casting {
             pendingCastSolution = solution
         }
         connectionState = .streaming
+
+        // Rod owns the session start/end boundary (ADR-038) — World's own screen just follows
+        // `isFishing`'s edges instead of a World-side button.
+        if state.isFishing, !wasFishing {
+            screen = .playing
+        } else if !state.isFishing, wasFishing {
+            returnToMenu()
+        }
     }
 
     private func send(_ message: NetworkMessage) async {

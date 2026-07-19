@@ -3800,3 +3800,596 @@ an incomplete one.
   -typecheck` against hand-built Shared modules, the same method used
   throughout this session — no live device/simulator run of World on
   iOS has happened, only the compile-correctness check).
+
+## World Main Menu
+
+Date: 2026-07-19.
+
+Requested directly, right after wrapping the CoreBluetooth migration:
+"gausah commit sih, maybe sekarang saat yang tepat buat implement main
+menu dulu sesuai v1" (no need to commit — maybe now's the right time to
+implement the Main Menu, per V1). Closes a gap flagged repeatedly since
+the Result Screen sprint ("Return to Menu... no Main Menu yet to return
+to"). Recorded as ADR-036 in `ARCHITECTURE_DECISIONS.md`.
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`: added `enum Screen {
+  case mainMenu, playing }` and `@Published private(set) var screen:
+  Screen = .mainMenu`. Added `startGame()` (Main Menu's "Start Fishing" —
+  no-ops unless `connectionState` is `.ready`/`.streaming`, per the
+  product doc's "player cannot continue until the controller is
+  available") and `returnToMenu()` (Result screen's new "Return to
+  Menu" — guarded to `hookPhase == .result` same as the existing
+  `continueFishing()`, also resolves `hookPhase` back to `.idle`, and
+  does *not* touch the transport connection).
+- Added `World/World/Views/MainMenuView.swift`: title, subtitle,
+  "Start Fishing" button (disabled until Rod is connected, with a
+  status row — spinner + text per `ConnectionState` case, or a
+  checkmark once ready), solid black background (deliberately opaque,
+  not translucent — gameplay must not render through the title screen).
+- `World/World/Views/ResultView.swift`: added a second closure
+  (`onReturnToMenu: () -> Void`) and a second button ("Return to Menu",
+  `.bordered`) beneath the existing "Continue Fishing"
+  (`.borderedProminent`). Updated its doc comment, which previously
+  explicitly said "Return to Menu is intentionally omitted until a Main
+  Menu exists."
+- `World/World/ContentView.swift`: `body`'s `ZStack` gained a
+  `viewModel.screen == .mainMenu` branch rendering `MainMenuView` as an
+  overlay on top of the always-mounted `content` (the existing
+  `RealityView`/HUD), and the existing result-screen branch gained a
+  `viewModel.screen == .playing` guard alongside its `hookPhase ==
+  .result` check, plus wired the new `onReturnToMenu` closure. `content`
+  itself, and its `.onAppear { viewModel.start() }`/`.onDisappear {
+  viewModel.stop() }`, are unchanged — deliberately: the transport
+  connection begins in the background as soon as `ContentView` first
+  appears, regardless of which screen is showing, so pressing "Start
+  Fishing" is often already unblocked by the time the player taps it,
+  and the environment/rod rig never reloads just from a menu
+  round-trip.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-036.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: resolved both existing "no Main
+  Menu yet" gap notes (Result Screen section, Rod's Minimal V1
+  Interface section) to point at ADR-036 instead of describing an open
+  gap, and added a new "World Main Menu (ADR-036)" section.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file, including the new
+  `MainMenuView.swift` and updated `ResultView.swift`/`ContentView.swift`/
+  `WorldViewModel.swift` — no errors.
+- `git diff --check` clean on every file touched.
+- Not run: any live session. Whether `content`'s `RealityView` actually
+  avoids re-creating the scene across a menu round-trip (vs. SwiftUI
+  treating the `ZStack` branch changes as a reason to rebuild it
+  anyway), whether the Main Menu reads correctly on screen, and whether
+  "Start Fishing"/"Return to Menu" behave as intended end to end are
+  all unverified — reasoned about from `RealityView`'s documented
+  `make`-once-per-identity behavior, not observed.
+
+## Fish Tiers and Three-Level Catch-Count Progression
+
+Date: 2026-07-19.
+
+Requested directly, with exact thresholds and structure specified:
+"Onto progression, detailnya kaya gini: Level 1: after catch 10 small
+fish, u can catch more medium fish. Level 2: after catch 10 medium-sized
+fish, u can catch more big fish. Level 3: muncul scott dan kayak ngasih
+perintah untuk nangkap dia. for now, let's say small fish is fish A.
+parameter fish nya nanti di ubah lagi seiring berjalannya game, yang
+jelas semakin tinggi level ikan, semakin susah dari sisi berat, length,
+dan resistance saat reelingnya ofc. ini dulu deh" (translated in ADR-037).
+Recorded as ADR-037 in `ARCHITECTURE_DECISIONS.md`.
+
+Note on how this entry came together: the data model, `FishCatalog`
+expansion, and `ProgressionStore` were already in place in the working
+tree when this entry was written — that part of the implementation
+happened earlier in this same session, in a portion that had already
+been summarized out of visible context by the time this entry was
+drafted (per this project's own context-compaction behavior). What
+follows documents the *complete* feature as it now stands, including
+finishing the part that was still missing when picked back up:
+`FishFightController.resolve(outcome:)` had all the progression
+plumbing (`progressionStore`, `currentLevel`, `levelUpAnnouncement`)
+sitting unused — nothing actually called
+`progressionStore.recordCatch(tier:)`, so catching fish never advanced
+the level. Caught via direct code inspection, not a bug report.
+
+### Shared
+
+- `Shared/Sources/Shared/Models/Gameplay/FishSpecies.swift`: added
+  `public enum FishTier: String, Codable, Sendable, CaseIterable { case
+  small, medium, big, boss }` and `public let tier: FishTier` on
+  `FishSpecies` (constructor parameter added accordingly).
+
+### World: Catalog and Progression Store
+
+- `World/World/Gameplay/FishCatalog.swift`: `all` grew from one entry
+  (`fish_a`) to four — `fish_a` (`.small`, unchanged stats), `fish_b`
+  (`.medium`, weight 3.5-9.0 kg / length 55-90 cm / resistance 0.55 /
+  value 25), `fish_c` (`.big`, weight 9.0-20.0 kg / length 90-140 cm /
+  resistance 0.75 / value 60), `scott` (`.boss`, weight 20.0-40.0 kg /
+  length 140-200 cm / resistance 0.95 / value 500). All placeholder
+  numbers per the player's own framing — rough scale-ups, not tuned.
+  `randomSpecies()` → `randomSpecies(unlockedTiers: Set<FishTier>)`,
+  filtering `all` to unlocked tiers only (falls back to `all[0]` if the
+  filtered pool is ever empty).
+- Added `World/World/Gameplay/ProgressionStore.swift`: persists
+  per-tier catch counts to `UserDefaults` (same pattern as
+  `FishRecordStore`). `level: Int` (1/2/3), `unlockedTiers: Set
+  <FishTier>`, and `progressTowardNextLevel: (caught: Int, needed:
+  Int)?` (`nil` at level 3) are all derived from the stored counts, not
+  separately stored. `recordCatch(tier:)` increments the right counter
+  and returns the level *after* recording — callers compare against the
+  level beforehand to detect a level-up.
+
+### World: FishFightController Wiring (the piece that was missing)
+
+- `World/World/Gameplay/FishFightController.swift`: `init` gained a
+  `progressionStore: ProgressionStore = ProgressionStore()` parameter
+  (same injectable-with-default pattern as `recordStore`), seeding
+  `currentLevel` from it. `resolve(outcome:)`'s existing `.caught`
+  branch now calls `progressionStore.recordCatch(tier: species.tier)`
+  and compares the returned level against `currentLevel`; if higher,
+  sets `levelUpAnnouncement` via a new `announcement(forLevel:)` helper
+  ("Medium fish have entered the lake!" at 2, "Scott has appeared.
+  Catch him!" at 3) before updating `currentLevel`.
+  `updateSearching(deltaTime:)`'s bite branch already called
+  `FishCatalog.randomSpecies(unlockedTiers:)` correctly (part of the
+  earlier, already-complete portion) — only the catch-side recording
+  was missing.
+
+### World: HUD
+
+- `World/World/ContentView.swift`: the "Caught" `GroupBox` gained a
+  "Level N · x/10 to next tier" row (or "All tiers unlocked" once
+  `progressTowardNextLevel` is `nil`). The body `ZStack` gained a third
+  overlay branch showing `LevelUpBannerView` whenever `fishFight.
+  levelUpAnnouncement` is set, gated to `screen == .playing`.
+- Added `World/World/Views/LevelUpBannerView.swift`: a dismissible
+  toast pinned to the top of the screen, deliberately not auto-fading
+  (a "Scott has appeared" moment shouldn't be missable by glancing away
+  at the wrong second) and deliberately not a blocking modal (it can
+  appear stacked above `ResultView`, since the catch that crosses a
+  tier threshold is still a normal catch too — the two views don't gate
+  each other).
+
+### Aside, unrelated to this entry
+
+`Rod/Rod/ContentView.swift` currently has its "Start Fishing" and "End
+Fishing" buttons commented out, leaving only "Calibrate" active — found
+while surveying files for this entry, not something this session's
+progression work touched or caused. Flagged to the player directly
+rather than silently uncommenting, since the intent behind it is
+unknown (could be deliberate, mid-test).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-037.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "Fish Species and
+  Fight Simulation" section's now-stale "one entry today" claim, and
+  added a new "Fish Tiers and Progression (ADR-037)" section.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an
+  `arm64-apple-ios26.0-simulator` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules for the full
+  `World/World` Swift file list, including `ProgressionStore.swift` and
+  `LevelUpBannerView.swift`, on **both** macOS and iOS-simulator — clean
+  on both.
+- `git diff --check`: clean on every file this entry actually touched
+  (`FishFightController.swift`, `ContentView.swift`,
+  `LevelUpBannerView.swift`); a trailing-whitespace hit on
+  `ContentView.swift` traced to a hunk from the earlier, already-landed
+  Main Menu work, not this entry's edits.
+- Not run: any live session. Whether catching 10 `fish_a` actually
+  unlocks `fish_b` in the bite pool, whether the level-up banner reads
+  correctly stacked above the result card, and whether the placeholder
+  species stats feel remotely balanced are all unverified — this is a
+  code-complete, typecheck-clean pass, not a played one.
+
+## Rod Owns Session Start/End; Recalibrate Moved to Rod's Corner
+
+Date: 2026-07-19.
+
+Requested directly, right after the previous entry noted (unasked)
+that Rod's Start/End Fishing buttons were commented out: "oh iya,
+tentang start fishing dan end fishing itu, bisa ga di ubah aja? jadi
+instead of controller di world yang harus press button untuk mulai
+mancing, ganti ke phone aja. status di world mungkin 'press "start" on
+rod to play'. dan di rod pun bukan start fishing atau end fishing,
+tapi start fishing, terus ketika mancing ada button end fishing buat
+balik ke main menu. recalibrate jangan di tengah lagi, tapi geser ke
+pojok kanan atas dari rod screen" (translated in ADR-038). Recorded as
+ADR-038 in `ARCHITECTURE_DECISIONS.md`.
+
+Noted a real design fork before implementing, resolved rather than
+guessed at: with `WorldViewModel.screen` becoming reactive to Rod's
+`isFishing`, `ResultView`'s "Return to Menu" button (added one entry
+ago in ADR-036) would have silently stopped working — pressing it would
+force `screen = .mainMenu` for exactly one frame before the next
+30 Hz `.state` message (still carrying `isFishing == true`, since Rod
+never heard about the button press) flipped it straight back to
+`.playing`. Removed the button rather than ship a control that visibly
+half-works, since Rod is now the sole authority for the session
+boundary by the player's own design.
+
+### Shared
+
+- `Shared/Sources/Shared/Models/Rod/RodState.swift`: added
+  `isFishing: Bool` (default `false`), riding along in the existing
+  ~30 Hz `.state` stream — no new `NetworkMessage` case needed.
+
+### Rod
+
+- `Rod/Rod/ViewModel/RodViewModel.swift`: `isFishing` (already existed,
+  local-only, gating cast/reel gesture reporting) is now also passed
+  into `RodState` at all three construction sites: `publishState()`,
+  `updateAction()`, and the `.idle`-hookPhase reset inside `handle(_:)`.
+- `Rod/Rod/ContentView.swift`: replaced the three-button stack (Start
+  Fishing / Calibrate / End Fishing — Start and End previously both
+  present, just oppositely `.disabled`) with one `@ViewBuilder`
+  `fishingButton` that shows either "Start Fishing"
+  (`.borderedProminent`, disabled until `calibrationStep == .complete`)
+  or "End Fishing" (`.bordered`) depending on `isFishing` — never both
+  at once. Calibrate moved into a `ToolbarItem(placement:
+  .topBarTrailing)` (the phone's top-right corner), reusing the
+  existing `calibrationButtonTitle` computed property rather than
+  duplicating its per-step text, same disabled condition as before
+  (`!hasMotionSample || isFishing`).
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`:
+  - `handle(_:)` now captures `rodState.isFishing` before overwriting
+    `rodState`, and compares it against the freshly-received
+    `state.isFishing`: rising edge → `screen = .playing`; falling edge
+    → `returnToMenu()`.
+  - `returnToMenu()` changed from a public, `hookPhase == .result`-gated
+    method (the old "Return to Menu" button handler) to `private`, no
+    longer gated — the player can press "End Fishing" on Rod at any
+    point during a session, not only after a catch. Now resets
+    in-progress fight/hook state (`hookVelocity = .zero`,
+    `hookEntity?.isEnabled = false`, `fishFight.resetForNewCast()`,
+    `setHookPhase(.idle)`) before switching `screen`.
+  - `startGame()` deleted — nothing calls it anymore.
+  - `transport.onStateChange`: added a `.disconnected`/`.failed`
+    branch calling `returnToMenu()` as a fail-safe. Since `screen` now
+    depends entirely on `.state` messages continuing to arrive, a
+    genuine Rod disconnect mid-session would otherwise leave `screen`
+    stuck on `.playing` forever — no more messages ever arrive to flip
+    `isFishing`, and there's no controller left to press "End Fishing."
+- `World/World/Views/MainMenuView.swift`: removed the `onStart`
+  closure and "Start Fishing" button entirely; now purely a status
+  display (title/subtitle + a status row per `ConnectionState`, reading
+  "Press \"Start Fishing\" on Rod to play" once ready).
+- `World/World/Views/ResultView.swift`: removed `onReturnToMenu` and
+  its "Return to Menu" button — see the design-fork note above. Only
+  "Continue Fishing" remains.
+- `World/World/ContentView.swift`: updated both call sites
+  (`MainMenuView(connectionState:)` with no closure, `ResultView(result:)`
+  with only the continue closure).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-038.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "World Main Menu
+  (ADR-036)" section's now-stale flow diagram/button descriptions, and
+  added a new "Rod Owns the Session Boundary (ADR-038)" section.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an
+  `arm64-apple-ios26.0-simulator` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full
+  `World/World` Swift file list on **both** macOS and iOS-simulator —
+  clean on both; the full `Rod/Rod` Swift file list on iOS-simulator —
+  clean.
+- `git diff --check`: clean on every file this entry touched; a
+  trailing-whitespace hit on `ContentView.swift` traced to the same
+  pre-existing hunk (from the earlier Main Menu work) flagged in the
+  previous two entries, not this one's edits.
+- Not run: any live session. Whether pressing "Start Fishing" on Rod
+  actually flips World from menu to gameplay, whether "End Fishing"
+  correctly interrupts a mid-fight session and returns to the menu,
+  whether the disconnect fail-safe actually fires in time, and whether
+  the relocated Calibrate toolbar button is discoverable/usable in the
+  phone's top-right corner are all unverified — code-complete and
+  typecheck-clean only.
+
+## Fight Difficulty Pass: Tug-of-War, Distance Escape, Tension Haptics, Fight Camera
+
+Date: 2026-07-19.
+
+Requested directly after live play, five asks in one message: "rod
+casting nya kurang jauh sih jujur. also, ketika hook kena fish, camera
+langsung geser lagi ke hook dong biar proses reel nya jadi lebih
+dramatis. kasih getaran haptics continuous juga di hp untuk reel meter
+(ini yang low medium high haptics). juga, rasanya masih terlalu gampang
+dapetin ikan baik fish A, B, C, bahkan Scott. Bikin lebih susah lagi
+dengan reel meter lebih cepet naik ke high tension. untuk itu, perlu ada
+juga mechanism dimana ikannya bisa escape dari reel karena kejauhan."
+Recorded as ADR-039 in `ARCHITECTURE_DECISIONS.md`.
+
+Precondition check: the previous entry's rod-driven session work
+(ADR-038) turned out to be fully landed already — `ResultView`'s
+single-button form, `ContentView`'s parameterless `MainMenuView` call,
+and `WorldViewModel`'s `isFishing`-edge handling were all in place; a
+stale editor diagnostic had suggested otherwise. Nothing needed
+finishing before this pass.
+
+### Shared
+
+- `Shared/Sources/Shared/Models/Gameplay/FishingEvent.swift`: added
+  `reelTensionLow` / `reelTensionMedium` / `reelTensionHigh` — band
+  *transition* events, not a raw tension stream, so the reliable
+  World→Rod write path carries a handful of events per fight rather than
+  30 Hz of telemetry.
+
+### World: FishFightController
+
+- `baseReelTensionRate` 0.5 → 0.85 ("reel meter lebih cepet naik ke
+  high tension") — sustained hard reeling snaps roughly twice as fast.
+- `basePullSpeed` 0.4 → 1.0 — now meaningful in two places (drift AND
+  the new reel-time tug-of-war below).
+- `maxExpectedCastDistance` 10 → 20, matching the new cast physics.
+- `updateFight` gained `hookDistance:`. First fight tick's distance is
+  stored as `fightStartDistance`; exceeding it by
+  `escapeDistanceAllowance` (6 m) resolves `.escaped` — the "spooled"
+  failure ("ikannya bisa escape dari reel karena kejauhan").
+  `fightStartDistance` resets in `resetForNewCast` and `resolve`.
+- New `TensionBand` enum + `tensionBand` computed property (`nil`
+  outside a fight; `< 0.55` low / `0.55..<0.8` medium / `>= 0.8` high).
+
+### World: WorldViewModel
+
+- `castSpeed` 3.6 → 5.0 ("casting nya kurang jauh") — max ballistic
+  range ~13 m → ~24 m.
+- `updateCameraFollow()` now follows the hook through `.fishOnHook` and
+  `.reeling`, not just `.flying` — doc comment rewritten from "temporary
+  debug aid" to intended behavior ("biar proses reel nya jadi lebih
+  dramatis"). All other phases still reset to the player pose.
+- `reelHook(deltaTime:)`: tug-of-war. Player speed minus
+  `fishFight.fishPullSpeed`; net-negative moves the hook *away* while
+  reeling. Empty retrieves unchanged (`fishPullSpeed` is 0 unhooked).
+  With the new constants, Scott out-pulls anything below roughly half
+  reel throttle, while above it tension climbs toward snap — neither
+  extreme is safe for long.
+- Fight tick passes `hookDistanceFromRod()` into `updateFight`.
+- New `syncTensionBand()` runs every tick; sends the matching
+  `FishingEvent` only when `fishFight.tensionBand` changes, tracked in
+  new `lastSentTensionBand`. Cleared silently when the band goes `nil` —
+  fight-ending events already stop Rod's haptics.
+
+### Rod
+
+- `FishingHaptics`: new `FightBand` (interval 0.5 s / 0.28 s / 0.11 s,
+  intensity 0.3 / 0.45 / 0.7 — the product doc's spaced/regular/rapid
+  rhythm tiers), set by the three new events, rendered by
+  `fightPulse(now:)` on the same every-motion-sample callback as
+  `interestPulse`. All fight-ending events clear it; new `stopFight()`
+  clears it on `HookPhase` leaving the fight phases (same
+  belt-and-suspenders as `stopInterest()`).
+- `HapticManager.fightTick(intensity:sharpness:)` — band-agnostic
+  single tap; the band decides the parameters.
+- `RodViewModel`: `handle(.hookPhase)` calls `stopFight()` for
+  non-fight phases; `updateAction()` calls `fightPulse()` alongside
+  `interestPulse()`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-039.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: tension-safe-zone section updated
+  (new formula block including the distance escape, tug-of-war, new
+  constants); new tension-band-haptics and fight-camera subsections; the
+  old "Debug: camera follows the hook mid-flight" section rewritten as
+  intended behavior; flow diagram's `updateFight` signature updated.
+
+### Verification
+
+- Rebuilt `Shared` as both `arm64-apple-macosx26.0` and
+  `arm64-apple-ios26.0-simulator` modules from
+  `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: full `World/World`
+  file list (macOS) and full `Rod/Rod` file list (iOS simulator) — both
+  clean.
+- Not run: any live session. Every difficulty number
+  (`baseReelTensionRate` 0.85, `basePullSpeed` 1.0, 6 m allowance, band
+  thresholds, pulse intervals, `castSpeed` 5.0) is a reasoned first
+  pass, not play-tested — the whole point of this pass is feel, and
+  feel is unverified. Also unverified live: whether the camera following
+  the fight reads as dramatic rather than disorienting when the fish
+  drags line out fast, and whether high-band 0.11 s haptic taps read as
+  "continuous" on real hardware.
+
+## Fight Rebalance and Config Extraction (Corrects Previous Entry)
+
+Date: 2026-07-19.
+
+Live-play feedback on the previous entry's numbers, reported directly:
+"kayanya reel nya terlalu susah deh, it's even impossible untuk grab
+fish A tanpa tensionnya ketinggian. juga, kalo tension kerendahan
+(slack), reset langsung bobber ke posisi awal (alias ga hookInWater
+lagi). bisa ga dibikin di dalam config file beserta docs nya, agar aku
+bisa tuning manual?" Amended ADR-039 in place (not a new ADR number —
+same still-uncommitted feature, same session) rather than filing a
+follow-up ADR.
+
+### The actual bug: `baseReelTensionRate` 0.85 was unplayable
+
+Worked the numbers by hand for `fish_a` (weakest tier, resistance 0.35,
+`sizeRatio` 0...1): `effectiveFishPullRate` ranges ~0.15-0.20. At
+`reelSpeed` 1.0, `reelPull` was `0.85` — so far past the fish's own pull
+that tension went from `initialTension` (0.5) to 1.0 (line break) in
+under a second, regardless of how carefully the player reeled. Confirmed
+this was the actual reported symptom, not a vaguer "feels hard."
+
+### World: FishFightController
+
+- `baseReelTensionRate` 0.85 → **0.55**. Re-derived time-to-snap at
+  `reelSpeed` 0.3/0.6/1.0 against `fish_a`: 0.85 gave ~0.7-0.9s at any
+  meaningful reel speed (unplayable); 0.55 gives near-neutral at 0.3,
+  ~2.8-3.9s at 0.6, ~1.25-1.44s at 1.0 — a real curve where reel-speed
+  modulation is an actual skill, not "any reeling loses."
+- `resolveFightFailure` (actually in `WorldViewModel`, see below) — noted
+  here since it's the other player-reported bug: `.escaped` previously
+  went to `.hookInWater` (kept searching); `.lineBreak` went to `.idle`.
+  Both now go to `.idle` — "ga hookInWater lagi." Both failure causes
+  (slack-tension and the previous entry's distance-spooled escape) share
+  the same `FightFailure.escaped` case, so both get this treatment; there
+  was no clean way to split them without threading a failure subtype
+  through, and nothing suggested only one should differ.
+
+### Shared: FishFightConfig (new)
+
+- Added `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: a
+  `Codable`/`Equatable` struct collecting every fight-tuning number that
+  was previously a private constant scattered across
+  `FishFightController` (World) and `FishingHaptics`' `FightBand` enum
+  (Rod) — `initialTension`, `baseFishPullRate`, `baseReelTensionRate`,
+  `basePullSpeed`, `escapeDistanceAllowance`, `tensionBandMediumThreshold`,
+  `tensionBandHighThreshold`, and nine haptic parameters (interval/
+  intensity/sharpness × low/medium/high). Every field is a `var` with an
+  inline doc comment explaining what it does and, where relevant, how it
+  interacts with the others (e.g. `baseReelTensionRate`'s comment walks
+  through the net-tension formula directly). Meant to be hand-edited —
+  "config file beserta docs nya... agar aku bisa tuning manual."
+- `FishFightController.init` gained `config: FishFightConfig =
+  FishFightConfig()`; every private constant it used to hardcode now
+  reads `config.xxx`. `maxExpectedCastDistance` deliberately stayed a
+  private constant, not part of the config — it's cast physics
+  (`WorldViewModel.castSpeed`-derived), not fight tuning.
+- `FishingHaptics.init` gained the same `config:` parameter. `FightBand`
+  is now a plain 3-case enum with no properties of its own; a new
+  private `parameters(for:)` looks up interval/intensity/sharpness from
+  `config`. Both `FishFightController()` and `FishingHaptics()`'s
+  existing zero-argument call sites (`WorldViewModel.swift`,
+  `RodApp.swift`) are unaffected — they pick up `FishFightConfig()`'s
+  defaults automatically.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: amended ADR-039 in place — the
+  `baseReelTensionRate` decision now shows both the original (0.85) and
+  corrected (0.55) values with the worked time-to-snap table; added the
+  escape-reset-to-idle decision and the config-extraction decision;
+  Rationale extended with the correction's own reasoning and the
+  time-to-snap table.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: tension-safe-zone formula block
+  updated (config-qualified names, corrected 0.55, the shared
+  escape→idle line); new "Fish Fight Tuning Config" subsection; fixed a
+  stale flow-diagram line that still said `.escaped -> HookPhase
+  .hookInWater` (missed in the previous entry's own docs pass).
+
+### Verification
+
+- Rebuilt `Shared` (now including `FishFightConfig.swift`) as both
+  `arm64-apple-macosx26.0` and `arm64-apple-ios26.0-simulator` modules
+  from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: full `World/World`
+  file list (macOS) and full `Rod/Rod` file list (iOS simulator) — both
+  clean.
+- The 0.55 time-to-snap numbers above were computed with a standalone
+  Python calculation (not run in the app) to sanity-check the fix before
+  writing it up — not a substitute for actually playing it.
+- Not run: any live session. Whether 0.55 actually feels right (vs.
+  needing to land somewhere between 0.55 and the original 0.5), whether
+  the escape-to-idle change feels appropriately punishing rather than
+  tedious, and whether the extracted config is actually convenient to
+  tune from are all unverified — this is explicitly a config the player
+  is expected to keep adjusting directly, not a claim of correct final
+  balance.
+
+## Tier Differentiation: Resistance Multipliers Added to FishFightConfig
+
+Date: 2026-07-19.
+
+Direct follow-up in the same session, confirming the previous entry's
+0.55 fix worked and reporting the next problem: "oke now, sepertinya
+udah cukup susah, namun, tingkat loncatan dari fish A - B - C - Scott
+masih kerasa gaada bedanya" (ok now, seems hard enough, but the
+difficulty jump from Fish A to B to C to Scott still doesn't feel like
+there's a difference). Amended ADR-039 in place again — same
+still-uncommitted feature.
+
+### Diagnosis
+
+Worked the net-tension-rate formula (same method as the previous
+entry's 0.55 correction) across all four species side by side at full
+reel speed. Found the spread between weakest (`fish_a`) and strongest
+(`scott`) was only ~35% (+0.400 down to +0.258 net/s), and every tier
+shared an identical floor at low `sizeRatio` — confirming the reported
+symptom exactly. Root cause: `effectiveFishPullRate = baseFishPullRate *
+(1 + resistance)` and `fishPullSpeed = basePullSpeed * (1 + resistance *
+0.5)` used an implicit multiplier of `1.0`/`0.5` on `resistance`, and
+`baseFishPullRate` (0.15) was large enough relative to `resistance`'s
+own max contribution (up to `0.95` for Scott) that species/tier barely
+mattered next to the shared base term.
+
+### Shared: FishFightConfig
+
+- Added three fields: `pullRateResistanceMultiplier` (3.0),
+  `pullSpeedResistanceMultiplier` (1.8), `escapeAllowanceResistancePenalty`
+  (3.5) — plus `minEscapeDistanceAllowance` (2.0 m) as a floor so the
+  penalty can never over-tighten the escape allowance. All four
+  documented inline with the reasoning, same as every other field in
+  this file.
+
+### World: FishFightController
+
+- `effectiveFishPullRate`: `baseFishPullRate * (1 + resistance)` →
+  `baseFishPullRate * (1 + resistance * config.pullRateResistanceMultiplier)`.
+- `fishPullSpeed`: `basePullSpeed * (1 + resistance * 0.5)` →
+  `basePullSpeed * (1 + resistance * config.pullSpeedResistanceMultiplier)`.
+- New `effectiveEscapeDistanceAllowance` computed property:
+  `max(minEscapeDistanceAllowance, escapeDistanceAllowance - resistance *
+  escapeAllowanceResistancePenalty)`, now used in `updateFight`'s
+  distance-escape check instead of the flat `config.escapeDistanceAllowance`.
+  A tougher fish now gives less rope before a run counts as spooled, not
+  just a faster tension climb.
+
+Hand-worked result at a max-size roll (full reel speed, net tension
+rate): `fish_a` ~+0.24/s (~2 s to snap, comfortable), `fish_b` ~+0.15/s
+(~3.3 s, noticeably tighter), `fish_c` ~+0.06/s (~8 s, razor-thin
+margin), `scott` ~**-0.03/s** — full-speed reeling alone can no longer
+even hold Scott's line. Escape allowance similarly tightens ~4.8 m
+(`fish_a`) → ~2.7 m (`scott`). At `resistance == 0` (any tier's smallest
+roll) all formulas are unchanged and identical across species — correct
+and untouched, since a small individual being weak regardless of
+species was never the complaint.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: extended ADR-039's Decision with the new
+  formulas and worked numbers; extended Rationale with the diagnosis.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: tension-safe-zone formula block
+  updated with the new multipliers and the `effectiveEscapeAllowance`
+  formula; added a paragraph explaining why the multipliers were needed;
+  "Fish Fight Tuning Config" section updated to mention the three new
+  fields.
+
+### Verification
+
+- Rebuilt `Shared` (now including the expanded `FishFightConfig.swift`)
+  as both `arm64-apple-macosx26.0` and `arm64-apple-ios26.0-simulator`
+  modules from `find Sources/Shared -name "*.swift"` — no errors on
+  either.
+- `xcrun swiftc -typecheck` against those modules: full `World/World`
+  file list (macOS) and full `Rod/Rod` file list (iOS simulator) — both
+  clean.
+- The net-tension-rate/escape-allowance numbers above were computed with
+  a standalone Python calculation before writing the fix, same method as
+  the previous entry — not run in the app.
+- Not run: any live session. Whether 3.0/1.8/3.5 are the right
+  multipliers (vs. needing further adjustment either direction), and
+  whether Scott's fight now feels appropriately climactic rather than
+  frustrating, are both unverified — same explicit expectation as every
+  other entry in this config: the player is expected to keep tuning it.

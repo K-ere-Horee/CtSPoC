@@ -2,6 +2,8 @@
 //  HapticManager.swift
 //  Rod
 //
+//  Created by Calzy Akmal Indyramdhani on 17/07/26.
+//
 
 import CoreHaptics
 
@@ -67,6 +69,13 @@ final class HapticManager {
     /// hasn't bitten. Deliberately softer/duller than `fishBite()`.
     func fishInterested() {
         playTransient(intensity: 0.22, sharpness: 0.15)
+    }
+
+    /// One tap of the continuous fight rhythm (ADR-039); repeated externally by
+    /// `FishingHaptics.fightPulse(now:)` at the active tension band's interval, with the band
+    /// deciding intensity/sharpness — `HapticManager` stays band-agnostic.
+    func fightTick(intensity: Float, sharpness: Float) {
+        playTransient(intensity: intensity, sharpness: sharpness)
     }
 
     private func playTransient(intensity: Float, sharpness: Float) {

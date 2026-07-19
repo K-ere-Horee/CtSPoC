@@ -24,6 +24,10 @@ public struct RodState: Codable, Sendable, Equatable {
     public let castSolution: CastSolution?
     public let motionPhase: RodMotionPhase
     public let castPower: Float
+    /// Whether the player has pressed "Start Fishing" on Rod. World drives its own Main Menu <->
+    /// Playing transition off this field (see ADR-038) instead of a World-side button — Rod is
+    /// the sole authority for the session boundary.
+    public let isFishing: Bool
 
     public init(
         timestamp: TimeInterval = Date().timeIntervalSince1970,
@@ -36,7 +40,8 @@ public struct RodState: Codable, Sendable, Equatable {
         reelSpeed: Float = 0,
         castSolution: CastSolution? = nil,
         motionPhase: RodMotionPhase = .invalid,
-        castPower: Float = 0
+        castPower: Float = 0,
+        isFishing: Bool = false
     ) {
         self.timestamp = timestamp
         distance = spatial.distance
@@ -52,5 +57,6 @@ public struct RodState: Codable, Sendable, Equatable {
         self.castSolution = castSolution
         self.motionPhase = motionPhase
         self.castPower = castPower
+        self.isFishing = isFishing
     }
 }
