@@ -29,12 +29,14 @@ struct ContentView: View {
 
             if viewModel.screen == .playing, viewModel.hookPhase == .result, let result = fishFight.lastCatchResult {
                 ResultView(result: result) {
+                    viewModel.sounds.uiClick()
                     viewModel.continueFishing()
                 }
             }
 
             if viewModel.screen == .playing, let announcement = fishFight.levelUpAnnouncement {
                 LevelUpBannerView(message: announcement) {
+                    viewModel.sounds.uiClick()
                     fishFight.dismissLevelUpAnnouncement()
                 }
             }
