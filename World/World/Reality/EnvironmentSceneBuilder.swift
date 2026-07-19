@@ -2,6 +2,8 @@
 //  EnvironmentSceneBuilder.swift
 //  World
 //
+//  Created by Calzy Akmal Indyramdhani on 17/07/26.
+//
 
 import RealityKit
 import ImageIO

@@ -3800,3 +3800,307 @@ an incomplete one.
   -typecheck` against hand-built Shared modules, the same method used
   throughout this session — no live device/simulator run of World on
   iOS has happened, only the compile-correctness check).
+
+## World Main Menu
+
+Date: 2026-07-19.
+
+Requested directly, right after wrapping the CoreBluetooth migration:
+"gausah commit sih, maybe sekarang saat yang tepat buat implement main
+menu dulu sesuai v1" (no need to commit — maybe now's the right time to
+implement the Main Menu, per V1). Closes a gap flagged repeatedly since
+the Result Screen sprint ("Return to Menu... no Main Menu yet to return
+to"). Recorded as ADR-036 in `ARCHITECTURE_DECISIONS.md`.
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`: added `enum Screen {
+  case mainMenu, playing }` and `@Published private(set) var screen:
+  Screen = .mainMenu`. Added `startGame()` (Main Menu's "Start Fishing" —
+  no-ops unless `connectionState` is `.ready`/`.streaming`, per the
+  product doc's "player cannot continue until the controller is
+  available") and `returnToMenu()` (Result screen's new "Return to
+  Menu" — guarded to `hookPhase == .result` same as the existing
+  `continueFishing()`, also resolves `hookPhase` back to `.idle`, and
+  does *not* touch the transport connection).
+- Added `World/World/Views/MainMenuView.swift`: title, subtitle,
+  "Start Fishing" button (disabled until Rod is connected, with a
+  status row — spinner + text per `ConnectionState` case, or a
+  checkmark once ready), solid black background (deliberately opaque,
+  not translucent — gameplay must not render through the title screen).
+- `World/World/Views/ResultView.swift`: added a second closure
+  (`onReturnToMenu: () -> Void`) and a second button ("Return to Menu",
+  `.bordered`) beneath the existing "Continue Fishing"
+  (`.borderedProminent`). Updated its doc comment, which previously
+  explicitly said "Return to Menu is intentionally omitted until a Main
+  Menu exists."
+- `World/World/ContentView.swift`: `body`'s `ZStack` gained a
+  `viewModel.screen == .mainMenu` branch rendering `MainMenuView` as an
+  overlay on top of the always-mounted `content` (the existing
+  `RealityView`/HUD), and the existing result-screen branch gained a
+  `viewModel.screen == .playing` guard alongside its `hookPhase ==
+  .result` check, plus wired the new `onReturnToMenu` closure. `content`
+  itself, and its `.onAppear { viewModel.start() }`/`.onDisappear {
+  viewModel.stop() }`, are unchanged — deliberately: the transport
+  connection begins in the background as soon as `ContentView` first
+  appears, regardless of which screen is showing, so pressing "Start
+  Fishing" is often already unblocked by the time the player taps it,
+  and the environment/rod rig never reloads just from a menu
+  round-trip.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-036.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: resolved both existing "no Main
+  Menu yet" gap notes (Result Screen section, Rod's Minimal V1
+  Interface section) to point at ADR-036 instead of describing an open
+  gap, and added a new "World Main Menu (ADR-036)" section.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file, including the new
+  `MainMenuView.swift` and updated `ResultView.swift`/`ContentView.swift`/
+  `WorldViewModel.swift` — no errors.
+- `git diff --check` clean on every file touched.
+- Not run: any live session. Whether `content`'s `RealityView` actually
+  avoids re-creating the scene across a menu round-trip (vs. SwiftUI
+  treating the `ZStack` branch changes as a reason to rebuild it
+  anyway), whether the Main Menu reads correctly on screen, and whether
+  "Start Fishing"/"Return to Menu" behave as intended end to end are
+  all unverified — reasoned about from `RealityView`'s documented
+  `make`-once-per-identity behavior, not observed.
+
+## Fish Tiers and Three-Level Catch-Count Progression
+
+Date: 2026-07-19.
+
+Requested directly, with exact thresholds and structure specified:
+"Onto progression, detailnya kaya gini: Level 1: after catch 10 small
+fish, u can catch more medium fish. Level 2: after catch 10 medium-sized
+fish, u can catch more big fish. Level 3: muncul scott dan kayak ngasih
+perintah untuk nangkap dia. for now, let's say small fish is fish A.
+parameter fish nya nanti di ubah lagi seiring berjalannya game, yang
+jelas semakin tinggi level ikan, semakin susah dari sisi berat, length,
+dan resistance saat reelingnya ofc. ini dulu deh" (translated in ADR-037).
+Recorded as ADR-037 in `ARCHITECTURE_DECISIONS.md`.
+
+Note on how this entry came together: the data model, `FishCatalog`
+expansion, and `ProgressionStore` were already in place in the working
+tree when this entry was written — that part of the implementation
+happened earlier in this same session, in a portion that had already
+been summarized out of visible context by the time this entry was
+drafted (per this project's own context-compaction behavior). What
+follows documents the *complete* feature as it now stands, including
+finishing the part that was still missing when picked back up:
+`FishFightController.resolve(outcome:)` had all the progression
+plumbing (`progressionStore`, `currentLevel`, `levelUpAnnouncement`)
+sitting unused — nothing actually called
+`progressionStore.recordCatch(tier:)`, so catching fish never advanced
+the level. Caught via direct code inspection, not a bug report.
+
+### Shared
+
+- `Shared/Sources/Shared/Models/Gameplay/FishSpecies.swift`: added
+  `public enum FishTier: String, Codable, Sendable, CaseIterable { case
+  small, medium, big, boss }` and `public let tier: FishTier` on
+  `FishSpecies` (constructor parameter added accordingly).
+
+### World: Catalog and Progression Store
+
+- `World/World/Gameplay/FishCatalog.swift`: `all` grew from one entry
+  (`fish_a`) to four — `fish_a` (`.small`, unchanged stats), `fish_b`
+  (`.medium`, weight 3.5-9.0 kg / length 55-90 cm / resistance 0.55 /
+  value 25), `fish_c` (`.big`, weight 9.0-20.0 kg / length 90-140 cm /
+  resistance 0.75 / value 60), `scott` (`.boss`, weight 20.0-40.0 kg /
+  length 140-200 cm / resistance 0.95 / value 500). All placeholder
+  numbers per the player's own framing — rough scale-ups, not tuned.
+  `randomSpecies()` → `randomSpecies(unlockedTiers: Set<FishTier>)`,
+  filtering `all` to unlocked tiers only (falls back to `all[0]` if the
+  filtered pool is ever empty).
+- Added `World/World/Gameplay/ProgressionStore.swift`: persists
+  per-tier catch counts to `UserDefaults` (same pattern as
+  `FishRecordStore`). `level: Int` (1/2/3), `unlockedTiers: Set
+  <FishTier>`, and `progressTowardNextLevel: (caught: Int, needed:
+  Int)?` (`nil` at level 3) are all derived from the stored counts, not
+  separately stored. `recordCatch(tier:)` increments the right counter
+  and returns the level *after* recording — callers compare against the
+  level beforehand to detect a level-up.
+
+### World: FishFightController Wiring (the piece that was missing)
+
+- `World/World/Gameplay/FishFightController.swift`: `init` gained a
+  `progressionStore: ProgressionStore = ProgressionStore()` parameter
+  (same injectable-with-default pattern as `recordStore`), seeding
+  `currentLevel` from it. `resolve(outcome:)`'s existing `.caught`
+  branch now calls `progressionStore.recordCatch(tier: species.tier)`
+  and compares the returned level against `currentLevel`; if higher,
+  sets `levelUpAnnouncement` via a new `announcement(forLevel:)` helper
+  ("Medium fish have entered the lake!" at 2, "Scott has appeared.
+  Catch him!" at 3) before updating `currentLevel`.
+  `updateSearching(deltaTime:)`'s bite branch already called
+  `FishCatalog.randomSpecies(unlockedTiers:)` correctly (part of the
+  earlier, already-complete portion) — only the catch-side recording
+  was missing.
+
+### World: HUD
+
+- `World/World/ContentView.swift`: the "Caught" `GroupBox` gained a
+  "Level N · x/10 to next tier" row (or "All tiers unlocked" once
+  `progressTowardNextLevel` is `nil`). The body `ZStack` gained a third
+  overlay branch showing `LevelUpBannerView` whenever `fishFight.
+  levelUpAnnouncement` is set, gated to `screen == .playing`.
+- Added `World/World/Views/LevelUpBannerView.swift`: a dismissible
+  toast pinned to the top of the screen, deliberately not auto-fading
+  (a "Scott has appeared" moment shouldn't be missable by glancing away
+  at the wrong second) and deliberately not a blocking modal (it can
+  appear stacked above `ResultView`, since the catch that crosses a
+  tier threshold is still a normal catch too — the two views don't gate
+  each other).
+
+### Aside, unrelated to this entry
+
+`Rod/Rod/ContentView.swift` currently has its "Start Fishing" and "End
+Fishing" buttons commented out, leaving only "Calibrate" active — found
+while surveying files for this entry, not something this session's
+progression work touched or caused. Flagged to the player directly
+rather than silently uncommenting, since the intent behind it is
+unknown (could be deliberate, mid-test).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-037.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "Fish Species and
+  Fight Simulation" section's now-stale "one entry today" claim, and
+  added a new "Fish Tiers and Progression (ADR-037)" section.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an
+  `arm64-apple-ios26.0-simulator` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules for the full
+  `World/World` Swift file list, including `ProgressionStore.swift` and
+  `LevelUpBannerView.swift`, on **both** macOS and iOS-simulator — clean
+  on both.
+- `git diff --check`: clean on every file this entry actually touched
+  (`FishFightController.swift`, `ContentView.swift`,
+  `LevelUpBannerView.swift`); a trailing-whitespace hit on
+  `ContentView.swift` traced to a hunk from the earlier, already-landed
+  Main Menu work, not this entry's edits.
+- Not run: any live session. Whether catching 10 `fish_a` actually
+  unlocks `fish_b` in the bite pool, whether the level-up banner reads
+  correctly stacked above the result card, and whether the placeholder
+  species stats feel remotely balanced are all unverified — this is a
+  code-complete, typecheck-clean pass, not a played one.
+
+## Rod Owns Session Start/End; Recalibrate Moved to Rod's Corner
+
+Date: 2026-07-19.
+
+Requested directly, right after the previous entry noted (unasked)
+that Rod's Start/End Fishing buttons were commented out: "oh iya,
+tentang start fishing dan end fishing itu, bisa ga di ubah aja? jadi
+instead of controller di world yang harus press button untuk mulai
+mancing, ganti ke phone aja. status di world mungkin 'press "start" on
+rod to play'. dan di rod pun bukan start fishing atau end fishing,
+tapi start fishing, terus ketika mancing ada button end fishing buat
+balik ke main menu. recalibrate jangan di tengah lagi, tapi geser ke
+pojok kanan atas dari rod screen" (translated in ADR-038). Recorded as
+ADR-038 in `ARCHITECTURE_DECISIONS.md`.
+
+Noted a real design fork before implementing, resolved rather than
+guessed at: with `WorldViewModel.screen` becoming reactive to Rod's
+`isFishing`, `ResultView`'s "Return to Menu" button (added one entry
+ago in ADR-036) would have silently stopped working — pressing it would
+force `screen = .mainMenu` for exactly one frame before the next
+30 Hz `.state` message (still carrying `isFishing == true`, since Rod
+never heard about the button press) flipped it straight back to
+`.playing`. Removed the button rather than ship a control that visibly
+half-works, since Rod is now the sole authority for the session
+boundary by the player's own design.
+
+### Shared
+
+- `Shared/Sources/Shared/Models/Rod/RodState.swift`: added
+  `isFishing: Bool` (default `false`), riding along in the existing
+  ~30 Hz `.state` stream — no new `NetworkMessage` case needed.
+
+### Rod
+
+- `Rod/Rod/ViewModel/RodViewModel.swift`: `isFishing` (already existed,
+  local-only, gating cast/reel gesture reporting) is now also passed
+  into `RodState` at all three construction sites: `publishState()`,
+  `updateAction()`, and the `.idle`-hookPhase reset inside `handle(_:)`.
+- `Rod/Rod/ContentView.swift`: replaced the three-button stack (Start
+  Fishing / Calibrate / End Fishing — Start and End previously both
+  present, just oppositely `.disabled`) with one `@ViewBuilder`
+  `fishingButton` that shows either "Start Fishing"
+  (`.borderedProminent`, disabled until `calibrationStep == .complete`)
+  or "End Fishing" (`.bordered`) depending on `isFishing` — never both
+  at once. Calibrate moved into a `ToolbarItem(placement:
+  .topBarTrailing)` (the phone's top-right corner), reusing the
+  existing `calibrationButtonTitle` computed property rather than
+  duplicating its per-step text, same disabled condition as before
+  (`!hasMotionSample || isFishing`).
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`:
+  - `handle(_:)` now captures `rodState.isFishing` before overwriting
+    `rodState`, and compares it against the freshly-received
+    `state.isFishing`: rising edge → `screen = .playing`; falling edge
+    → `returnToMenu()`.
+  - `returnToMenu()` changed from a public, `hookPhase == .result`-gated
+    method (the old "Return to Menu" button handler) to `private`, no
+    longer gated — the player can press "End Fishing" on Rod at any
+    point during a session, not only after a catch. Now resets
+    in-progress fight/hook state (`hookVelocity = .zero`,
+    `hookEntity?.isEnabled = false`, `fishFight.resetForNewCast()`,
+    `setHookPhase(.idle)`) before switching `screen`.
+  - `startGame()` deleted — nothing calls it anymore.
+  - `transport.onStateChange`: added a `.disconnected`/`.failed`
+    branch calling `returnToMenu()` as a fail-safe. Since `screen` now
+    depends entirely on `.state` messages continuing to arrive, a
+    genuine Rod disconnect mid-session would otherwise leave `screen`
+    stuck on `.playing` forever — no more messages ever arrive to flip
+    `isFishing`, and there's no controller left to press "End Fishing."
+- `World/World/Views/MainMenuView.swift`: removed the `onStart`
+  closure and "Start Fishing" button entirely; now purely a status
+  display (title/subtitle + a status row per `ConnectionState`, reading
+  "Press \"Start Fishing\" on Rod to play" once ready).
+- `World/World/Views/ResultView.swift`: removed `onReturnToMenu` and
+  its "Return to Menu" button — see the design-fork note above. Only
+  "Continue Fishing" remains.
+- `World/World/ContentView.swift`: updated both call sites
+  (`MainMenuView(connectionState:)` with no closure, `ResultView(result:)`
+  with only the continue closure).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-038.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "World Main Menu
+  (ADR-036)" section's now-stale flow diagram/button descriptions, and
+  added a new "Rod Owns the Session Boundary (ADR-038)" section.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an
+  `arm64-apple-ios26.0-simulator` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full
+  `World/World` Swift file list on **both** macOS and iOS-simulator —
+  clean on both; the full `Rod/Rod` Swift file list on iOS-simulator —
+  clean.
+- `git diff --check`: clean on every file this entry touched; a
+  trailing-whitespace hit on `ContentView.swift` traced to the same
+  pre-existing hunk (from the earlier Main Menu work) flagged in the
+  previous two entries, not this one's edits.
+- Not run: any live session. Whether pressing "Start Fishing" on Rod
+  actually flips World from menu to gameplay, whether "End Fishing"
+  correctly interrupts a mid-fight session and returns to the menu,
+  whether the disconnect fail-safe actually fires in time, and whether
+  the relocated Calibrate toolbar button is discoverable/usable in the
+  phone's top-right corner are all unverified — code-complete and
+  typecheck-clean only.

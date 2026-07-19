@@ -2,14 +2,18 @@
 //  ResultView.swift
 //  World
 //
-//  Created by Calzy Akmal Indyramdhani on 18/07/26.
+//  Created by Calzy Akmal Indyramdhani on 19/07/26.
 //
 
 import SwiftUI
 
 /// Shown when `WorldViewModel.hookPhase == .result`, after a successful
-/// catch. Blocks the scene until the player taps "Continue Fishing" —
-/// "Return to Menu" is intentionally omitted until a Main Menu exists.
+/// catch. Blocks the scene until the player taps "Continue Fishing".
+///
+/// No "Return to Menu" here (ADR-038) — Rod's own "End Fishing" button is now the sole way to
+/// end a session (`WorldViewModel` reacts to `RodState.isFishing` going false), so a World-side
+/// button making the same call would just get overridden back to `.playing` by the next state
+/// update while Rod still thought it was fishing.
 struct ResultView: View {
     let result: FishCatchResult
     let onContinue: () -> Void

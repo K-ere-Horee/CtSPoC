@@ -23,9 +23,19 @@ struct ContentView: View {
         ZStack {
             content
 
-            if viewModel.hookPhase == .result, let result = fishFight.lastCatchResult {
+            if viewModel.screen == .mainMenu {
+                MainMenuView(connectionState: viewModel.connectionState)
+            }
+
+            if viewModel.screen == .playing, viewModel.hookPhase == .result, let result = fishFight.lastCatchResult {
                 ResultView(result: result) {
                     viewModel.continueFishing()
+                }
+            }
+
+            if viewModel.screen == .playing, let announcement = fishFight.levelUpAnnouncement {
+                LevelUpBannerView(message: announcement) {
+                    fishFight.dismissLevelUpAnnouncement()
                 }
             }
         }
@@ -33,13 +43,6 @@ struct ContentView: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("World")
-                    .font(.title)
-                Spacer()
-                Text(viewModel.connectionState.rawValue.capitalized)
-                    .foregroundStyle(viewModel.connectionState == .streaming ? .green : .secondary)
-            }
 
             RealityView { content in
                 content.camera = .virtual
@@ -49,7 +52,12 @@ struct ContentView: View {
             }
             .frame(minHeight: 320)
             .overlay(alignment: .topLeading) {
-                fpsIndicator
+                VStack {
+                    fpsIndicator
+                    
+                    Text(viewModel.connectionState.rawValue.capitalized)
+                        .foregroundStyle(viewModel.connectionState == .streaming ? .green : .secondary)
+                }
             }
             
             // MARK: - Debug purpose only. Can ignore
@@ -69,7 +77,6 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-             */
 
             GroupBox("Cast Direction Debug") {
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
@@ -80,13 +87,14 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            */
 
             LineTensionView(
                 isFighting: fishFight.hasFishOnHook,
                 tension: fishFight.lineTension
             )
 
-            GroupBox("Catch Results") {
+            GroupBox {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("Caught")
@@ -94,6 +102,19 @@ struct ContentView: View {
                         Text("\(fishFight.caughtCount)")
                             .bold()
                     }
+
+                    HStack {
+                        Text("Level \(fishFight.currentLevel)")
+                        Spacer()
+                        if let progress = fishFight.progressTowardNextLevel {
+                            Text("\(progress.caught)/\(progress.needed) to next tier")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("All tiers unlocked")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .font(.caption)
 
                     if let result = fishFight.lastCatchResult {
                         HStack {

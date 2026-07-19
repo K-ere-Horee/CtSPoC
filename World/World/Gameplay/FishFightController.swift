@@ -47,6 +47,12 @@ final class FishFightController: ObservableObject {
     /// splashing, as measured by `WorldViewModel`. HUD-only; also drives
     /// `sizeCeilingRatio` below.
     @Published private(set) var lastCastDistance: Float = 0
+    /// Current progression level (1...3), from `ProgressionStore`. See ADR-037.
+    @Published private(set) var currentLevel: Int
+    /// Set to a short message the instant a catch pushes `currentLevel` up (e.g. "Medium fish
+    /// have entered the lake!"); the HUD shows it as a transient banner and calls
+    /// `dismissLevelUpAnnouncement()` when done. `nil` otherwise.
+    @Published private(set) var levelUpAnnouncement: String?
 
     private let initialTension: Float = 0.5
     /// Tension/sec drained by the fish pulling away while not countered.
@@ -76,9 +82,23 @@ final class FishFightController: ObservableObject {
     private var currentCastDistance: Float = 0
 
     private let recordStore: FishRecordStore
+    private let progressionStore: ProgressionStore
 
-    init(recordStore: FishRecordStore = FishRecordStore()) {
+    init(recordStore: FishRecordStore = FishRecordStore(), progressionStore: ProgressionStore = ProgressionStore()) {
         self.recordStore = recordStore
+        self.progressionStore = progressionStore
+        currentLevel = progressionStore.level
+    }
+
+    /// `(caught, needed)` toward the next tier unlock, or `nil` once every tier is unlocked —
+    /// passthrough for the HUD, so it doesn't need its own reference to `ProgressionStore`.
+    var progressTowardNextLevel: (caught: Int, needed: Int)? {
+        progressionStore.progressTowardNextLevel
+    }
+
+    /// Called by the HUD once it's shown `levelUpAnnouncement` for long enough.
+    func dismissLevelUpAnnouncement() {
+        levelUpAnnouncement = nil
     }
 
     /// Call every tick a new cast lands in the water. `castDistance` is the
@@ -111,7 +131,7 @@ final class FishFightController: ObservableObject {
         biteTimer -= deltaTime
         guard biteTimer <= 0 else { return nil }
 
-        let species = FishCatalog.randomSpecies()
+        let species = FishCatalog.randomSpecies(unlockedTiers: progressionStore.unlockedTiers)
         currentSpecies = species
         currentWeight = Self.biasedRoll(in: species.weightRange, ceilingRatio: sizeCeilingRatio)
         currentLength = Self.biasedRoll(in: species.lengthRange, ceilingRatio: sizeCeilingRatio)
@@ -167,6 +187,12 @@ final class FishFightController: ObservableObject {
             stars = Self.stars(forWeight: currentWeight, in: species.weightRange)
             coins = Self.coins(baseValue: species.value, stars: stars)
             isNewRecord = recordStore.recordCatch(speciesID: species.id, weight: currentWeight)
+
+            let levelAfter = progressionStore.recordCatch(tier: species.tier)
+            if levelAfter > currentLevel {
+                levelUpAnnouncement = Self.announcement(forLevel: levelAfter)
+            }
+            currentLevel = levelAfter
         }
 
         lastCatchResult = FishCatchResult(
@@ -197,6 +223,17 @@ final class FishFightController: ObservableObject {
     private static func coins(baseValue: Int, stars: Int) -> Int {
         let multiplier = 0.6 + 0.1 * Double(stars)
         return max(1, Int((Double(baseValue) * multiplier).rounded()))
+    }
+
+    /// Player-facing text for `levelUpAnnouncement` when a catch crosses a `ProgressionStore`
+    /// threshold. `nil` is unreachable in practice (`recordCatch` only ever returns 1, 2, or 3),
+    /// kept exhaustive rather than force-unwrapped so a future Level 4 doesn't silently misfire.
+    private static func announcement(forLevel level: Int) -> String? {
+        switch level {
+        case 2: return "Medium fish have entered the lake!"
+        case 3: return "Scott has appeared. Catch him!"
+        default: return nil
+        }
     }
 
     /// 0.3 (short/no cast) ... 1 (at/near `maxExpectedCastDistance`). Floors

@@ -2,6 +2,8 @@
 //  FishingHaptics.swift
 //  Rod
 //
+//  Created by Calzy Akmal Indyramdhani on 17/07/26.
+//
 
 import Foundation
 import Shared

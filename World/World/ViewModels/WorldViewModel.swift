@@ -15,6 +15,17 @@ import simd
 @MainActor
 final class WorldViewModel: ObservableObject {
 
+    /// Per `GAMEPLAY_ARCHITECTURE_V1.md`: World owns the Main Menu, and "Return to Menu" is one
+    /// of the two choices offered from the result screen. `ContentView` keeps the RealityKit
+    /// scene (`content`) mounted for the whole app session regardless of `screen` — only an
+    /// overlay is shown/hidden — so returning to the menu and starting again doesn't reload the
+    /// environment/rod rig from disk a second time.
+    enum Screen {
+        case mainMenu
+        case playing
+    }
+
+    @Published private(set) var screen: Screen = .mainMenu
     @Published private(set) var rodState = RodState()
     @Published private(set) var connectionState: ConnectionState = .idle
     @Published private(set) var hookPhase: HookPhase = .idle
@@ -148,7 +159,17 @@ final class WorldViewModel: ObservableObject {
         transport.onStateChange = { [weak self] state in
             Task { @MainActor in
                 self?.connectionState = state
-                guard let self, state == .ready else { return }
+                guard let self else { return }
+                if state == .disconnected || state == .failed {
+                    // Rod is now the sole authority for the session boundary (ADR-038), driven by
+                    // `RodState.isFishing` arriving over `.state` — but a dropped connection means
+                    // no more `.state` messages ever arrive, so `screen` would otherwise stay stuck
+                    // on `.playing` forever with no controller left to press "End Fishing." Fail
+                    // safe back to the menu instead.
+                    self.returnToMenu()
+                    return
+                }
+                guard state == .ready else { return }
                 // A dropped `.hookPhase` message during a prior disconnect would otherwise leave
                 // Rod stuck believing an old phase forever (MultipeerConnectivity does not retry
                 // a `send()` that failed outright) — resync on every reconnect so a transient drop
@@ -311,6 +332,22 @@ final class WorldViewModel: ObservableObject {
     func continueFishing() {
         guard hookPhase == .result else { return }
         setHookPhase(.idle)
+    }
+
+    /// Reactive, not button-driven (ADR-038): called from `handle(_:)` when `RodState.isFishing`
+    /// flips true/false, and as a fail-safe from `transport.onStateChange` if Rod disconnects
+    /// mid-session. Unlike the old button-driven version this isn't gated to
+    /// `hookPhase == .result` — the player can press "End Fishing" on Rod at any point, not just
+    /// after a catch — so it resets whatever fight/hook state was in progress. Does not disconnect
+    /// Rod; the transport connection is left running so starting again doesn't need to
+    /// rediscover/reconnect.
+    private func returnToMenu() {
+        guard screen != .mainMenu else { return }
+        hookVelocity = .zero
+        hookEntity?.isEnabled = false
+        fishFight.resetForNewCast()
+        setHookPhase(.idle)
+        screen = .mainMenu
     }
 
     private func setHookPhase(_ phase: HookPhase) {
@@ -575,11 +612,20 @@ final class WorldViewModel: ObservableObject {
 
     private func handle(_ message: NetworkMessage) {
         guard case let .state(state) = message else { return }
+        let wasFishing = rodState.isFishing
         rodState = state
         if let solution = state.castSolution, state.action == .casting {
             pendingCastSolution = solution
         }
         connectionState = .streaming
+
+        // Rod owns the session start/end boundary (ADR-038) — World's own screen just follows
+        // `isFishing`'s edges instead of a World-side button.
+        if state.isFishing, !wasFishing {
+            screen = .playing
+        } else if !state.isFishing, wasFishing {
+            returnToMenu()
+        }
     }
 
     private func send(_ message: NetworkMessage) async {
