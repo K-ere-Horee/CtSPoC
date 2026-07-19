@@ -154,6 +154,7 @@ final class WorldViewModel: ObservableObject {
     private var fpsElapsedTime: TimeInterval = 0
 
     let fishFight = FishFightController()
+    let sounds = FishingSounds(sounds: SoundManager())
 
     init(
         transport: TransportHost
@@ -190,6 +191,7 @@ final class WorldViewModel: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
+        sounds.handleScreenChange(isPlaying: screen == .playing)
 
         Task {
             do {
@@ -204,6 +206,7 @@ final class WorldViewModel: ObservableObject {
     func stop() {
         transport.disconnect()
         hasStarted = false
+        sounds.stopAll()
     }
 
     /// Called once from `ContentView`'s `RealityView` `make` closure. Subscribes to the scene's
@@ -354,11 +357,13 @@ final class WorldViewModel: ObservableObject {
         fishFight.resetForNewCast()
         setHookPhase(.idle)
         screen = .mainMenu
+        sounds.handleScreenChange(isPlaying: false)
     }
 
     private func setHookPhase(_ phase: HookPhase) {
         guard hookPhase != phase else { return }
         hookPhase = phase
+        sounds.handlePhaseChange(phase)
         Task { await send(.hookPhase(phase)) }
     }
 
@@ -380,11 +385,11 @@ final class WorldViewModel: ObservableObject {
         case .hookInWater:
             switch fishFight.updateSearching(deltaTime: deltaTime) {
             case .interested:
-                Task { await send(.fishingEvent(.fishInterested)) }
+                emit(.fishInterested)
             case .bite:
                 setHookPhase(.fishOnHook)
                 ensureFightDistance()
-                Task { await send(.fishingEvent(.fishBite)) }
+                emit(.fishBite)
             case nil:
                 break
             }
@@ -411,6 +416,7 @@ final class WorldViewModel: ObservableObject {
             }
         }
 
+        sounds.updateReelLoop(active: rodState.action == .reeling && hookPhase != .idle && hookPhase != .flying && hookPhase != .result)
         syncTensionBand()
     }
 
@@ -434,7 +440,7 @@ final class WorldViewModel: ObservableObject {
         case .medium: .reelTensionMedium
         case .high: .reelTensionHigh
         }
-        Task { await send(.fishingEvent(event)) }
+        emit(event)
     }
 
     /// Both failures now reset the hook to `.idle` (a fresh cast is required) instead of
@@ -448,11 +454,11 @@ final class WorldViewModel: ObservableObject {
         case .escaped:
             hookEntity?.isEnabled = false
             setHookPhase(.idle)
-            Task { await send(.fishingEvent(.fishEscaped)) }
+            emit(.fishEscaped)
         case .lineBreak:
             hookEntity?.isEnabled = false
             setHookPhase(.idle)
-            Task { await send(.fishingEvent(.lineBreak)) }
+            emit(.lineBreak)
         }
     }
 
@@ -561,6 +567,7 @@ final class WorldViewModel: ObservableObject {
         hookVelocity = horizontal * (cos(angle) * speed)
             + SIMD3<Float>(0, sin(angle) * speed, 0)
 
+        sounds.castLaunched()
         setHookPhase(.flying)
     }
 
@@ -615,7 +622,7 @@ final class WorldViewModel: ObservableObject {
 
         fishFight.resetForNewCast(castDistance: castDistance)
         setHookPhase(.hookInWater)
-        Task { await send(.fishingEvent(.hookSplash)) }
+        emit(.hookSplash)
     }
 
     private func reelHook(deltaTime: Float) {
@@ -631,7 +638,7 @@ final class WorldViewModel: ObservableObject {
             }
             setHookPhase(caughtFish ? .result : .idle)
             if caughtFish {
-                Task { await send(.fishingEvent(.catchFish)) }
+                emit(.catchFish)
             }
             return
         }
@@ -673,9 +680,17 @@ final class WorldViewModel: ObservableObject {
         // `isFishing`'s edges instead of a World-side button.
         if state.isFishing, !wasFishing {
             screen = .playing
+            sounds.handleScreenChange(isPlaying: true)
         } else if !state.isFishing, wasFishing {
             returnToMenu()
         }
+    }
+
+    /// Single funnel for every World-emitted `FishingEvent` — plays its sound and transmits it to
+    /// Rod together, so sound and transport can never drift apart (ADR-040).
+    private func emit(_ event: FishingEvent) {
+        sounds.handle(event)
+        Task { await send(.fishingEvent(event)) }
     }
 
     private func send(_ message: NetworkMessage) async {

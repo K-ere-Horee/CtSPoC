@@ -11,6 +11,87 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-040 --- World-Side Audio Mirrors the Rod Haptics Router
+
+## Decision
+
+Added the game's first sound effects, wired entirely on the World side. A `SoundManager` +
+`FishingSounds` pair (`World/World/Audio/`) structurally mirrors Rod's `HapticManager` +
+`FishingHaptics` (`Rod/Rod/Haptics/`): one preloaded `AVAudioPlayer` per sound primitive
+underneath, one `handle(_ event: FishingEvent)` switch on top. Audio is presentation, so it stays
+out of `Shared` and never touches the transport — Rod keeps haptics only, no phone-side audio.
+
+`WorldViewModel` funnels every World-emitted `FishingEvent` through a single `emit(_:)` method
+that calls both `sounds.handle(event)` and the existing `send(.fishingEvent(event))`, so sound
+and Rod's haptic trigger can never drift out of sync with each other. `.cast` has no
+World-emitted `FishingEvent` (Rod generates it locally from motion, per the existing
+Rod-local/World-emitted split in `FishingEvent`), so the cast sound is triggered directly from
+`launchHook(solution:)` via `sounds.castLaunched()` instead of going through the funnel.
+
+The reel loop is **frame-driven, not event-driven**: `WorldViewModel.tick(deltaTime:)` calls
+`sounds.updateReelLoop(active:)` every tick based on `rodState.action`/`hookPhase`, so an
+empty-line retrieve during `.hookInWater` (no fish hooked yet) still gets the reel sound, not
+just an active fight — matching what a player actually hears when reeling, independent of
+whether a fish happens to be on.
+
+`AVAudioPlayer` was chosen over RealityKit's spatial `AudioResource`/`AudioPlaybackController`:
+none of the current sounds (UI clicks, ambience, splash/bite/catch one-shots) need 3D
+positioning. Spatializing the hook-splash/reel sounds to the hook entity's world position is a
+plausible future upgrade, not needed for this pass.
+
+`AVAudioSession` is iOS-only, so `SoundManager`'s session setup is wrapped in `#if os(iOS)`
+(`.ambient` category with `.mixWithOthers`) — macOS needs no session configuration to play audio
+under its sandbox. `.ambient` was picked over `.playback` so game audio respects the iOS silent
+switch by default; revisit if that turns out to be the wrong default for this game.
+
+Two gaps left deliberately open, both user-confirmed for this pass: `fishEscaped`/`lineBreak`
+have no dedicated recorded asset yet, so they reuse the hook-splash one-shot (reads as the fish
+darting off) rather than staying silent; and the level-up banner has no sound at all — if one is
+added later, the trigger point is `FishFightController.levelUpAnnouncement` becoming non-nil,
+observed the same place `ContentView` already shows the banner.
+
+## Rationale
+
+Mirroring Rod's haptics router structure (rather than inventing a new shape) means anyone who
+already understands `FishingHaptics.handle(_:)`'s switch, `stopInterest()`/`stopFight()`
+belt-and-suspenders cleanup, or the `FishFightConfig`-driven band parameters can read
+`FishingSounds` with no new mental model. Keeping the `emit(_:)` funnel as the single place both
+systems get told about an event was a direct decision to prevent the two feedback channels
+(haptic on Rod, audio on World) from silently diverging over time as new events get added,
+rather than trusting every call site to remember to fire both a `send` and a sound.
+
+Assets moved from a repo-root `SFX/` folder (untracked, spaces/parentheses in filenames, one
+stray Ableton `.asd` analysis file) into `World/World/Assets/SFX/` with clean snake_case names
+matching the `Sound` enum's raw values — both Xcode projects already use Xcode 16 synchronized
+root groups (`PBXFileSystemSynchronizedRootGroup`, `objectVersion 77`), so no `.pbxproj` resource
+entries were needed; anything under `World/World/` bundles automatically, the same way the
+existing `Assets/Environment/*.usdz` files do.
+
+## Verification
+
+-   `cd Shared && swift build` — clean; Shared is untouched by this change.
+-   `git diff --check` — no whitespace errors.
+-   `xcodebuild -workspace CtSPoC.xcworkspace -scheme World -destination 'platform=macOS' build`
+    (with `CODE_SIGNING_ALLOWED=NO`, since this machine has no matching "Mac Development"
+    certificate) — builds clean after one real fix: `FishingSounds.init`'s default parameter
+    value `SoundManager()` was rejected by the compiler ("call to main actor-isolated
+    initializer... in a synchronous nonisolated context") because World's target sets
+    `-default-isolation=MainActor` project-wide, and default-argument expressions aren't
+    automatically isolated to the enclosing type's actor. Fixed by dropping the default and
+    constructing `FishingSounds(sounds: SoundManager())` explicitly in `WorldViewModel`'s stored
+    property initializer, which — unlike a parameter default — runs correctly isolated as part of
+    the actor's own init.
+-   Confirmed all eight `.wav`/`.mp3` files landed in the built `World.app/Contents/Resources/`.
+-   Launched the built `World.app` directly (`open .../World.app`) and confirmed it stays running
+    with no crash and no audio-related errors in the system log for the main-menu screen, where
+    the ambience loop starts immediately.
+-   Not run: a full manual gameplay pass with Rod actually connected (cast/splash/bite/reel/catch/
+    escape/line-break audible in sequence, loop start/stop timing feel, rapid-retrigger behavior).
+    iOS-device audio behavior — the silent switch, `AVAudioSession` interruptions from phone calls
+    or backgrounding — is entirely unverified and needs on-device testing.
+
+------------------------------------------------------------------------
+
 # ADR-039 --- Fight Difficulty Pass: Tug-of-War, Distance Escape, Tension Haptics, Fight Camera
 
 ## Decision

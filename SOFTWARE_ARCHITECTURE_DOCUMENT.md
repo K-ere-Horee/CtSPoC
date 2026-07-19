@@ -72,10 +72,11 @@ Responsibilities
 -   NI session
 -   Receive RodState
 -   Debug overlay
+-   Sound effects (ADR-040)
 
 Folders
 
-Reality/ Spatial/ Transport/ ViewModels/ Views/
+Audio/ Reality/ Spatial/ Transport/ ViewModels/ Views/
 
 ------------------------------------------------------------------------
 
@@ -980,3 +981,46 @@ End both always present but oppositely enabled) becomes one button whose label/a
 swaps on `isFishing` — "Start Fishing" or "End Fishing", never both. Calibrate moved out of that
 stack into a `ToolbarItem(placement: .topBarTrailing)` in the phone's top-right corner, reusing
 the existing per-step `calibrationButtonTitle` text rather than duplicating it.
+
+------------------------------------------------------------------------
+
+## World Audio Subsystem (ADR-040)
+
+`World/World/Audio/` holds a two-layer sound system that structurally mirrors Rod's haptics
+layer (`Rod/Rod/Haptics/HapticManager.swift` + `FishingHaptics.swift`):
+
+-   `SoundManager` — low-level AVFoundation playback, no gameplay knowledge. One preloaded
+    `AVAudioPlayer` per `Sound` case (`prepareToPlay()` at init to avoid a first-play hitch), with
+    `play`/`startLoop`/`stopLoop`/`stopAllLoops`/`setVolume` primitives.
+-   `FishingSounds` — the event router, one `handle(_ event: FishingEvent)` switch plus loop
+    lifecycle helpers (`updateReelLoop`, `handlePhaseChange`, `handleScreenChange`, `stopAll`),
+    same shape as `FishingHaptics.handle(_:)`.
+
+Sound is presentation and stays out of `Shared` and off the transport. `WorldViewModel` owns a
+`let sounds: FishingSounds` and funnels every World-emitted `FishingEvent` through one point so
+sound and the Rod-bound transport send can never drift apart:
+
+```swift
+private func emit(_ event: FishingEvent) {
+    sounds.handle(event)
+    Task { await send(.fishingEvent(event)) }
+}
+```
+
+Bundled assets live under `World/World/Assets/SFX/` (`.wav`/`.mp3`) — both Xcode projects use
+Xcode 16 synchronized root groups, so anything placed under `World/World/` is auto-bundled with
+no `.pbxproj` resource entries needed, loaded the same way `WaterMaterial.swift` already loads
+its textures: `Bundle.main.url(forResource:withExtension:)`.
+
+Event -> sound mapping: `hookSplash` -> splash one-shot; `fishInterested` -> starts a bubble
+loop; `fishBite` -> stops the bubble loop and plays a bite one-shot; `catchFish` -> stops the reel
+loop and plays a catch splash; `fishEscaped`/`lineBreak` -> reuse the splash one-shot (no
+dedicated asset recorded yet); tension-band events are routed through for symmetry but stay
+haptic-only. `.cast` has no World-emitted `FishingEvent` (Rod generates it locally from motion),
+so `launchHook(solution:)` calls `sounds.castLaunched()` directly. The reel loop is driven every
+tick from `rodState.action`/`hookPhase` rather than from an event, so an empty-line retrieve
+during `.hookInWater` (no fish on hook yet) still sounds, not just a fish fight. `setHookPhase(_:)`
+calls `sounds.handlePhaseChange(_:)` on every transition as a belt-and-suspenders stop for stale
+loops, mirroring `FishingHaptics.stopInterest()`/`stopFight()`. A looping lake ambience track
+plays across both the main menu and gameplay (`FishingSounds.Config.ambiencePlaysInMenu`),
+started from `start()`/screen transitions and stopped only in `WorldViewModel.stop()`.

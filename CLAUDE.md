@@ -34,9 +34,11 @@ CtSPoC/
     ├── WorldApp.swift / ContentView.swift
     ├── ViewModels/WorldViewModel.swift
     ├── Gameplay/        # FishFightController, FishCatalog, FishCatchResult, FishRecordStore
+    ├── Audio/           # SoundManager, FishingSounds (ADR-040) — World-only SFX, mirrors Rod's Haptics
     ├── Transport/       # Multipeer host
     ├── Views/CastMeterView.swift, LineTensionView.swift, ResultView.swift
-    └── Assets/Rod.usdz
+    └── Assets/Rod.usdz, Assets/SFX/ (ui_click.wav, cast_throw.wav, hook_splash.wav,
+        fish_interested_loop.wav, fish_bite.wav, reel_loop.wav, catch_splash.wav, ambience_lake.mp3)
 ```
 
 ## Tech Stack
@@ -49,6 +51,8 @@ CtSPoC/
 - RealityKit: World-only rod, hook, water, and scene rendering.
 - Core Haptics: Rod-only feedback through `HapticManager` and
   `FishingHaptics`.
+- AVFoundation: World-only sound effects through `SoundManager` and
+  `FishingSounds` (ADR-040). Rod has no audio playback.
 - Shared local Swift package: Foundation/Swift-only contracts and motion or
   gameplay translation. Never import UI, rendering, CoreMotion, NI, or haptics
   frameworks in Shared.
