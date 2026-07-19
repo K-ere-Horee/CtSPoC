@@ -51,7 +51,9 @@ struct ContentView: View {
             .overlay(alignment: .topLeading) {
                 fpsIndicator
             }
-
+            
+            // MARK: - Debug purpose only. Can ignore
+            /*
             GroupBox("Controller State") {
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
                     row("State", viewModel.connectionState.rawValue)
@@ -67,6 +69,7 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+             */
 
             LineTensionView(
                 isFighting: fishFight.hasFishOnHook,

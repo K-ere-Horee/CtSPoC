@@ -357,6 +357,7 @@ final class WorldViewModel: ObservableObject {
 
     private func launchHook(solution: CastSolution) {
         guard
+            let controllerEntity,
             let hookEntity,
             let tipEntity = rodRig?.tipEntity
         else {
@@ -368,7 +369,24 @@ final class WorldViewModel: ObservableObject {
         hookEntity.position = tipPosition
         castLaunchPosition = tipPosition
         let angle = solution.launchAngle
-        let horizontal = SIMD3<Float>(solution.direction.x, 0, solution.direction.z)
+
+        // `solution.direction` is Shared's abstract Rod-frame heading, rotated from a hardcoded
+        // `CastVector3.forward = (0, 0, -1)` — a constant only ever correct for the old placeholder
+        // arrow mesh, whose local tip sat along -Z. `rod_main.usdz`'s bone chain rests along +Y
+        // instead (see `RodRigController.rodBones`' `restTranslation`s), so reinterpreting
+        // `solution.direction`'s x/z as a World-space heading pointed the hook off-axis from
+        // wherever the rig visually aimed — a fixed, consistent offset, not per-cast noise. Per
+        // ADR-018/019, Shared must stay mesh-agnostic, so the fix belongs here: derive the actual
+        // horizontal aim from the live rig geometry at this exact cast moment — the vector from the
+        // fixed `controllerEntity` root to the tip's current world position — which by construction
+        // always matches wherever the rendered tip is actually pointing, independent of any rig's
+        // internal rest-pose axis convention (and immune to the next rig swap breaking this again).
+        let aim = tipPosition - controllerEntity.position
+        let horizontalAim = SIMD3<Float>(aim.x, 0, aim.z)
+        let horizontal = simd_length(horizontalAim) > 0.0001
+            ? simd_normalize(horizontalAim)
+            : SIMD3<Float>(0, 0, -1)
+
         let speed = castSpeed * (0.5 + (solution.power * 1.5))
         hookVelocity = horizontal * (cos(angle) * speed)
             + SIMD3<Float>(0, sin(angle) * speed, 0)

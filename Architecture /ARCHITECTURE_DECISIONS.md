@@ -11,6 +11,64 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-033 --- Cast Direction Derived From Live Rig Geometry, Not a Mesh-Tuned Constant
+
+## Decision
+
+`WorldViewModel.launchHook(solution:)` no longer reinterprets
+`CastSolution.direction`'s `x`/`z` as a World-space horizontal launch
+heading. Instead it derives the heading live, at the exact moment of
+launch, from the actual rendered rig:
+
+```text
+aim = tipEntity.position(relativeTo: nil) - controllerEntity.position
+horizontal = normalize(aim.x, 0, aim.z)   // falls back to (0, 0, -1) if near-zero
+```
+
+`solution.power`, `solution.launchAngle`, and `solution.distance` are
+unaffected and still come from `CastSolution` as before — only the
+horizontal heading component changed. `CastResolver`/`CastSnapshot`/
+`CastVector3.forward` in Shared are untouched.
+
+## Rationale
+
+Reported directly, with a screenshot: casting with the rod visually
+aimed straight out over the pier consistently landed the hook off to the
+side, near the shoreline — "casting nya masih ke kanan kiri dari pier."
+Root cause: `CastResolver.resolve(_:)` computes `direction` by rotating
+a hardcoded `CastVector3.forward = (0, 0, -1)` by the corrected
+orientation — a constant that was only ever correct for the *old*
+placeholder arrow mesh (`World/World/ContentView.swift`'s pre-asset-
+integration `makeArrow()`), whose tip sat along local -Z
+(`tip.position = [0, 0, -0.76]`). The asset-integration merge swapped in
+`rod_main.usdz` via `RodRigController`, whose entire bone chain
+(`Root/Handle/Rod_01/Rod_02/Rod_03/Tip`) rests along local **+Y**
+instead (every `BoneWeight.restTranslation` in `RodRigController.
+rodBones` is `[0, Y, 0]`) — a rod modeled held upright, tip up, not
+tip-forward. Nobody updated the hardcoded `-Z` convention when the mesh
+changed, so `solution.direction` pointed wherever local -Z ended up
+after rotation — a fixed, consistent offset from wherever the rig's
+actual +Y-rooted tip visually swung to. This matches the reported
+pattern exactly: a *consistent* rotational drift, not per-cast noise.
+
+Per ADR-018/019 and this bug's own architecture note, `Shared` must stay
+mesh-agnostic — it has no knowledge of World's rendered rig at all, so
+`CastVector3.forward` cannot be "fixed" by pointing it at whatever axis
+happens to match the current mesh (that just moves the same fragility to
+a different constant, and breaks again on the next rig swap). The fix
+belongs in World, which is the only module that knows the rig's actual
+geometry: deriving the heading from `tipEntity.position(relativeTo: nil)
+- controllerEntity.position` at cast time is correct by construction — it
+always matches wherever the rendered tip is actually pointing, regardless
+of any particular rig's internal rest-pose axis convention, and needs no
+maintenance if the rig is swapped again. `controllerEntity` (the fixed-
+offset `RodRoot`, per ADR-019) itself is never moved by this — only the
+hook's launch trajectory is computed from it.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
 # ADR-032 --- Cast Power Weighted by Backswing Distance, Not Flick Speed Alone
 
 ## Decision

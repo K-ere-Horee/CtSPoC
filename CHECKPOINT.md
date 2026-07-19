@@ -3126,3 +3126,82 @@ entries):
   device/simulator session with the new environment assets, water
   shader, or rod rig — this merge has only been verified to typecheck,
   not to run.
+
+## Fix Cast Direction (Hook Launches Sideways, Not Along Rod Aim)
+
+Date: 2026-07-19.
+
+Bug report supplied as `BUGFIX_cast_direction.md` (screenshot-backed,
+found via real hardware testing after the asset-integration merge):
+casting with the rod visually aimed straight out over the pier
+consistently landed the hook off to the side near the shoreline —
+"casting nya masih ke kanan kiri dari pier." A consistent offset, not
+random noise, pointing at a fixed axis-convention bug rather than a
+calibration/timing one. Recorded as ADR-033 in
+`ARCHITECTURE_DECISIONS.md`.
+
+### Root Cause
+
+`CastResolver.resolve(_:)` (Shared) computes `CastSolution.direction` by
+rotating a hardcoded `CastVector3.forward = (0, 0, -1)` by the corrected
+orientation. That constant was only ever correct for the old placeholder
+arrow mesh (`World/World/ContentView.swift`'s pre-asset-integration
+`makeArrow()`, whose tip sat at local `[0, 0, -0.76]`, i.e. along -Z).
+The asset-integration merge swapped in `rod_main.usdz` via
+`RodRigController`, whose entire bone chain
+(`Root/Handle/Rod_01/Rod_02/Rod_03/Tip`) rests along local **+Y** instead
+(every `RodRigController.rodBones` entry's `restTranslation` is
+`[0, Y, 0]`) — a rod modeled held upright, tip up, not tip-forward.
+`WorldViewModel.launchHook(solution:)` was still reinterpreting
+`solution.direction.x/z` as a World-space heading directly, so the hook
+launched toward wherever local -Z ended up after rotation — a fixed
+offset from wherever the actual +Y-rooted rig tip visually swung to.
+
+### Fix
+
+- `World/World/ViewModels/WorldViewModel.swift`'s `launchHook(solution:)`:
+  added `controllerEntity` back into the initial `guard`. The horizontal
+  launch heading is no longer read from `solution.direction`; it's now
+  derived live from the rig itself: `aim = tipEntity.position
+  (relativeTo: nil) - controllerEntity.position`, projected to horizontal
+  and normalized (falling back to `(0, 0, -1)` if near-zero, e.g. tip
+  pointing straight up). `solution.power`/`launchAngle`/`distance` are
+  unchanged. `CastResolver`/`CastSnapshot`/`CastVector3.forward` in
+  Shared were deliberately left untouched — per ADR-018/019 and this
+  bug's own architecture note, Shared must stay mesh-agnostic, so
+  pointing `.forward` at whatever axis matches the *current* rig would
+  just move the same fragility to a different constant and break again
+  on the next rig swap. Deriving the heading from live World-side
+  geometry is correct by construction and needs no maintenance if the
+  rig changes again.
+- No changes to `Shared/Sources/Shared/Gameplay/CastResolver.swift`,
+  `RodMotionInterpreter.swift`, or anything Rod-side — `solution.direction`
+  is still computed and transmitted as before, it's just no longer
+  consumed for World's horizontal launch heading (grepped: it wasn't
+  read anywhere else in World or Rod).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-033. Noted in passing (not
+  fixed this entry): the asset-integration merge introduced its own
+  ADR-030 ("World Explicitly Authors the First-Person Camera") and
+  ADR-031 ("Transport Delivery Mode Matches Message Freshness"), which
+  now collide with this session's own ADR-030/031 (Resistance/Cast
+  Distance). Flagged to the user; out of scope for this bug fix.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "World Controller and
+  Hook Separation" with the live-geometry heading derivation and why it
+  replaces `CastSolution.direction` for this purpose.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file (same list as the merge
+  entry above) — no errors. `git diff --check` clean on the changed file
+  (`WorldViewModel.swift`); a pre-existing trailing-whitespace warning on
+  `ContentView.swift` predates this change (a separate, already-made
+  edit commenting out the debug "Controller State" panel) and was left
+  alone.
+- Not yet confirmed on device/simulator. The bug report explicitly
+  requires live-hardware confirmation, not just a typecheck, to close —
+  that verification has not happened yet.

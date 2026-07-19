@@ -429,6 +429,21 @@ the rod tip, receives velocity from `CastSolution`, falls under gravity, and
 reels toward the controller. The rod root remains unchanged throughout these
 phases.
 
+**Launch heading comes from live rig geometry, not `CastSolution.direction`
+(ADR-033).** `CastResolver` (Shared) computes `direction` by rotating a
+fixed, mesh-agnostic reference vector — Shared has no knowledge of whatever
+rig World happens to render, and must not. World's rendered rig can (and,
+across the asset-integration merge, did) have a completely different local
+"tip" axis than that reference assumes, which silently misaims every cast by
+a fixed offset. `WorldViewModel.launchHook(solution:)` therefore derives the
+horizontal launch heading itself, live, from
+`tipEntity.position(relativeTo: nil) - controllerEntity.position` at the
+moment of launch — correct by construction, since it's just "wherever the
+rendered tip currently is relative to the fixed rod root," independent of
+any particular rig's rest-pose axis convention. Only the heading is
+re-derived this way; `solution.power`, `launchAngle`, and `distance` still
+come from `CastSolution` unchanged.
+
 ------------------------------------------------------------------------
 
 ## Gameplay Architecture V1
