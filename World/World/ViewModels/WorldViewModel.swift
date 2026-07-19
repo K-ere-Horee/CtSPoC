@@ -20,6 +20,16 @@ final class WorldViewModel: ObservableObject {
     @Published private(set) var hookPhase: HookPhase = .idle
     @Published private(set) var lastError: String?
     @Published private(set) var fps: Double = 0
+    /// Debug pair for diagnosing cast direction: where a perfectly straight-ahead cast of the
+    /// same distance would have landed, vs. where this cast actually landed. Set together at
+    /// splash in `simulateFlyingHook(deltaTime:)`; both `nil` until the first successful cast.
+    @Published private(set) var debugPlayerFacingCoordinate: SIMD3<Float>?
+    @Published private(set) var debugCastLandingCoordinate: SIMD3<Float>?
+    /// Debug: the aim angle (degrees, 0 = straight ahead, + = right, - = left) at each stage of
+    /// `launchHook(solution:)`, captured *before* the cone clamp so a clamped landing coordinate
+    /// can't hide how far off the true unclamped angle actually is. Set together at launch.
+    @Published private(set) var debugRawAimDegrees: Float?
+    @Published private(set) var debugCorrectedAimDegrees: Float?
 
     private let transport: TransportHost
 
@@ -29,6 +39,37 @@ final class WorldViewModel: ObservableObject {
     private let gravity: Float = 4.0
     private let castSpeed: Float = 3.6
     private let reelSpeed: Float = 3.0
+
+    /// Half-angle (radians) of the allowed cast cone around the camera's fixed forward direction
+    /// (-Z, per `makePlayerCamera()` — the camera never rotates dynamically, so this stays a
+    /// constant, not a live basis vector). 135° total, so ±67.5° either side of straight ahead.
+    /// A hard clamp regardless of whatever `launchHook`'s aim derivation produces upstream — the
+    /// player reported the bobber's landing direction as unpredictable/unwanted ("gue masih gatau
+    /// direction si yellow bobber ini kemana, tapi... ga sesuai sama apa yang gue mau") and asked
+    /// for a guaranteed forward-biased limitation independent of that, rather than a further attempt
+    /// to make the raw aim direction itself "correct."
+    private let castConeHalfAngle: Float = 135 * .pi / 180 / 2
+
+    /// Empirical correction rotating the rig-derived aim (see `launchHook(solution:)`) before the
+    /// forward-cone clamp is applied. Originally set to 90° from the reported "bobber jumps left"
+    /// symptom, but the debug angle readout (added specifically because the cone clamp was masking
+    /// the true unclamped magnitude — a clamped landing coordinate can't distinguish "just past the
+    /// edge" from "wildly off") measured the actual raw aim at **-174°**: not a quarter-turn off,
+    /// but almost exactly **opposite** of forward. The tip-minus-root vector in `launchHook
+    /// (solution:)` points nearly straight backward when the player casts forward — closer to a
+    /// sign flip than an axis-mismatch nudge. 180° (`.pi`) is the corrected value; a live-measured
+    /// raw angle of exactly -180° would need no further tuning, so the residual few degrees off
+    /// that (-174° measured, not -180°) is left unaddressed here — check the next test's "Corrected
+    /// Aim Angle" debug reading and adjust this constant directly if it isn't near 0°.
+    private let aimCorrectionAngle: Float = .pi
+
+    // MARK: - Debug: Forward Reference Ray (disabled, kept for later re-enabling)
+    // /// Debug: length (meters) of the always-visible reference line drawn from `dockAnchorPosition`
+    // /// straight along the camera's fixed forward (-Z), so "does the pier actually extend where the
+    // /// cast math assumes forward is" can be checked by eye against the rendered dock/water, rather
+    // /// than inferred from cast landing spots alone. Long enough to reach well past the dock into
+    // /// open water regardless of the dock's exact length.
+    // private let debugForwardRayLength: Float = 20
 
     /// World-space position of the first-person camera, near the dock's tip (tip itself is at
     /// `z ≈ -4.5`), facing open water — the asset repo's own validated "natural casting position"
@@ -80,6 +121,7 @@ final class WorldViewModel: ObservableObject {
     private var rodRig: RodRigController?
     private var controllerEntity: Entity?
     private var hookEntity: ModelEntity?
+    private var playerCamera: Entity?
     private var hookVelocity = SIMD3<Float>.zero
     private var castLaunchPosition = SIMD3<Float>.zero
     private var pendingCastSolution: CastSolution?
@@ -174,7 +216,9 @@ final class WorldViewModel: ObservableObject {
         let environment = await EnvironmentSceneBuilder.build()
         root.addChild(environment)
 
-        root.addChild(makePlayerCamera())
+        let camera = makePlayerCamera()
+        playerCamera = camera
+        root.addChild(camera)
 
         let rig = await RodRigController.load()
         root.addChild(rig.root)
@@ -182,15 +226,32 @@ final class WorldViewModel: ObservableObject {
         rodRig = rig
 
         let hook = ModelEntity(
-            mesh: .generateSphere(radius: 0.035),
+            mesh: .generateSphere(radius: 0.07),
             materials: [SimpleMaterial(color: .yellow, isMetallic: false)]
         )
         hook.isEnabled = false
         hookEntity = hook
         root.addChild(hook)
 
+        // root.addChild(makeDebugForwardRay())
+
         return root
     }
+
+    // MARK: - Debug: Forward Reference Ray (disabled, kept for later re-enabling)
+    // /// Debug: a thin, always-visible line from `dockAnchorPosition` straight along the camera's
+    // /// fixed forward (-Z) — see `debugForwardRayLength`'s doc comment. `UnlitMaterial` so it reads
+    // /// as a flat, unmistakable reference color regardless of scene lighting/shadow, rather than
+    // /// blending into whatever's behind it.
+    // private func makeDebugForwardRay() -> Entity {
+    //     let ray = ModelEntity(
+    //         mesh: .generateBox(size: [0.03, 0.03, debugForwardRayLength]),
+    //         materials: [UnlitMaterial(color: .red)]
+    //     )
+    //     ray.name = "DebugForwardRay"
+    //     ray.position = dockAnchorPosition + SIMD3<Float>(0, 0, -debugForwardRayLength / 2)
+    //     return ray
+    // }
 
     /// `RealityView` in non-AR ("virtual") mode has no ARKit device camera to fall back on, and
     /// provides no default first-person viewpoint of its own — without an explicit camera entity,
@@ -210,6 +271,11 @@ final class WorldViewModel: ObservableObject {
             PerspectiveCameraComponent(fieldOfViewInDegrees: 46.4, fieldOfViewOrientation: .vertical)
         )
 
+        resetCameraToPlayerPose(camera)
+        return camera
+    }
+
+    private func resetCameraToPlayerPose(_ camera: Entity) {
         let pitch = cameraPitchDownDegrees * .pi / 180
         let forward = SIMD3<Float>(0, -sin(pitch), -cos(pitch))
         camera.look(
@@ -217,7 +283,27 @@ final class WorldViewModel: ObservableObject {
             from: playerCameraPosition,
             relativeTo: nil
         )
-        return camera
+    }
+
+    /// Debug aid: while the hook is mid-flight, swing the camera to trail behind and above it,
+    /// looking straight at it, so its actual world position/trajectory is visible instead of a
+    /// small yellow dot far off in the static player view. Snaps back to the normal player pose
+    /// the moment `.flying` ends (splash, or any other phase). Temporary, for judging cast
+    /// direction/distance by eye — not the intended player-facing camera behavior.
+    private func updateCameraFollow() {
+        guard let playerCamera, let hookEntity else { return }
+
+        guard hookPhase == .flying else {
+            resetCameraToPlayerPose(playerCamera)
+            return
+        }
+
+        let followOffset = SIMD3<Float>(0, 1.5, 3.0)
+        playerCamera.look(
+            at: hookEntity.position,
+            from: hookEntity.position + followOffset,
+            relativeTo: nil
+        )
     }
 
     /// Called by World's result screen when the player dismisses it after a
@@ -235,6 +321,7 @@ final class WorldViewModel: ObservableObject {
 
     private func tick(deltaTime: Float) {
         updateRodPose()
+        updateCameraFollow()
         rodRig?.applyLineTension(lineTension(for: hookPhase))
 
         switch hookPhase {
@@ -383,15 +470,52 @@ final class WorldViewModel: ObservableObject {
         // internal rest-pose axis convention (and immune to the next rig swap breaking this again).
         let aim = tipPosition - controllerEntity.position
         let horizontalAim = SIMD3<Float>(aim.x, 0, aim.z)
-        let horizontal = simd_length(horizontalAim) > 0.0001
+        let rawHorizontal = simd_length(horizontalAim) > 0.0001
             ? simd_normalize(horizontalAim)
             : SIMD3<Float>(0, 0, -1)
+        let correctedHorizontal = rotatedAroundY(rawHorizontal, by: aimCorrectionAngle)
+        let horizontal = clampedToForwardCone(correctedHorizontal)
+
+        // Captured pre-clamp: `debugCastLandingCoordinate` alone can't distinguish "just past the
+        // cone edge" from "wildly off" once clamped, since both land at the same clamped boundary.
+        debugRawAimDegrees = signedAngleDegrees(rawHorizontal)
+        debugCorrectedAimDegrees = signedAngleDegrees(correctedHorizontal)
 
         let speed = castSpeed * (0.5 + (solution.power * 1.5))
         hookVelocity = horizontal * (cos(angle) * speed)
             + SIMD3<Float>(0, sin(angle) * speed, 0)
 
         setHookPhase(.flying)
+    }
+
+    /// Rotates a horizontal (Y=0) direction by `angle` radians around Y — positive rotates right,
+    /// matching `clampedToForwardCone`'s sign convention below. Used to apply
+    /// `aimCorrectionAngle`'s empirical bias fix ahead of the cone clamp.
+    private func rotatedAroundY(_ direction: SIMD3<Float>, by angle: Float) -> SIMD3<Float> {
+        let cosA = cos(angle)
+        let sinA = sin(angle)
+        return SIMD3<Float>(
+            direction.x * cosA - direction.z * sinA,
+            direction.y,
+            direction.x * sinA + direction.z * cosA
+        )
+    }
+
+    /// Clamps a horizontal (Y=0) direction into `castConeHalfAngle` of the camera's fixed forward
+    /// (-Z). `atan2(x, -z)` gives the signed angle from straight-ahead (0 = forward, positive =
+    /// right, negative = left, matching this scene's convention where -Z is "out over the lake");
+    /// clamping that angle and rebuilding the vector is simpler and cheaper than a quaternion slerp
+    /// for a single fixed reference axis.
+    private func clampedToForwardCone(_ direction: SIMD3<Float>) -> SIMD3<Float> {
+        let angle = atan2(direction.x, -direction.z)
+        let clamped = max(-castConeHalfAngle, min(castConeHalfAngle, angle))
+        return SIMD3<Float>(sin(clamped), 0, -cos(clamped))
+    }
+
+    /// Same signed-angle convention as `clampedToForwardCone` (0 = forward, + = right, - = left),
+    /// in degrees, unclamped — for debug display only.
+    private func signedAngleDegrees(_ direction: SIMD3<Float>) -> Float {
+        atan2(direction.x, -direction.z) * 180 / .pi
     }
 
     private func simulateFlyingHook(deltaTime: Float) {
@@ -403,10 +527,16 @@ final class WorldViewModel: ObservableObject {
         guard hookEntity.position.y <= waterHeight else { return }
         hookEntity.position.y = waterHeight
         hookVelocity = .zero
-        let castDistance = simd_distance(
-            SIMD3(hookEntity.position.x, 0, hookEntity.position.z),
-            SIMD3(castLaunchPosition.x, 0, castLaunchPosition.z)
-        )
+        let landingPoint = SIMD3<Float>(hookEntity.position.x, 0, hookEntity.position.z)
+        let launchPoint = SIMD3<Float>(castLaunchPosition.x, 0, castLaunchPosition.z)
+        let castDistance = simd_distance(landingPoint, launchPoint)
+
+        // Debug pair: same origin, same distance, only the direction differs — so any left/right
+        // deviation between the two numbers is purely angular, not confounded by how far this
+        // particular cast happened to travel.
+        debugCastLandingCoordinate = landingPoint
+        debugPlayerFacingCoordinate = launchPoint + SIMD3<Float>(0, 0, -1) * castDistance
+
         fishFight.resetForNewCast(castDistance: castDistance)
         setHookPhase(.hookInWater)
         Task { await send(.fishingEvent(.hookSplash)) }

@@ -444,6 +444,46 @@ any particular rig's rest-pose axis convention. Only the heading is
 re-derived this way; `solution.power`, `launchAngle`, and `distance` still
 come from `CastSolution` unchanged.
 
+**Launch heading is clamped to a forward cone (ADR-034).** Whatever
+horizontal heading the derivation above produces, `launchHook(solution:)`
+clamps it into `castConeHalfAngle` (67.5°, i.e. a 135° total cone) of the
+camera's fixed forward direction *at launch time* before using it — the
+launch computation itself always uses the constant `(0, 0, -1)` reference
+regardless of the camera's live orientation, so `atan2(direction.x,
+-direction.z)` giving the signed angle from straight ahead is safe even
+though the camera can move afterward (see below). This is a deliberate
+outcome guarantee independent of whether the upstream aim derivation is
+fully correct — a cast can never land behind or far to the side of the
+player, regardless of rig geometry quirks.
+
+**`aimCorrectionAngle` rotates the raw aim before clamping (ADR-034).**
+Live testing (via the camera-follow debug aid below) showed the raw
+rig-derived aim consistently biased left of the player's true intended
+heading — every cast was landing outside the cone and pinning at its
+left edge, which also explained a sharp, consistent drop in cast
+distance versus before the clamp existed. `rotatedAroundY(_:by:)` applies
+a simple Y-axis rotation to `rawHorizontal` before it reaches
+`clampedToForwardCone`, so the corrected heading falls inside the cone
+as intended rather than constantly hitting its boundary. An initial 90°
+guess (from the symptom alone) still landed pinned at the cone boundary,
+which a clamped landing coordinate can't diagnose further — a dedicated
+debug angle readout (`debugRawAimDegrees`/`debugCorrectedAimDegrees`,
+unclamped, exposed below the clamp) measured the true raw bias at
+**-174°**, close to a full inversion rather than a quarter turn.
+`aimCorrectionAngle` is now `.pi` (180°) — a single tunable constant,
+still empirical rather than derived from rig geometry, with a small ~6°
+residual pending the next live reading.
+
+**Debug: camera follows the hook mid-flight.** `WorldViewModel.
+updateCameraFollow()`, called every `tick()`, swings `playerCamera` to
+trail behind/above the hook and look directly at it while
+`hookPhase == .flying`, snapping back to the normal fixed player pose
+(`resetCameraToPlayerPose(_:)`) the instant flight ends. Temporary — for
+visually judging cast direction/distance during tuning, not intended
+player-facing behavior. Does not affect the launch-heading clamp above,
+since that's computed once at launch before the hook (and camera) start
+moving.
+
 ------------------------------------------------------------------------
 
 ## Gameplay Architecture V1

@@ -3205,3 +3205,361 @@ offset from wherever the actual +Y-rooted rig tip visually swung to.
 - Not yet confirmed on device/simulator. The bug report explicitly
   requires live-hardware confirmation, not just a typecheck, to close —
   that verification has not happened yet.
+
+## Cast Direction Clamped to Forward Cone, Bobber Doubled in Size
+
+Date: 2026-07-19.
+
+Requested directly, right after the previous entry's fix: "gue masih
+gatau direction si yellow bobber ini kemana, tapi yang jelas ga sesuai
+sama apa yang gue mau. Bisa ga dibikin semacam limitation area jadi mau
+kemanapun cast, cuma bisa ke arah depan, sekitar 135 derajat di depan
+pov kamera? gedein juga ukuran bobbernya by 2x" (I still don't know
+where this yellow bobber's direction is going, but it's clearly not
+what I want. Can a limitation area be made so no matter where the cast
+goes, it can only go forward, about 135 degrees in front of the camera
+POV? Also double the bobber's size). Recorded as ADR-034 in
+`ARCHITECTURE_DECISIONS.md`.
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`: added
+  `castConeHalfAngle: Float = 67.5°` (135° total cone) and
+  `clampedToForwardCone(_:)`, applied to the horizontal heading in
+  `launchHook(solution:)` right after the previous entry's live-rig-
+  geometry derivation (`rawHorizontal` → `clampedToForwardCone
+  (rawHorizontal)` → `horizontal`). Uses `atan2(direction.x,
+  -direction.z)` for the signed angle from the camera's fixed forward
+  (-Z — `makePlayerCamera()` never rotates dynamically, confirmed by
+  re-reading it, so this is a compile-time-constant reference axis, not
+  a live camera basis lookup), clamps to `±castConeHalfAngle`, rebuilds
+  the vector. Deliberately applied as a hard clamp on top of whatever
+  the upstream aim derivation produces, rather than a further attempt
+  to prove that derivation fully correct — the player's framing ("I
+  still don't know where it's going") called for a guaranteed bound on
+  the outcome.
+- Same file's `makeSceneEntity()`: hook mesh
+  `.generateSphere(radius: 0.035)` → `radius: 0.07` (2x).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-034.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "World Controller and
+  Hook Separation" with the forward-cone clamp, directly after the
+  previous entry's live-geometry heading section.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors.
+- `git diff --check` clean on `WorldViewModel.swift`.
+- Not yet confirmed on device/simulator — same outstanding gap as the
+  previous entry, now covering this fix too. The cone clamp's actual
+  feel (whether 135° is the right width, whether the hook is legible
+  at 2x) is unverified until played.
+
+## Debug: Camera Follows Hook During Flight
+
+Date: 2026-07-19.
+
+Requested directly: "coba deh, bisa ga kameranya dibuat ngikutin bobber
+as it flies? aku pengen debugging posisi nya dulu" (can the camera be
+made to follow the bobber as it flies? I want to debug its position
+first) — explicitly framed as a temporary aid for visually judging the
+cast direction/cone-clamp work from the previous two entries, not a
+requested gameplay/product camera behavior. No ADR recorded for this one
+on purpose — it's not a stable architectural decision, same treatment
+this repo already gives other debug-only additions like the commented-
+out `MotionDebugView`.
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`: added
+  `playerCamera: Entity?`, captured in `makeSceneEntity()` from
+  `makePlayerCamera()`'s return value (previously added to the scene
+  inline without being retained). Extracted the camera's default look-at
+  math out of `makePlayerCamera()` into `resetCameraToPlayerPose(_:)` so
+  it can be reused. Added `updateCameraFollow()`, called every `tick()`
+  right after `updateRodPose()`: while `hookPhase == .flying`, points
+  `playerCamera` at `hookEntity.position` from a fixed `(0, 1.5, 3.0)`
+  offset above/behind it; any other phase, calls
+  `resetCameraToPlayerPose(_:)` to snap back to the normal fixed player
+  view.
+- Does not affect the previous entry's launch-heading cone clamp — that
+  math uses a constant `(0, 0, -1)` reference computed once at launch,
+  before the hook (and now the camera) start moving, not the camera's
+  live orientation.
+
+### Documentation
+
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added a short "Debug: camera
+  follows the hook mid-flight" note after the forward-cone-clamp section,
+  and tightened that section's wording (it previously said "the camera
+  never rotates dynamically," which is no longer true in all cases now
+  that this debug follow exists — clarified that the clamp's own math is
+  unaffected because it runs before any camera movement happens).
+- No `ARCHITECTURE_DECISIONS.md` entry — see rationale above.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors.
+- `git diff --check` clean on `WorldViewModel.swift`.
+- Not yet run live — this is itself a debugging tool meant to be used
+  for the next round of on-device verification, not something that has
+  been verified live yet.
+
+## Cast Direction: Empirical 90° Correction From Live Testing
+
+Date: 2026-07-19.
+
+Direct follow-up after live-testing the previous two entries' fixes with
+the camera-follow debug aid: "ok kayanya ketemu masalahnya. bobbernya
+selalu loncat ke kiri dari pov orang, dan cast distance nya jadi kecil
+banget dibanding sebelumnya yang bisa jauh. Apa mungkin kalo kalo di
+define 'depan' itu sekitar 90 derajat ke kanan dari titik cast sekarang
+bisa?" (I think I found the problem. The bobber always jumps to the left
+of the player's POV, and cast distance got much smaller than before,
+when it could go far. Could "forward" be redefined as about 90 degrees
+to the right of the current cast point?). Extended ADR-034 in place
+(not a new ADR number) since this directly tunes the same feature,
+still uncommitted from the same session.
+
+### Diagnosis
+
+Both reported symptoms trace to one cause: ADR-033's rig-geometry-derived
+raw aim reads consistently ~90° left of the player's true intended
+heading. Once ADR-034's ±67.5° cone clamp landed, that raw angle fell
+*outside* the cone on nearly every cast, so it was pinning at the left
+boundary every time — a fixed clamped angle regardless of how the player
+actually aimed, which also reads as "distance got much smaller," since
+the direction (and therefore where along the shore/lake the hook lands)
+stopped varying with the player's actual aim.
+
+### Fix
+
+- `World/World/ViewModels/WorldViewModel.swift`: added
+  `aimCorrectionAngle: Float = .pi / 2` and `rotatedAroundY(_:by:)` (a
+  plain Y-axis rotation: `(x·cosθ - z·sinθ, y, x·sinθ + z·cosθ)`,
+  positive = right, matching `clampedToForwardCone`'s own sign
+  convention). `launchHook(solution:)` now rotates `rawHorizontal` by
+  `aimCorrectionAngle` before it reaches `clampedToForwardCone`, so the
+  corrected heading lands inside the cone as intended instead of
+  constantly hitting its edge.
+- 90° is a starting point taken directly from the reported symptom, not
+  measured from the rig's actual skeleton/axis data. Called out as the
+  one constant to retune if the next test shows the bias isn't exactly a
+  quarter turn.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: extended ADR-034's Decision and Rationale
+  in place with the `aimCorrectionAngle` addition (no new ADR number).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the forward-cone-clamp
+  section with the correction and its rationale.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors.
+- `git diff --check` clean on `WorldViewModel.swift`.
+- Not yet re-tested live. This is explicitly a hypothesis from the
+  previous live-test report, not yet confirmed — the next on-device pass
+  needs to check whether 90° is the right correction or needs further
+  tuning, and whether "distance" is now back to normal.
+
+## Debug: Forward Reference Ray and Player-Facing vs. Cast-Landing Coordinates
+
+Date: 2026-07-19.
+
+Direct follow-up: the player asked whether the world asset itself (dock
+orientation) might be the real root cause instead of the cast math
+("aku takutnya, asset world nya yang ternyata ga bikin aku ngarah ke
+depan" — I'm worried the world asset itself isn't what's making me face
+forward), and proposed yawing the whole environment 90° as an
+alternative fix. Recommended against a blind whole-environment rotation
+(risk of breaking the hand-tuned `playerCameraPosition`/
+`dockAnchorPosition` dock alignment) and instead proposed an
+unambiguous visual+numeric check first: "Ok tambahin debug nya,
+sekaligus tampilin angka player facing coordinate vs cast succesful
+coordinate" (ok add that debug, and also show the numbers for player
+facing coordinate vs. cast successful coordinate). No ADR — debug-only,
+same treatment as the camera-follow entry above.
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`: added
+  `debugForwardRayLength: Float = 20` and `makeDebugForwardRay()` — a
+  thin (`0.03×0.03m` cross-section) `UnlitMaterial`-red box, always
+  added to the scene in `makeSceneEntity()`, running from
+  `dockAnchorPosition` straight along the camera's fixed forward (-Z)
+  for 20 m. `UnlitMaterial` so it reads as a flat, unmistakable color
+  regardless of scene lighting/shadow.
+- Added `debugPlayerFacingCoordinate`/`debugCastLandingCoordinate:
+  SIMD3<Float>?` (`@Published`, both `nil` until the first successful
+  cast). Set together in `simulateFlyingHook(deltaTime:)` at splash:
+  `debugCastLandingCoordinate` is the actual landing `(x, 0, z)`;
+  `debugPlayerFacingCoordinate` is `launchPoint + (0,0,-1) *
+  castDistance` — i.e. "where a perfectly straight-ahead cast of the
+  *same distance, from the same origin* would have landed." Same origin
+  and same distance, only direction differs, so any gap between the two
+  numbers is purely angular deviation, not confounded by cast power.
+
+### World: ContentView
+
+- Added a "Cast Direction Debug" `GroupBox` (uncommented, always
+  visible — separate from the existing commented-out "Controller State"
+  panel, left untouched) showing both coordinates as `(x, z)` via a new
+  `formatXZ(_:)` helper, `"--"` until the first cast lands.
+
+### Documentation
+
+- No `ARCHITECTURE_DECISIONS.md` entry (debug-only, per this entry's own
+  rationale above).
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors.
+- `git diff --check` clean on `WorldViewModel.swift`/`ContentView.swift`.
+- Not yet run live. This is the diagnostic tool for the next on-device
+  pass, not something that's itself been visually confirmed yet — next
+  test should report whether the red ray tracks the pier or points off
+  to one side, and whether "Player Facing" vs. "Cast Landed" numbers
+  converge or diverge after the `aimCorrectionAngle` fix.
+
+## Debug: Expose Pre-Clamp Aim Angles (Clamp Was Hiding True Error Size)
+
+Date: 2026-07-19.
+
+First live result from the previous entry's debug tools: "Player facing:
+(0.00, -12.47), Cast landed: (-11.52, -4.77). kan jauh" (that's really
+far apart). Working the numbers back: the landing point's angle from
+straight-ahead comes out to almost exactly -67.5° — precisely
+`castConeHalfAngle`'s left boundary. That means `clampedToForwardCone`
+was masking the real error: the corrected angle was *at least* 67.5°
+left of forward, but the clamp made it impossible to tell from the
+landing coordinate alone whether the true unclamped angle was -70° or
+-170° — the previous debug pair couldn't distinguish "just past the
+cone edge" from "wildly off," since both clamp to the same boundary.
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`: added
+  `debugRawAimDegrees`/`debugCorrectedAimDegrees: Float?` (`@Published`).
+  Captured in `launchHook(solution:)` right after computing
+  `rawHorizontal`/`correctedHorizontal`, *before* `clampedToForwardCone`
+  runs, via a new `signedAngleDegrees(_:)` helper (same `atan2(x, -z)`
+  convention as the clamp itself, unclamped, in degrees, debug-only).
+
+### World: ContentView
+
+- "Cast Direction Debug" `GroupBox` gained two more rows: "Raw Aim
+  Angle" and "Corrected Aim Angle", via a new `formatDegrees(_:)`
+  helper.
+
+### Documentation
+
+- No `ARCHITECTURE_DECISIONS.md` entry — debug-only, same as the
+  previous two entries.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors.
+- `git diff --check` clean on `WorldViewModel.swift`/`ContentView.swift`.
+- Not yet run live. The next cast's "Raw Aim Angle"/"Corrected Aim
+  Angle" numbers will give the exact `aimCorrectionAngle` needed to
+  actually land inside the cone, instead of continuing to guess against
+  a clamped result.
+
+## Cast Direction: aimCorrectionAngle Corrected From 90° to 180°
+
+Date: 2026-07-19.
+
+Live debug readout reported directly: "Raw Aim Angle: -174.0°,
+Corrected Aim Angle: -84.0°." Checking the math confirms it's working
+correctly against the wrong constant: -174 + 90 (the prior
+`aimCorrectionAngle`) = -84, exactly matching. The real finding is the
+raw number itself — -174° is not a quarter-turn off (the original 90°
+guess), it's almost exactly **opposite** of forward. `launchHook
+(solution:)`'s tip-minus-root aim vector points nearly straight
+backward when the player casts forward.
+
+### Fix
+
+- `World/World/ViewModels/WorldViewModel.swift`: `aimCorrectionAngle`
+  changed from `.pi / 2` (90°) to `.pi` (180°), with the doc comment
+  rewritten to record the measured -174° and flag the ~6° residual
+  (180° - 174°) as unaddressed pending the next live reading.
+
+### Documentation note: `Architecture /` directory relocated
+
+Mid-session, the user moved `ARCHITECTURE_DECISIONS.md`,
+`SOFTWARE_ARCHITECTURE_DOCUMENT.md`, and `SPATIAL_CONTROLLER_DOCUMENT.md`
+out of the `Architecture /` subdirectory to the project root (confirmed
+directly: "dir nya emg tak hapus kok, dan move semua keluar ke main
+project dir" — I did delete the dir, and moved everything out to the
+main project dir). No content was lost — `git status` showed a clean
+delete-at-old-path/untracked-at-new-path pair, and the root-level files
+already carried every session entry through the previous checkpoint.
+This entry and the two ADR docs it touches were written to the new root
+paths; `CLAUDE.md`'s "Project Structure" section still describes the old
+`Architecture/` layout and should be updated in a future documentation
+pass.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: updated ADR-034's Decision and Rationale
+  in place with the -174° measurement and the 90°→180° correction (no
+  new ADR number — same constant, same session).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the `aimCorrectionAngle`
+  section to match.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors.
+- `git diff --check` clean on `WorldViewModel.swift`.
+- Not yet re-tested live. The next cast's "Corrected Aim Angle" debug
+  reading is the thing to check — it should now read close to 0°
+  (forward) rather than pinned at ±67.5°.
+
+## Debug: Forward Reference Ray Disabled (Kept, Not Removed)
+
+Date: 2026-07-19.
+
+Requested directly: the red debug ray was visible in World and the
+player asked where it came from; once pointed at
+`WorldViewModel.makeDebugForwardRay()`, asked "Gausah di remove, tapi
+di comment aja terus tambahin //MARK: - biar aku tau dimananya" (no
+need to remove it, but comment it out and add a `// MARK: -` so I know
+where it is).
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`: commented out
+  `debugForwardRayLength`, `makeDebugForwardRay()`, and its call site in
+  `makeSceneEntity()` (`root.addChild(makeDebugForwardRay())`), each
+  under a `// MARK: - Debug: Forward Reference Ray (disabled, kept for
+  later re-enabling)` marker so they're easy to locate and restore.
+  Content unchanged, only commented — nothing deleted.
+
+### Documentation
+
+- No `ARCHITECTURE_DECISIONS.md`/SAD change — this only toggles a
+  debug-only addition that was itself never given an ADR.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors (confirms
+  nothing else still referenced the now-commented-out ray code).
+- `git diff --check` clean on `WorldViewModel.swift`.

@@ -10,10 +10,9 @@ Never delete previous checkpoint entries.
 ```text
 CtSPoC/
 ├── AGENTS.md / SESSION_MEMORY.md / CHECKPOINT.md
-├── Architecture/
-│   ├── ARCHITECTURE_DECISIONS.md
-│   ├── SOFTWARE_ARCHITECTURE_DOCUMENT.md
-│   └── SPATIAL_CONTROLLER_DOCUMENT.md
+├── ARCHITECTURE_DECISIONS.md
+├── SOFTWARE_ARCHITECTURE_DOCUMENT.md
+├── SPATIAL_CONTROLLER_DOCUMENT.md
 ├── GAMEPLAY_ARCHITECTURE_V1.md
 ├── CtSPoC.xcworkspace/
 ├── Shared/

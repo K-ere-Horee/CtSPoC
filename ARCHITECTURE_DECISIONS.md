@@ -11,6 +11,112 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-034 --- Cast Direction Clamped to a Forward Cone, Bobber Doubled in Size
+
+## Decision
+
+`WorldViewModel.launchHook(solution:)` now clamps its computed horizontal
+launch heading into a fixed cone around the camera's forward direction,
+regardless of what upstream aim derivation (ADR-033's live rig-geometry
+vector, or any future replacement) produces:
+
+```text
+corrected = rotatedAroundY(rawHorizontal, by: aimCorrectionAngle)
+angle = atan2(corrected.x, -corrected.z)          // signed angle from -Z (straight ahead)
+clamped = clamp(angle, -castConeHalfAngle, castConeHalfAngle)
+horizontal = (sin(clamped), 0, -cos(clamped))
+```
+
+`castConeHalfAngle = 67.5°` (135° total cone width). The camera's forward
+is a compile-time constant here, not a live basis vector — `makePlayerCamera()`
+builds a static camera that never rotates dynamically (see its own
+doc comment), so `(0, 0, -1)` is always correct without needing to read
+camera state at cast time.
+
+**`aimCorrectionAngle` (180°, revised from an initial 90° guess after
+live-measuring the true raw angle).** ADR-033's rig-geometry-derived
+aim, once actually cast on device, consistently put the bobber to the
+*left* of the player's POV — a fixed rotational bias, not per-cast
+noise — and cast distance dropped sharply from what it had been before
+the cone clamp landed. A first 90° correction (below) turned out to be
+a guess from the symptom alone, not a measurement, and the resulting
+clamped landing coordinate gave no way to tell how far off the true
+angle actually was — landing at the cone's boundary looks identical
+whether the real angle is barely past it or wildly off. A debug-only
+pair of unclamped angle readouts (`debugRawAimDegrees`/
+`debugCorrectedAimDegrees`, `WorldViewModel`) exposed the real number:
+raw aim measured at **-174°** — not a quarter-turn off, but almost
+exactly **opposite** of forward. The tip-minus-root vector in
+`launchHook(solution:)` points nearly straight backward when the player
+casts forward; correcting for a near-180° inversion is a materially
+different fix than nudging a 90° axis mismatch. `rotatedAroundY(_:by:)`
+(a simple Y-axis rotation: `(x cosθ - z sinθ, y, x sinθ + z cosθ)`)
+rotates the raw aim by `aimCorrectionAngle` — positive angles rotate
+right, matching `clampedToForwardCone`'s own sign convention — *before*
+the cone clamp, so the corrected heading lands inside the cone as
+intended instead of constantly pinned at its edge. The measured -174°
+leaves a small ~6° residual against an exact 180° correction, left
+unaddressed pending the next live reading.
+
+The hook (`World/World/ViewModels/WorldViewModel.swift`'s `makeSceneEntity()`)
+also doubled in size: `.generateSphere(radius: 0.035)` → `radius: 0.07`.
+
+## Rationale
+
+Requested directly, immediately after ADR-033's fix: "gue masih gatau
+direction si yellow bobber ini kemana, tapi yang jelas ga sesuai sama
+apa yang gue mau. Bisa ga dibikin semacam limitation area jadi mau
+kemanapun cast, cuma bisa ke arah depan, sekitar 135 derajat di depan
+pov kamera?" (I still don't know where this yellow bobber's direction is
+going, but it's clearly not what I want. Can you make a limitation area
+so no matter where the cast goes, it can only go forward, about 135
+degrees in front of the camera POV?) — plus, separately, "gedein juga
+ukuran bobbernya by 2x" (also double the bobber's size).
+
+This is a deliberate belt-and-suspenders addition on top of ADR-033
+rather than a further attempt to prove the raw aim direction "correct":
+the player's own framing ("I still don't know where it's going") calls
+for a guaranteed bound on the outcome, independent of whether the
+underlying rig-geometry derivation has some remaining, not-yet-
+understood issue. A hard clamp to a forward-biased cone guarantees the
+acceptance-criteria-relevant behavior (cast never lands behind or far to
+the side of the player) even if the precise heading within that cone is
+still being tuned. Doubling the bobber's visible size was requested
+purely to make it easier to actually see and judge where it lands during
+testing — not a gameplay-balance change.
+
+`aimCorrectionAngle` followed from live testing with the camera-follow
+debug aid: "ok kayanya ketemu masalahnya. bobbernya selalu loncat ke
+kiri dari pov orang, dan cast distance nya jadi kecil banget dibanding
+sebelumnya yang bisa jauh. Apa mungkin kalo kalo di define 'depan' itu
+sekitar 90 derajat ke kanan dari titik cast sekarang bisa?" (I think I
+found the problem. The bobber always jumps to the left of the player's
+POV, and the cast distance became very small compared to before, when it
+could go far. Could "forward" be redefined as about 90 degrees to the
+right of the current cast point?) — a specific, testable correction
+proposed directly from the reported symptom, implemented as stated. 90°
+was a starting point derived from what was observed, not measured.
+
+Live-testing that 90° value showed the landing coordinate pinned almost
+exactly at the cone's -67.5° boundary — "Player facing: (0.00, -12.47),
+Cast landed: (-11.52, -4.77). kan jauh" (that's really far apart) —
+which could mean anything from "barely past the cone edge" to "wildly
+off," since a clamp collapses both to the same result. Rather than keep
+guessing against a masked number, added the unclamped
+`debugRawAimDegrees`/`debugCorrectedAimDegrees` debug readout so the
+next cast would report the true angle directly. It read "Raw Aim Angle:
+-174.0°, Corrected Aim Angle: -84.0°" (consistent with the 90°
+correction: -174 + 90 = -84, confirming the math itself was working
+correctly against the wrong constant) — revealing the true raw bias is
+close to a full 180° inversion, not 90°. `aimCorrectionAngle` updated to
+`.pi` (180°) accordingly; the next live test's debug readout will show
+whether the ~6° residual (from -174° rather than exactly -180°) needs
+its own follow-up tuning.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
 # ADR-033 --- Cast Direction Derived From Live Rig Geometry, Not a Mesh-Tuned Constant
 
 ## Decision

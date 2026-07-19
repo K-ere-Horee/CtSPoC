@@ -71,6 +71,16 @@ struct ContentView: View {
             }
              */
 
+            GroupBox("Cast Direction Debug") {
+                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
+                    row("Player Facing", formatXZ(viewModel.debugPlayerFacingCoordinate))
+                    row("Cast Landed", formatXZ(viewModel.debugCastLandingCoordinate))
+                    row("Raw Aim Angle", formatDegrees(viewModel.debugRawAimDegrees))
+                    row("Corrected Aim Angle", formatDegrees(viewModel.debugCorrectedAimDegrees))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             LineTensionView(
                 isFighting: fishFight.hasFishOnHook,
                 tension: fishFight.lineTension
@@ -154,5 +164,15 @@ struct ContentView: View {
     private func formatDirection(_ state: RodState) -> String {
         guard let x = state.directionX, let y = state.directionY, let z = state.directionZ else { return "--" }
         return String(format: "%.2f, %.2f, %.2f", x, y, z)
+    }
+
+    private func formatXZ(_ point: SIMD3<Float>?) -> String {
+        guard let point else { return "--" }
+        return String(format: "(%.2f, %.2f)", point.x, point.z)
+    }
+
+    private func formatDegrees(_ degrees: Float?) -> String {
+        guard let degrees else { return "--" }
+        return String(format: "%.1f°", degrees)
     }
 }
