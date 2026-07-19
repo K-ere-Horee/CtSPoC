@@ -11,6 +11,523 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-035 --- Transport Replaced: MultipeerConnectivity to CoreBluetooth
+
+## Decision
+
+`Rod/Rod/Transport/TransportClient.swift` and `World/World/Transport/TransportHost.swift` are
+fully rewritten on CoreBluetooth. No `import MultipeerConnectivity` remains anywhere in either
+target. `TransportProtocol` (Shared) and `NetworkMessage` (Shared) are unchanged in shape —
+this is an internal swap of what implements the protocol, not a redesign of who calls it.
+
+**Roles**, matching the previous client/host split (Rod is the side that actively broadcasts
+itself; World reacts to whichever peer shows up):
+
+- **Rod = BLE peripheral** (`CBPeripheralManager`). Advertises one custom GATT service and three
+  characteristics, all defined as plain UUID strings in `SessionConfiguration` (Shared) so both
+  sides share the same identifiers without Shared importing CoreBluetooth:
+  - `bleStateCharacteristicUUID` — Rod → World, **notify**, unreliable. Carries the ~30 Hz
+    `RodState` stream.
+  - `bleReliableOutCharacteristicUUID` — Rod → World, **indicate**, reliable. Carries
+    `.discoveryToken`.
+  - `bleCommandCharacteristicUUID` — World → Rod, **write-with-response**, reliable. Carries
+    `.fishingEvent`/`.hookPhase`. (World writing into a characteristic Rod exposes is the only
+    way a BLE central can push data to a peripheral — there is no "central notifies" primitive.)
+- **World = BLE central** (`CBCentralManager`). Scans for the service, connects, subscribes to
+  the two Rod → World characteristics, writes to the command characteristic.
+
+**Message-flow inventory** (confirmed by grepping actual `.send(`/`case` call sites in
+`RodViewModel.swift`/`WorldViewModel.swift` before writing any replacement code, per this
+migration's own instructions — not assumed from memory): Rod sends `.state` and
+`.discoveryToken`; World sends `.hookPhase` and `.fishingEvent`; World's `handle(_:)` only acts
+on `.state`, ignoring everything else it receives (unchanged).
+
+**Payload framing (`Shared/Sources/Shared/Protocols/BLEFraming.swift`, new).** A JSON-encoded
+`NetworkMessage` may exceed one BLE packet once the ATT MTU is accounted for. `BLEFraming`
+prefixes a payload with a 4-byte big-endian length header and splits it into MTU-sized chunks;
+`BLEMessageReassembler` accumulates chunks fed from repeated delivery callbacks and yields
+complete messages once enough bytes have arrived. Pure `Data` manipulation, no CoreBluetooth
+import, so it's usable from both Rod's and World's transport layers without Shared taking on a
+platform dependency. Verified correct via a standalone roundtrip test (single-chunk, multi-chunk,
+sequential messages through one reassembler, empty payload, and coalesced multi-message delivery
+— all pass) before being wired into either transport file.
+
+**The unreliable (`.state`) path never fragments.** If an encoded state sample doesn't fit in one
+packet, it's dropped outright rather than risking a desynced multi-chunk stream on a channel with
+no delivery guarantee — a fresher sample is always ~33 ms away, matching the semantics
+`NetworkMessage.requiresReliableDelivery`'s doc comment already documents for this path. The two
+reliable paths (indicate/write-with-response) may fragment safely, since both have CoreBluetooth's
+own per-packet acknowledgment: indicate via `updateValue` returning `false` until
+`peripheralManagerIsReady(toUpdateSubscribers:)` fires, write-with-response via
+`didWriteValueFor`/`error` per chunk. Both reliable sends are queued (FIFO, one logical message's
+chunks fully drained before the next starts) so overlapping calls — e.g. two `.fishingEvent`s
+sent close together — can't interleave and corrupt each other's chunk sequence.
+
+**`@MainActor` on both transport classes and on `TransportProtocol` itself.** Both CoreBluetooth
+managers are constructed with `queue: nil` (main queue), so every delegate callback already lands
+on the main queue in practice; isolating the classes (and the protocol they conform to) to
+`@MainActor` — matching `RodViewModel`/`WorldViewModel`, the only two callers — makes that
+explicit and lets the mutable send-queue state be touched from both delegate callbacks and direct
+`send()` calls without a separate lock, instead of leaving a real (if currently benign) data race
+implicit. CoreBluetooth's delegate protocols are Objective-C and carry no such isolation of their
+own; the conformances use `@preconcurrency` (the standard bridge for implementing an unisolated
+ObjC delegate protocol from an actor-isolated Swift type), avoiding warnings that are hard errors
+under Swift 6.
+
+**Reconnection**: both sides keep trying continuously rather than requiring the caller to retry.
+Rod leaves advertising running after a central unsubscribes (never stops it outside
+`disconnect()`); World restarts scanning after any disconnect/failed-connect while still "wanting"
+a connection. This matches the previous MPC behavior of leaving the browser/advertiser active
+continuously once `connect()` was called.
+
+**Platform entitlements.** `Info.plist` (`Rod`/`World`): removed `NSBonjourServices`. Both
+targets' `project.pbxproj`: `INFOPLIST_KEY_NSLocalNetworkUsageDescription` replaced with
+`INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription`. World specifically: `ENABLE_RESOURCE_ACCESS_
+BLUETOOTH` flipped `NO` → `YES` — World runs sandboxed on macOS (`ENABLE_APP_SANDBOX = YES`), and
+this build setting is the sandbox entitlement gate for CoreBluetooth; leaving it `NO` would have
+silently blocked the central role at the OS level regardless of any code-level correctness. Also
+tightened `ENABLE_INCOMING_NETWORK_CONNECTIONS`/`ENABLE_OUTGOING_NETWORK_CONNECTIONS` to `NO` —
+grepped confirmed World has no other networking (`URLSession`/`Network.framework`), so these
+existed only for MPC's local-network transport and are no longer needed.
+
+## Rationale
+
+Per the supplied migration brief (`MIGRATION_transport_to_corebluetooth.md`, not committed to the
+repo, provided as a task document): a known MultipeerConnectivity bug on iOS 26 makes connection
+pairing flaky specifically when Bluetooth is involved in establishing the connection — exactly
+the Bluetooth-heavy, no-Wi-Fi-infrastructure scenario this project targets (fishing outdoors).
+Apple's own migration guidance recommends moving off MPC's `NSStream`-dependent transport, and
+CoreBluetooth's GATT notify/write model is a closer fit for this payload shape (small, frequent
+messages at ~30 Hz) than MPC's general-purpose session/stream abstraction was.
+
+Explicitly a **full replacement**, not a hybrid — the brief was clear that no MultipeerConnectivity
+import should remain when this is done, confirmed by grep.
+
+Status: Accepted, pending live-hardware verification (see the "Explicitly not yet verified"
+section of the matching `CHECKPOINT.md` entry — this ADR records the design and code-level
+verification that's actually complete; the migration brief's own test plan requires a Step 0/Step
+1 baseline-vs-CoreBluetooth latency comparison on real devices with Wi-Fi off, which has not been
+run).
+
+------------------------------------------------------------------------
+
+# ADR-034 --- Cast Direction Clamped to a Forward Cone, Bobber Doubled in Size
+
+## Decision
+
+`WorldViewModel.launchHook(solution:)` now clamps its computed horizontal
+launch heading into a fixed cone around the camera's forward direction,
+regardless of what upstream aim derivation (ADR-033's live rig-geometry
+vector, or any future replacement) produces:
+
+```text
+corrected = rotatedAroundY(rawHorizontal, by: aimCorrectionAngle)
+angle = atan2(corrected.x, -corrected.z)          // signed angle from -Z (straight ahead)
+clamped = clamp(angle, -castConeHalfAngle, castConeHalfAngle)
+horizontal = (sin(clamped), 0, -cos(clamped))
+```
+
+`castConeHalfAngle = 67.5°` (135° total cone width). The camera's forward
+is a compile-time constant here, not a live basis vector — `makePlayerCamera()`
+builds a static camera that never rotates dynamically (see its own
+doc comment), so `(0, 0, -1)` is always correct without needing to read
+camera state at cast time.
+
+**`aimCorrectionAngle` (180°, revised from an initial 90° guess after
+live-measuring the true raw angle).** ADR-033's rig-geometry-derived
+aim, once actually cast on device, consistently put the bobber to the
+*left* of the player's POV — a fixed rotational bias, not per-cast
+noise — and cast distance dropped sharply from what it had been before
+the cone clamp landed. A first 90° correction (below) turned out to be
+a guess from the symptom alone, not a measurement, and the resulting
+clamped landing coordinate gave no way to tell how far off the true
+angle actually was — landing at the cone's boundary looks identical
+whether the real angle is barely past it or wildly off. A debug-only
+pair of unclamped angle readouts (`debugRawAimDegrees`/
+`debugCorrectedAimDegrees`, `WorldViewModel`) exposed the real number:
+raw aim measured at **-174°** — not a quarter-turn off, but almost
+exactly **opposite** of forward. The tip-minus-root vector in
+`launchHook(solution:)` points nearly straight backward when the player
+casts forward; correcting for a near-180° inversion is a materially
+different fix than nudging a 90° axis mismatch. `rotatedAroundY(_:by:)`
+(a simple Y-axis rotation: `(x cosθ - z sinθ, y, x sinθ + z cosθ)`)
+rotates the raw aim by `aimCorrectionAngle` — positive angles rotate
+right, matching `clampedToForwardCone`'s own sign convention — *before*
+the cone clamp, so the corrected heading lands inside the cone as
+intended instead of constantly pinned at its edge. The measured -174°
+leaves a small ~6° residual against an exact 180° correction, left
+unaddressed pending the next live reading.
+
+The hook (`World/World/ViewModels/WorldViewModel.swift`'s `makeSceneEntity()`)
+also doubled in size: `.generateSphere(radius: 0.035)` → `radius: 0.07`.
+
+## Rationale
+
+Requested directly, immediately after ADR-033's fix: "gue masih gatau
+direction si yellow bobber ini kemana, tapi yang jelas ga sesuai sama
+apa yang gue mau. Bisa ga dibikin semacam limitation area jadi mau
+kemanapun cast, cuma bisa ke arah depan, sekitar 135 derajat di depan
+pov kamera?" (I still don't know where this yellow bobber's direction is
+going, but it's clearly not what I want. Can you make a limitation area
+so no matter where the cast goes, it can only go forward, about 135
+degrees in front of the camera POV?) — plus, separately, "gedein juga
+ukuran bobbernya by 2x" (also double the bobber's size).
+
+This is a deliberate belt-and-suspenders addition on top of ADR-033
+rather than a further attempt to prove the raw aim direction "correct":
+the player's own framing ("I still don't know where it's going") calls
+for a guaranteed bound on the outcome, independent of whether the
+underlying rig-geometry derivation has some remaining, not-yet-
+understood issue. A hard clamp to a forward-biased cone guarantees the
+acceptance-criteria-relevant behavior (cast never lands behind or far to
+the side of the player) even if the precise heading within that cone is
+still being tuned. Doubling the bobber's visible size was requested
+purely to make it easier to actually see and judge where it lands during
+testing — not a gameplay-balance change.
+
+`aimCorrectionAngle` followed from live testing with the camera-follow
+debug aid: "ok kayanya ketemu masalahnya. bobbernya selalu loncat ke
+kiri dari pov orang, dan cast distance nya jadi kecil banget dibanding
+sebelumnya yang bisa jauh. Apa mungkin kalo kalo di define 'depan' itu
+sekitar 90 derajat ke kanan dari titik cast sekarang bisa?" (I think I
+found the problem. The bobber always jumps to the left of the player's
+POV, and the cast distance became very small compared to before, when it
+could go far. Could "forward" be redefined as about 90 degrees to the
+right of the current cast point?) — a specific, testable correction
+proposed directly from the reported symptom, implemented as stated. 90°
+was a starting point derived from what was observed, not measured.
+
+Live-testing that 90° value showed the landing coordinate pinned almost
+exactly at the cone's -67.5° boundary — "Player facing: (0.00, -12.47),
+Cast landed: (-11.52, -4.77). kan jauh" (that's really far apart) —
+which could mean anything from "barely past the cone edge" to "wildly
+off," since a clamp collapses both to the same result. Rather than keep
+guessing against a masked number, added the unclamped
+`debugRawAimDegrees`/`debugCorrectedAimDegrees` debug readout so the
+next cast would report the true angle directly. It read "Raw Aim Angle:
+-174.0°, Corrected Aim Angle: -84.0°" (consistent with the 90°
+correction: -174 + 90 = -84, confirming the math itself was working
+correctly against the wrong constant) — revealing the true raw bias is
+close to a full 180° inversion, not 90°. `aimCorrectionAngle` updated to
+`.pi` (180°) accordingly; the next live test's debug readout will show
+whether the ~6° residual (from -174° rather than exactly -180°) needs
+its own follow-up tuning.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-033 --- Cast Direction Derived From Live Rig Geometry, Not a Mesh-Tuned Constant
+
+## Decision
+
+`WorldViewModel.launchHook(solution:)` no longer reinterprets
+`CastSolution.direction`'s `x`/`z` as a World-space horizontal launch
+heading. Instead it derives the heading live, at the exact moment of
+launch, from the actual rendered rig:
+
+```text
+aim = tipEntity.position(relativeTo: nil) - controllerEntity.position
+horizontal = normalize(aim.x, 0, aim.z)   // falls back to (0, 0, -1) if near-zero
+```
+
+`solution.power`, `solution.launchAngle`, and `solution.distance` are
+unaffected and still come from `CastSolution` as before — only the
+horizontal heading component changed. `CastResolver`/`CastSnapshot`/
+`CastVector3.forward` in Shared are untouched.
+
+## Rationale
+
+Reported directly, with a screenshot: casting with the rod visually
+aimed straight out over the pier consistently landed the hook off to the
+side, near the shoreline — "casting nya masih ke kanan kiri dari pier."
+Root cause: `CastResolver.resolve(_:)` computes `direction` by rotating
+a hardcoded `CastVector3.forward = (0, 0, -1)` by the corrected
+orientation — a constant that was only ever correct for the *old*
+placeholder arrow mesh (`World/World/ContentView.swift`'s pre-asset-
+integration `makeArrow()`), whose tip sat along local -Z
+(`tip.position = [0, 0, -0.76]`). The asset-integration merge swapped in
+`rod_main.usdz` via `RodRigController`, whose entire bone chain
+(`Root/Handle/Rod_01/Rod_02/Rod_03/Tip`) rests along local **+Y**
+instead (every `BoneWeight.restTranslation` in `RodRigController.
+rodBones` is `[0, Y, 0]`) — a rod modeled held upright, tip up, not
+tip-forward. Nobody updated the hardcoded `-Z` convention when the mesh
+changed, so `solution.direction` pointed wherever local -Z ended up
+after rotation — a fixed, consistent offset from wherever the rig's
+actual +Y-rooted tip visually swung to. This matches the reported
+pattern exactly: a *consistent* rotational drift, not per-cast noise.
+
+Per ADR-018/019 and this bug's own architecture note, `Shared` must stay
+mesh-agnostic — it has no knowledge of World's rendered rig at all, so
+`CastVector3.forward` cannot be "fixed" by pointing it at whatever axis
+happens to match the current mesh (that just moves the same fragility to
+a different constant, and breaks again on the next rig swap). The fix
+belongs in World, which is the only module that knows the rig's actual
+geometry: deriving the heading from `tipEntity.position(relativeTo: nil)
+- controllerEntity.position` at cast time is correct by construction — it
+always matches wherever the rendered tip is actually pointing, regardless
+of any particular rig's internal rest-pose axis convention, and needs no
+maintenance if the rig is swapped again. `controllerEntity` (the fixed-
+offset `RodRoot`, per ADR-019) itself is never moved by this — only the
+hook's launch trajectory is computed from it.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-032 --- Cast Power Weighted by Backswing Distance, Not Flick Speed Alone
+
+## Decision
+
+Cast power — both `RodMotionInterpreter`'s live `castPower` (the charging
+meter) and, more importantly, `CastResolver.resolve(_:)`'s `CastSolution.
+power` (the value that actually drives `WorldViewModel.launchHook`'s hook
+velocity) — previously came from instantaneous rotation-rate magnitude
+alone: a single sample of angular velocity, taken once at the exact frame
+release was detected. How far back the player pulled the phone during
+the backswing was never measured or used.
+
+**`RodMotionInterpreter`** now tracks `backswingPeakDistance: Double`,
+the peak of `distance(current, profile.idlePose)` (the same wrapped
+pitch/roll/yaw distance metric already used for idle/cast/reel pose
+classification) reached since the current cast gesture began. It resets
+to `0` whenever classification freshly enters `.cast`
+(`previousClassification != .cast`) and otherwise only grows
+(`max(backswingPeakDistance, distances.idle)`) every frame the gesture
+stays in `.cast`, so it captures the deepest point of the backswing
+regardless of when it happened relative to the release.
+
+**`CastSnapshot`** (Shared, `CastResolver.swift`) gained a
+`backswingDistance: Float` field, populated from `backswingPeakDistance`
+at the moment `RodMotionInterpreter` builds the release snapshot. It is
+Rod-internal only — never transmitted over `NetworkMessage`, consumed
+solely by `RodViewModel`'s local `castResolver.resolve(snapshot)` call.
+
+**`CastConfig`** gained `minimumBackswingDistance`/
+`maximumBackswingDistance` (radians, default `0.12`/`1.0`), the
+normalization bounds for `backswingDistance`, mirroring the existing
+`minimumCastVelocity`/`maximumCastVelocity` bounds for flick speed.
+
+**Both `RodMotionInterpreter`'s live `castPower` and `CastResolver.
+resolve(_:)`'s final `power`** now use the same blend:
+
+```text
+distancePower = clamp01((backswingDistance - minBackswing) / (maxBackswing - minBackswing))
+flickPower    = clamp01((angularSpeed - minVelocity) / (maxVelocity - minVelocity))
+power = distancePower * (0.7 + 0.3 * flickPower)
+```
+
+Backswing distance sets the base — zero backswing means zero power no
+matter how fast the flick — and release-moment flick speed adds up to a
+30% bonus on top. `RodMotionInterpreter`'s live meter uses a local,
+uncalibrated approximation of the same shape (`rotationRateMagnitude / 5`
+for the flick term, matching its pre-existing simplification) so the
+on-screen charging meter tracks what the eventual release will actually
+produce; `CastResolver` is the authoritative, `CastConfig`-driven
+calculation that becomes the transmitted `CastSolution.power`.
+
+## Rationale
+
+Requested directly: "doesn't matter kalo aku narik ke belakang sejauh
+apapun, dia cuma nge register ketika iphone nya aku 'flick' dengan cepat,
+sementara target aku kan biar iphone nya ngitung seberapa kuat cast itu
+dari jarak yang dia tempuh sampai flick" (it doesn't matter how far back
+I pull, it only registers when I flick the phone fast — my goal is for
+the phone to compute cast strength from the distance it traveled up to
+the flick). The player also asked directly whether this was a hardware
+limitation from mixing flick and reel detection on one device; it isn't
+— casting and reeling are already disambiguated by proximity to separate
+calibrated poses (`profile.castPose`/`profile.reelPose`) before rotation
+rate is ever read, and CoreMotion already provides continuous orientation
+suitable for measuring displacement across a gesture, not just an
+instantaneous sample at release. The actual gap was a design/logic one:
+`castPower`'s only input was `rotationRateMagnitude`, sampled once at the
+release frame, and `CastResolver.resolve(_:)` — the function that
+produces the `CastSolution.power` actually consumed by `WorldViewModel.
+launchHook`, entirely separate from `RodMotionInterpreter`'s own
+`castPower` field — made the identical mistake with `snapshot.
+angularVelocity.length`. Fixing only the live meter (`RodMotionInterpreter`)
+would have made the on-screen number feel right while leaving actual hook
+physics governed by flick speed alone; both had to change together.
+A multiplicative blend (distance as the gate, flick as a bonus) was
+chosen over a flat average so a good, deliberate pull-back reliably
+produces a real cast regardless of how the release itself was flicked,
+mirroring how a real rod loads on the backswing and releases on the
+forward snap — closer to the player's own framing of the goal than a
+pure distance-only formula would have been, while still rewarding a
+crisp release.
+
+This is a first pass explicitly requested to "see how it feels" — the
+`0.12`/`1.0` backswing-distance bounds and the `0.7`/`0.3` blend weights
+are hand-picked, not calibrated per-player or measured on-device, and are
+expected to need retuning once played.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-031 --- Cast Distance, Fight Distance, and Search-Phase Reel State Fixes
+
+## Decision
+
+Four related fixes to the cast/bite pipeline:
+
+**Real measured cast distance.** `WorldViewModel` now tracks
+`castLaunchPosition` (the hook's tip position at `launchHook(solution:)`)
+and, when the hook splashes in `simulateFlyingHook(deltaTime:)`, computes
+the horizontal distance actually traveled
+(`simd_distance` between launch and splash `xz` position) and passes it to
+`FishFightController.resetForNewCast(castDistance:)` — replacing the
+previous no-argument call. This is the *actual* physics-simulated
+distance, not `CastSolution.distance` (Rod's meter-config estimate shown
+during charging, still unwired to launch physics and left as-is for that
+preview use). `FishFightController` publishes it back as
+`lastCastDistance: Float`, shown in `ContentView`'s Controller State grid
+as "Last Cast Distance."
+
+**Cast distance caps rollable fish size.** `FishFightController` gained
+`sizeCeilingRatio: Float` (`0.3 + 0.7 * clamp01(currentCastDistance /
+maxExpectedCastDistance)`, `maxExpectedCastDistance = 10.0`, an estimate
+from the launch physics at full charge/level release) and
+`biasedRoll(in:ceilingRatio:)`, a static helper that rolls a
+`FishSpeciesRange` value capped at `range.min + span * ceilingRatio`
+instead of the full range. `updateSearching(deltaTime:)`'s bite branch now
+rolls `currentWeight`/`currentLength` through this instead of
+`FishSpeciesRange.randomValue()`'s uniform roll. A short cast can still
+land a small-to-modest fish (the 0.3 floor); only a cast near
+`maxExpectedCastDistance` can roll near the species' max. Because
+`sizeRatio`/`resistance` (ADR-030) already derive from
+`currentWeight`/`currentLength`, a far cast landing a big fish is
+automatically also a tougher fight — no separate wiring needed.
+
+**Guaranteed minimum fight distance on bite.** `FishFightController`
+gained `minimumFightDistance: Float = 0.4` (hook-to-rod meters).
+`WorldViewModel.ensureFightDistance()`, called right after
+`setHookPhase(.fishOnHook)` in the `.bite` branch of `tick()`'s
+`.hookInWater` case, pushes the hook entity outward along the existing
+rod-to-hook axis to at least this distance if it's already closer.
+
+**Search-phase reeling no longer fakes a hooked fish.** `reelHook
+(deltaTime:)`'s unconditional trailing `setHookPhase(.reeling)` is now
+`if fishFight.hasFishOnHook { setHookPhase(.reeling) }`. Reeling in
+during `.hookInWater` before any bite now moves the hook and, if it
+reaches the rod, resolves the existing empty-retrieve path
+(`hookEntity.isEnabled = false`, `setHookPhase(.idle)`) — but no longer
+sets `hookPhase` to `.reeling` along the way, so `hookPhase` stays
+`.hookInWater` for the entire retrieve unless a fish actually bites.
+
+## Rationale
+
+**Distance gating fish size** was requested directly: "semakin jauh
+casting, harusnya semakin gede ikan yang bisa ditangkap. juga, distance
+belum ke reflect" (the farther you cast, the bigger the fish that should
+be catchable; also, distance isn't reflected anywhere yet). Two problems
+existed together: `CastSolution.distance` (the value Rod's cast meter
+computes and displays) was never actually consumed by
+`launchHook(solution:)` — hook speed came from `power` alone — so no
+"distance" concept was wired to anything, gameplay or otherwise; and fish
+weight/length rolled uniformly across each species' full range regardless
+of how the cast that hooked it went. Measuring the real simulated flight
+distance (rather than trying to retrofit the disconnected meter estimate)
+and using it to cap the roll ceiling fixes both: a value now exists,
+is shown, and has a gameplay consequence.
+
+**The minimum fight distance** fixes a reported bug: "ketika hook inwater
+tapi udah aku reel duluan, ketika fishonhook, meteran line tension ga
+muncul" (when the hook is in water but I already started reeling first,
+the tension meter doesn't appear once it becomes fishOnHook). Root cause:
+`tick()`'s `.hookInWater` case still calls `reelHook(deltaTime:)` in the
+same tick a bite just occurred (the `switch hookPhase` at the top of
+`tick()` captured `.hookInWater` before `setHookPhase(.fishOnHook)` ran,
+so the case body keeps executing). If the player had already been
+reeling in during the search phase, the hook could already be within
+`reelHook`'s catch-distance threshold (`0.12`) the instant the bite
+landed — `reelHook` would then resolve the catch in that same tick,
+flipping `fishFight.hasFishOnHook` `true` then `false` before SwiftUI
+ever rendered a frame with it `true`. `LineTensionView` is gated on
+`hasFishOnHook`, so it never appeared. Pushing the hook back out to a
+guaranteed minimum distance the instant a bite lands (mirroring
+`initialTension`'s existing "buffer" idea from ADR-028) guarantees a real,
+visible fight instead of an instant, invisible catch.
+
+**Search-phase reeling** fixes a second, related bug reported right after
+the fight-distance fix above: "ketika hook InWater terus langsung aku
+reel, status nya berubah ke fishInHook, seharusnya engga kan. Kalo
+reflect mancing dunia nyata, kita bisa reel sampai batas tertentu sebelum
+hook nya diangkat dari air" (when the hook is InWater and I immediately
+reel, the status changes to fishOnHook — it shouldn't. To reflect real
+fishing, we should be able to reel up to a point before the hook is
+lifted from the water). Root cause: `reelHook(deltaTime:)` set
+`hookPhase` to `.reeling` on every step that moved the hook, with no
+check for whether a fish was actually attached — so reeling during
+`.hookInWater` (an intentional, pre-existing "empty retrieve" action)
+left `hookPhase == .reeling` the moment the player stopped reeling.
+`tick()`'s `case .fishOnHook, .reeling:` branch assumes reaching it means
+a fish is hooked, and its not-reeling `else` branch unconditionally calls
+`setHookPhase(.fishOnHook)` — so the very next tick after releasing the
+reel gesture (with no bite ever having happened) flipped `hookPhase` to
+`.fishOnHook`. Gating the `.reeling` transition on `hasFishOnHook`
+restores that invariant: `.reeling`/`.fishOnHook` are now only ever
+reached with a real fish attached, and reeling in an empty line behaves
+exactly like the real-world retrieve the player described — the hook
+approaches the rod and, once close enough, comes out of the water
+(`.idle`), with no phase change in between. As a side effect this also
+fixes a related haptic glitch: `RodViewModel.handle(_:)` stops the fish-
+interested haptic pulse whenever `hookPhase != .hookInWater`, so the
+same bug was prematurely killing that pulse the instant a player reeled
+during search, even if no bite had happened yet.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-030 --- Resistance Scales With Rolled Size, Not Just Species
+
+## Decision
+
+`FishSpecies.resistance` is now a per-species *ceiling*, not the value
+used directly in the fight. `FishFightController` computes a private
+`sizeRatio: Float` (0...1) from where this catch's rolled
+`currentWeight * currentLength` falls between the species' min and max
+weight*length product:
+
+```text
+minProduct = species.weightRange.min * species.lengthRange.min
+maxProduct = species.weightRange.max * species.lengthRange.max
+sizeRatio = clamp01((currentWeight * currentLength - minProduct)
+                     / (maxProduct - minProduct))
+
+resistance = species.resistance * sizeRatio
+```
+
+`resistance` still feeds `effectiveFishPullRate` and `fishPullSpeed`
+exactly as ADR-026/028 defined; only how `resistance` itself is derived
+changed. `FishSpecies.resistance` and `FishCatalog` are unaffected — no
+data model or catalog change was needed, since this is purely a
+fight-controller computation over the already-existing weight/length
+ranges.
+
+## Rationale
+
+Requested directly: two different rolls of the same species (a puny
+`Fish A` and a near-max `Fish A`) fought identically, because
+`resistance` read `currentSpecies?.resistance` straight off the species
+regardless of which weight/length this particular catch happened to roll
+— "tension belom corespond dengan fish weight ... seharusnya, semakin
+fish weight * length mendekati angka max, maka nilai resistance juga
+mengikuti" (tension doesn't yet correspond to fish weight — as the fish's
+weight*length approaches the max, resistance should follow). Scaling by
+`sizeRatio` makes big individual catches within a species meaningfully
+harder to land than small ones of the same species, matching the
+weight/length roll players already see reflected in the result screen's
+star rating (`FishFightController.stars(forWeight:in:)`), which used the
+same weight-proximity idea for scoring but never fed it back into the
+fight itself.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
 # ADR-029 --- Result Screen, Rod's Minimal V1 Interface, Fish Interest
 
 ## Decision
@@ -928,5 +1445,60 @@ must not become the renderer's orientation source.
 Using relative Euler values for both gameplay and rendering caused the rod to
 appear to snap when calibration ended. A normalized quaternion contract keeps
 the visual pipeline stable and makes the ownership boundary explicit.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-030 --- World Explicitly Authors the First-Person Camera
+
+## Decision
+
+`RealityView` in non-AR ("virtual") mode has no ARKit device camera to fall
+back on and provides no default first-person viewpoint of its own. World
+must always create and add an explicit `PerspectiveCamera` entity to the
+scene, and set `content.camera = .virtual` in the `RealityView` closure.
+
+## Rationale
+
+Without an explicit camera entity, RealityKit auto-frames the scene's
+bounding box from an arbitrary vantage point instead of the intended
+first-person view. This previously shipped as a bug: the player appeared to
+stand underwater looking up at the dock's underside.
+
+The camera's position/orientation must be derived from the asset repo's own
+authored viewpoint (the Blender `player_pov` camera), converted through the
+verified Blender-Z-up-to-RealityKit-Y-up axis mapping
+(`(x, y, z) -> (x, z, -y)`), not guessed. See `CHECKPOINT.md` ("Asset-
+Integration Environment, First-Person Camera, and Rod Motion Fixes") for the
+empirical derivation.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
+# ADR-031 --- Transport Delivery Mode Matches Message Freshness, Not a Blanket Default
+
+## Decision
+
+`NetworkMessage` declares `requiresReliableDelivery` per case. Continuous,
+high-frequency telemetry (`state`, the streamed `RodState`) sends unreliable:
+a stale sample is worthless once superseded, so retransmitting a dropped one
+only adds latency for every real sample queued behind it. Discrete, one-shot
+signals (`discoveryToken`, `fishingEvent`, `hookPhase`) stay reliable, since
+losing one of those silently breaks game state rather than just aging out.
+Both `TransportHost` and `TransportClient` read this flag to pick
+`MCSessionSendDataMode` instead of hardcoding `.reliable` for every send.
+
+## Rationale
+
+MultipeerConnectivity's `.reliable` mode is TCP-like: ordered and
+retransmitted. Sending the entire live motion stream this way meant any
+single dropped packet under real Wi-Fi/Bluetooth conditions caused
+head-of-line blocking — every subsequent, already-stale sample queued behind
+the retransmit — which read directly as controller/rod lag independent of
+frame rate or rendering. See `CHECKPOINT.md` ("Controller lag fix, FPS debug
+indicator, and a stuck-error/casting investigation") for the full
+investigation and the two other contributing causes found alongside this one.
 
 Status: Accepted

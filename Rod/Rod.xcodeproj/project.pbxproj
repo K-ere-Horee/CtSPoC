@@ -283,7 +283,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Rod/Info.plist;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Rod uses local network to connect into other device.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Rod uses Bluetooth to connect to World and stream controller input.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Rod uses motion sensors to report controller orientation.";
 				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "Rod uses Nearby Interaction to measure its position relative to World.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -291,6 +291,7 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -319,7 +320,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Rod/Info.plist;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Rod uses local network to connect into other device.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Rod uses Bluetooth to connect to World and stream controller input.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Rod uses motion sensors to report controller orientation.";
 				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "Rod uses Nearby Interaction to measure its position relative to World.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -327,6 +328,7 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

@@ -38,8 +38,8 @@ struct MotionDebugView: View {
                 LabeledContent(
                     "Pose",
                     value: sample.interpretation.isPoseValid
-                    ? "✅ Valid"
-                    : "❌ Invalid"
+                    ? "Valid"
+                    : "Invalid"
                 )
 
                 Divider()
@@ -69,8 +69,8 @@ struct MotionDebugView: View {
                     LabeledContent(
                         "Forward Check",
                         value: sample.decision.passedForwardCheck
-                        ? "✅"
-                        : "❌"
+                        ? "Valid"
+                        : "Invalid"
                     )
                 }
 
@@ -79,8 +79,8 @@ struct MotionDebugView: View {
                 LabeledContent(
                     "Cooldown",
                     value: sample.decision.passedCooldownCheck
-                    ? "✅"
-                    : "❌"
+                    ? "Valid"
+                    : "Invalid"
                 )
             }
 

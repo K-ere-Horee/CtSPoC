@@ -63,6 +63,12 @@ final class RodViewModel: ObservableObject {
     private var spatial = SpatialState()
     private var hasStarted = false
     private var calibrationSamples: [RodMotionInput] = []
+    /// Guards against unbounded concurrent sends: `publishState()` fires on every motion sample
+    /// (up to the CoreMotion update rate), and each one used to spawn its own unstructured `Task`
+    /// with no backpressure — if a send was momentarily slow, tasks piled up and could finish out
+    /// of step with real time, reading as input lag. Since only the newest state ever matters,
+    /// drop a publish rather than queue it while a send is already in flight.
+    private var isSendingState = false
 
     private static let motionProfileKey = "rod.motionProfile"
 
@@ -116,7 +122,10 @@ final class RodViewModel: ObservableObject {
         transport.onStateChange = { [weak self] state in
             Task { @MainActor in
                 self?.connectionState = state
-                if state == .ready { self?.startSpatialSession() }
+                if state == .ready {
+                    self?.lastError = nil
+                    self?.startSpatialSession()
+                }
             }
         }
         transport.onMessage = { [weak self] message in
@@ -254,7 +263,14 @@ final class RodViewModel: ObservableObject {
         )
         guard connectionState == .ready || connectionState == .streaming else { return }
         connectionState = .streaming
-        Task { await send(.state(rodState)) }
+
+        guard !isSendingState else { return }
+        isSendingState = true
+        let stateToSend = rodState
+        Task {
+            await send(.state(stateToSend))
+            isSendingState = false
+        }
     }
 
     private func updateAction() {
@@ -344,6 +360,7 @@ final class RodViewModel: ObservableObject {
     private func send(_ message: NetworkMessage) async {
         do {
             try await transport.send(message)
+            lastError = nil
         } catch {
             lastError = error.localizedDescription
         }

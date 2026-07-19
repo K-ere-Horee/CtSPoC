@@ -97,6 +97,13 @@ public final class RodMotionInterpreter {
     private var hasIdleReference = false
     private var previousCastPhase: RodMotionPhase = .idle
     private var releasedCastPower: Float = 0
+    /// Peak angular distance (radians) from the idle pose reached so far
+    /// during the current cast gesture. Reset when a fresh cast gesture
+    /// begins; feeds both the live `castPower` meter and, via `CastSnapshot`,
+    /// `CastResolver`'s final gameplay power.
+    private var backswingPeakDistance: Double = 0
+    private let minimumBackswingDistance: Double = 0.12
+    private let maximumBackswingDistance: Double = 1.0
 
     private enum Classification: String {
         case idle
@@ -114,6 +121,7 @@ public final class RodMotionInterpreter {
         castEndsAt = 0
         previousCastPhase = .idle
         releasedCastPower = 0
+        backswingPeakDistance = 0
         hasIdleReference = profile.isComplete
     }
 
@@ -127,6 +135,7 @@ public final class RodMotionInterpreter {
         castEndsAt = 0
         previousCastPhase = .idle
         releasedCastPower = 0
+        backswingPeakDistance = 0
     }
 
     public func interpret(_ input: RodMotionInput) -> RodMotionInterpretation {
@@ -164,14 +173,26 @@ public final class RodMotionInterpreter {
 
         switch classification {
         case .cast:
-            let castPower = Float(min(1, max(0, input.rotationRateMagnitude / 5)))
+            let enteredCast = previousClassification != .cast
+            if enteredCast {
+                backswingPeakDistance = 0
+            }
+            backswingPeakDistance = max(backswingPeakDistance, distances.idle)
+
+            let distancePower = Float(min(1, max(0, (backswingPeakDistance - minimumBackswingDistance) / max(0.0001, maximumBackswingDistance - minimumBackswingDistance))))
+            let flickPower = Float(min(1, max(0, input.rotationRateMagnitude / 5)))
+            // How far the backswing traveled sets the base power; a fast
+            // flick only adds up to a 30% bonus on top — matches
+            // `CastResolver.resolve(_:)`'s blend, so the live meter tracks
+            // what the release will actually produce.
+            let castPower = distancePower * (0.7 + 0.3 * flickPower)
+
             let forwardMotion = input.accelerationZ * profile.castAccelerationSign >= profile.castAcceleration
             let backswing = input.accelerationZ * profile.castAccelerationSign < -profile.castAcceleration
             let wasReleased = previousCastPhase == .release
             let phase: RodMotionPhase = backswing
                 ? .backswing
                 : forwardMotion ? .release : (castPower > 0.05 ? .charging : .forwardSwing)
-            let enteredCast = previousClassification != .cast
             previousClassification = classification
             previousCastPhase = phase
             if forwardMotion && (enteredCast || !wasReleased) {
@@ -268,7 +289,8 @@ public final class RodMotionInterpreter {
         CastSnapshot(
             orientation: orientation,
             angularVelocity: CastVector3(x: Float(input.rotationRateX), y: Float(input.rotationRateY), z: Float(input.rotationRateZ)),
-            timestamp: input.timestamp
+            timestamp: input.timestamp,
+            backswingDistance: Float(backswingPeakDistance)
         )
     }
 }

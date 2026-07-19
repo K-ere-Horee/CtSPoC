@@ -72,6 +72,8 @@ No gameplay is required.
 ### World
 
 -   Render RealityKit scene
+-   Author the first-person camera explicitly (`RealityView` has no default
+    virtual-mode viewpoint; see ADR-016 in `ARCHITECTURE_DECISIONS.md`)
 -   Manage world state
 -   Receive `RodState`
 -   Display debug values
