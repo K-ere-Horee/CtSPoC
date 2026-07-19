@@ -230,6 +230,9 @@ final class RodViewModel: ObservableObject {
             if phase != .hookInWater {
                 fishingHaptics.stopInterest()
             }
+            if phase != .fishOnHook, phase != .reeling {
+                fishingHaptics.stopFight()
+            }
             if phase == .idle {
                 rodState = RodState(
                     spatial: spatial,
@@ -328,6 +331,7 @@ final class RodViewModel: ObservableObject {
             fishingHaptics.reelTick(reelSpeed: reelSpeed)
         }
         fishingHaptics.interestPulse()
+        fishingHaptics.fightPulse()
     }
 
     private var motionInput: RodMotionInput {

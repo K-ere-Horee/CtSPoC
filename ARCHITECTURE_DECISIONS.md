@@ -11,6 +11,120 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-039 --- Fight Difficulty Pass: Tug-of-War, Distance Escape, Tension Haptics, Fight Camera
+
+## Decision
+
+Five related changes making the fight harder and more dramatic, all requested together after
+live play ("rasanya masih terlalu gampang dapetin ikan baik fish A, B, C, bahkan Scott"):
+
+**Longer casts.** `WorldViewModel.castSpeed` 3.6 → 5.0 (max-power ballistic range ~13 m → ~24 m);
+`FishFightController.maxExpectedCastDistance` 10 → 20 so the size-ceiling normalization keeps
+spanning the real achievable range.
+
+**Camera follows the fight.** `updateCameraFollow()` — previously flight-only — now also tracks
+the hook through `.fishOnHook`/`.reeling`, so the whole tug-of-war is watched up close. Every
+other phase (including `.result`) still snaps back to the player pose.
+
+**Reel tension climbs faster — revised.** `baseReelTensionRate` 0.5 → 0.85 first, then → **0.55**
+after live testing showed 0.85 made even `fish_a` (the weakest tier) nearly impossible to land
+without immediately overshooting to line-break: at `reelSpeed` 1.0, `reelPull` (0.85) so far
+exceeded `fish_a`'s `effectiveFishPullRate` (~0.15–0.20 depending on the roll) that tension went
+from `initialTension` (0.5) to 1.0 in well under a second, regardless of species. 0.55 keeps a
+real risk at full reel speed (~1.25–1.44 s to snap against `fish_a`, worked out by hand — see the
+Rationale) while making moderate reeling (`reelSpeed` ~0.6) give a comfortable ~3 s window and
+light reeling (~0.3) roughly neutral, so modulating reel speed is a real, learnable skill instead
+of "any reeling overshoots."
+
+**Real tug-of-war + distance escape.** `basePullSpeed` 0.4 → 1.0, and `reelHook()` now subtracts
+`fishFight.fishPullSpeed` from the player's reel speed — net-negative means the fish gains line
+*while the player is actively reeling*. `updateFight` gained a `hookDistance:` parameter: the
+first fight tick's distance becomes a baseline, and if the fish takes more than
+`escapeDistanceAllowance` (6 m) of line beyond it, the fight resolves `.escaped` (the "spooled"
+failure). Weak reeling is now a losing strategy against a strong fish rather than a slow
+guaranteed win.
+
+**Escape now resets to `.idle`, not `.hookInWater`.** Both `FightFailure` cases in
+`resolveFightFailure` now disable the hook and go to `.idle` (a fresh cast is required) — matches
+`.lineBreak`'s existing treatment, which `.escaped` previously did not get. Requested directly:
+"kalo tension kerendahan (slack), reset langsung bobber ke posisi awal (alias ga hookInWater
+lagi)." A slack-tension escape and a distance-spooled escape both report as the same
+`FightFailure.escaped` case, so both get this treatment — there was no clean way to give one but
+not the other without threading a failure subtype through, and there's no indication only one of
+the two should behave differently.
+
+**All fight-tuning numbers extracted into `FishFightConfig` (Shared, new).** `initialTension`,
+`baseFishPullRate`, `baseReelTensionRate`, `basePullSpeed`, `escapeDistanceAllowance`, the two
+`tensionBand` thresholds, and all nine Rod haptic-band parameters (interval/intensity/sharpness
+× low/medium/high) moved out of private constants scattered across `FishFightController` (World)
+and `FishingHaptics`' `FightBand` enum (Rod) into one `Codable`/`Equatable` struct in Shared, with
+every field documented inline. `FishFightController.init` and `FishingHaptics.init` both take a
+`config: FishFightConfig = FishFightConfig()` parameter — existing call sites (`FishFightController()`,
+`FishingHaptics()`) are unaffected, and both classes now read the *same* config instance's values
+so gameplay difficulty and haptic feel can't silently drift apart from each other.
+`maxExpectedCastDistance` deliberately stayed a private `FishFightController` constant, not part
+of the config — it's cast physics (tied to `WorldViewModel.castSpeed`), not fight tuning.
+
+**Continuous tension haptics on Rod.** `FishingEvent` gained `reelTensionLow/Medium/High`.
+`FishFightController.tensionBand` derives the band from `lineTension` (< 0.55 low, 0.55–0.8
+medium, ≥ 0.8 high); `WorldViewModel.syncTensionBand()` (every tick) sends an event only on band
+*transitions* — no raw-tension streaming over the reliable World→Rod path. Rod's
+`FishingHaptics` stores the band and pulses continuously at band-specific rhythm/intensity
+(spaced 0.5 s taps → regular 0.28 s → rapid 0.11 s), reusing the same recurring-callback pattern
+as `interestPulse`. Cleared by every fight-ending event and, belt-and-suspenders, by
+`stopFight()` when `hookPhase` leaves the fight phases — mirroring exactly how the interest
+pulse is kept from going stale. This implements `GAMEPLAY_ARCHITECTURE_V1.md`'s
+"resistance through rhythm as well as intensity" haptic spec, driven by live tension rather
+than static fish size — a stronger fish reaches the higher bands faster and holds them longer,
+so the rhythm still communicates the fish, but through the fight's actual state.
+
+## Rationale
+
+Requested directly: "rod casting nya kurang jauh"; "ketika hook kena fish, camera langsung geser
+lagi ke hook dong biar proses reel nya jadi lebih dramatis"; "kasih getaran haptics continuous
+juga di hp untuk reel meter (ini yang low medium high haptics)"; "masih terlalu gampang dapetin
+ikan... Bikin lebih susah lagi dengan reel meter lebih cepet naik ke high tension"; "perlu ada
+juga mechanism dimana ikannya bisa escape dari reel karena kejauhan."
+
+The tug-of-war change is what makes the distance escape meaningful: with the old code the hook
+only ever moved toward the rod while reeling, so no amount of fish strength could create
+distance danger during active play — the escape threshold would only ever fire while the player
+stood idle, which the slack-tension timer already punishes. Subtracting pull speed from reel
+speed turns distance into a live resource both sides fight over, which is also exactly what the
+newly-following camera is pointed at.
+
+The 0.85 → 0.55 correction was reported directly after playing: "kayanya reel nya terlalu susah
+deh, it's even impossible untuk grab fish A tanpa tensionnya ketinggian." Worked out by hand
+(`baseFishPullRate(0.15) * (1 + 0.35 * sizeRatio)` for `fish_a`'s resistance/size range,
+`reelSpeed * baseReelTensionRate` for reel pull, time-to-snap = `0.5 / net` since a bite starts
+at `initialTension`):
+
+```text
+                        reelSpeed=0.3   reelSpeed=0.6   reelSpeed=1.0
+0.85 (first pass)       overshoots      ~0.9s to snap   ~0.7s to snap
+0.55 (corrected)        ~neutral/safe   ~2.8-3.9s       ~1.25-1.44s
+```
+
+0.55 was chosen so full-speed reeling stays a real, if generous, risk rather than either
+"impossible to avoid" (0.85) or "no risk at all" (something closer to the original 0.5, which is
+what made the fight feel trivial before this ADR started).
+
+The config extraction followed directly from the same conversation: "bisa ga dibikin di dalam
+config file beserta docs nya, agar aku bisa tuning manual?" (can this go in a config file with
+docs, so I can tune it manually?) — rather than hand this specific 0.85→0.55 correction back as
+another one-off edit, every number in the same tuning space moved somewhere the player can adjust
+directly without needing another round-trip through code changes. `FishFightConfig`'s own doc
+comments are the primary reference while tuning; this ADR is the record of *why* the current
+defaults are what they are.
+
+Every number here — reel/pull rates, the 6 m escape allowance, band thresholds, haptic
+intervals — is a first-pass, hand-reasoned default, not a play-tested one. That's the explicit
+point of making them config: the player is expected to keep adjusting them directly.
+
+Status: Accepted, pending live confirmation (see the matching `CHECKPOINT.md` entry).
+
+------------------------------------------------------------------------
+
 # ADR-038 --- Rod Owns the Session Start/End Boundary, Not World
 
 ## Decision

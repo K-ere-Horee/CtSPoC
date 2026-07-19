@@ -4104,3 +4104,206 @@ boundary by the player's own design.
   the relocated Calibrate toolbar button is discoverable/usable in the
   phone's top-right corner are all unverified — code-complete and
   typecheck-clean only.
+
+## Fight Difficulty Pass: Tug-of-War, Distance Escape, Tension Haptics, Fight Camera
+
+Date: 2026-07-19.
+
+Requested directly after live play, five asks in one message: "rod
+casting nya kurang jauh sih jujur. also, ketika hook kena fish, camera
+langsung geser lagi ke hook dong biar proses reel nya jadi lebih
+dramatis. kasih getaran haptics continuous juga di hp untuk reel meter
+(ini yang low medium high haptics). juga, rasanya masih terlalu gampang
+dapetin ikan baik fish A, B, C, bahkan Scott. Bikin lebih susah lagi
+dengan reel meter lebih cepet naik ke high tension. untuk itu, perlu ada
+juga mechanism dimana ikannya bisa escape dari reel karena kejauhan."
+Recorded as ADR-039 in `ARCHITECTURE_DECISIONS.md`.
+
+Precondition check: the previous entry's rod-driven session work
+(ADR-038) turned out to be fully landed already — `ResultView`'s
+single-button form, `ContentView`'s parameterless `MainMenuView` call,
+and `WorldViewModel`'s `isFishing`-edge handling were all in place; a
+stale editor diagnostic had suggested otherwise. Nothing needed
+finishing before this pass.
+
+### Shared
+
+- `Shared/Sources/Shared/Models/Gameplay/FishingEvent.swift`: added
+  `reelTensionLow` / `reelTensionMedium` / `reelTensionHigh` — band
+  *transition* events, not a raw tension stream, so the reliable
+  World→Rod write path carries a handful of events per fight rather than
+  30 Hz of telemetry.
+
+### World: FishFightController
+
+- `baseReelTensionRate` 0.5 → 0.85 ("reel meter lebih cepet naik ke
+  high tension") — sustained hard reeling snaps roughly twice as fast.
+- `basePullSpeed` 0.4 → 1.0 — now meaningful in two places (drift AND
+  the new reel-time tug-of-war below).
+- `maxExpectedCastDistance` 10 → 20, matching the new cast physics.
+- `updateFight` gained `hookDistance:`. First fight tick's distance is
+  stored as `fightStartDistance`; exceeding it by
+  `escapeDistanceAllowance` (6 m) resolves `.escaped` — the "spooled"
+  failure ("ikannya bisa escape dari reel karena kejauhan").
+  `fightStartDistance` resets in `resetForNewCast` and `resolve`.
+- New `TensionBand` enum + `tensionBand` computed property (`nil`
+  outside a fight; `< 0.55` low / `0.55..<0.8` medium / `>= 0.8` high).
+
+### World: WorldViewModel
+
+- `castSpeed` 3.6 → 5.0 ("casting nya kurang jauh") — max ballistic
+  range ~13 m → ~24 m.
+- `updateCameraFollow()` now follows the hook through `.fishOnHook` and
+  `.reeling`, not just `.flying` — doc comment rewritten from "temporary
+  debug aid" to intended behavior ("biar proses reel nya jadi lebih
+  dramatis"). All other phases still reset to the player pose.
+- `reelHook(deltaTime:)`: tug-of-war. Player speed minus
+  `fishFight.fishPullSpeed`; net-negative moves the hook *away* while
+  reeling. Empty retrieves unchanged (`fishPullSpeed` is 0 unhooked).
+  With the new constants, Scott out-pulls anything below roughly half
+  reel throttle, while above it tension climbs toward snap — neither
+  extreme is safe for long.
+- Fight tick passes `hookDistanceFromRod()` into `updateFight`.
+- New `syncTensionBand()` runs every tick; sends the matching
+  `FishingEvent` only when `fishFight.tensionBand` changes, tracked in
+  new `lastSentTensionBand`. Cleared silently when the band goes `nil` —
+  fight-ending events already stop Rod's haptics.
+
+### Rod
+
+- `FishingHaptics`: new `FightBand` (interval 0.5 s / 0.28 s / 0.11 s,
+  intensity 0.3 / 0.45 / 0.7 — the product doc's spaced/regular/rapid
+  rhythm tiers), set by the three new events, rendered by
+  `fightPulse(now:)` on the same every-motion-sample callback as
+  `interestPulse`. All fight-ending events clear it; new `stopFight()`
+  clears it on `HookPhase` leaving the fight phases (same
+  belt-and-suspenders as `stopInterest()`).
+- `HapticManager.fightTick(intensity:sharpness:)` — band-agnostic
+  single tap; the band decides the parameters.
+- `RodViewModel`: `handle(.hookPhase)` calls `stopFight()` for
+  non-fight phases; `updateAction()` calls `fightPulse()` alongside
+  `interestPulse()`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-039.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: tension-safe-zone section updated
+  (new formula block including the distance escape, tug-of-war, new
+  constants); new tension-band-haptics and fight-camera subsections; the
+  old "Debug: camera follows the hook mid-flight" section rewritten as
+  intended behavior; flow diagram's `updateFight` signature updated.
+
+### Verification
+
+- Rebuilt `Shared` as both `arm64-apple-macosx26.0` and
+  `arm64-apple-ios26.0-simulator` modules from
+  `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: full `World/World`
+  file list (macOS) and full `Rod/Rod` file list (iOS simulator) — both
+  clean.
+- Not run: any live session. Every difficulty number
+  (`baseReelTensionRate` 0.85, `basePullSpeed` 1.0, 6 m allowance, band
+  thresholds, pulse intervals, `castSpeed` 5.0) is a reasoned first
+  pass, not play-tested — the whole point of this pass is feel, and
+  feel is unverified. Also unverified live: whether the camera following
+  the fight reads as dramatic rather than disorienting when the fish
+  drags line out fast, and whether high-band 0.11 s haptic taps read as
+  "continuous" on real hardware.
+
+## Fight Rebalance and Config Extraction (Corrects Previous Entry)
+
+Date: 2026-07-19.
+
+Live-play feedback on the previous entry's numbers, reported directly:
+"kayanya reel nya terlalu susah deh, it's even impossible untuk grab
+fish A tanpa tensionnya ketinggian. juga, kalo tension kerendahan
+(slack), reset langsung bobber ke posisi awal (alias ga hookInWater
+lagi). bisa ga dibikin di dalam config file beserta docs nya, agar aku
+bisa tuning manual?" Amended ADR-039 in place (not a new ADR number —
+same still-uncommitted feature, same session) rather than filing a
+follow-up ADR.
+
+### The actual bug: `baseReelTensionRate` 0.85 was unplayable
+
+Worked the numbers by hand for `fish_a` (weakest tier, resistance 0.35,
+`sizeRatio` 0...1): `effectiveFishPullRate` ranges ~0.15-0.20. At
+`reelSpeed` 1.0, `reelPull` was `0.85` — so far past the fish's own pull
+that tension went from `initialTension` (0.5) to 1.0 (line break) in
+under a second, regardless of how carefully the player reeled. Confirmed
+this was the actual reported symptom, not a vaguer "feels hard."
+
+### World: FishFightController
+
+- `baseReelTensionRate` 0.85 → **0.55**. Re-derived time-to-snap at
+  `reelSpeed` 0.3/0.6/1.0 against `fish_a`: 0.85 gave ~0.7-0.9s at any
+  meaningful reel speed (unplayable); 0.55 gives near-neutral at 0.3,
+  ~2.8-3.9s at 0.6, ~1.25-1.44s at 1.0 — a real curve where reel-speed
+  modulation is an actual skill, not "any reeling loses."
+- `resolveFightFailure` (actually in `WorldViewModel`, see below) — noted
+  here since it's the other player-reported bug: `.escaped` previously
+  went to `.hookInWater` (kept searching); `.lineBreak` went to `.idle`.
+  Both now go to `.idle` — "ga hookInWater lagi." Both failure causes
+  (slack-tension and the previous entry's distance-spooled escape) share
+  the same `FightFailure.escaped` case, so both get this treatment; there
+  was no clean way to split them without threading a failure subtype
+  through, and nothing suggested only one should differ.
+
+### Shared: FishFightConfig (new)
+
+- Added `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: a
+  `Codable`/`Equatable` struct collecting every fight-tuning number that
+  was previously a private constant scattered across
+  `FishFightController` (World) and `FishingHaptics`' `FightBand` enum
+  (Rod) — `initialTension`, `baseFishPullRate`, `baseReelTensionRate`,
+  `basePullSpeed`, `escapeDistanceAllowance`, `tensionBandMediumThreshold`,
+  `tensionBandHighThreshold`, and nine haptic parameters (interval/
+  intensity/sharpness × low/medium/high). Every field is a `var` with an
+  inline doc comment explaining what it does and, where relevant, how it
+  interacts with the others (e.g. `baseReelTensionRate`'s comment walks
+  through the net-tension formula directly). Meant to be hand-edited —
+  "config file beserta docs nya... agar aku bisa tuning manual."
+- `FishFightController.init` gained `config: FishFightConfig =
+  FishFightConfig()`; every private constant it used to hardcode now
+  reads `config.xxx`. `maxExpectedCastDistance` deliberately stayed a
+  private constant, not part of the config — it's cast physics
+  (`WorldViewModel.castSpeed`-derived), not fight tuning.
+- `FishingHaptics.init` gained the same `config:` parameter. `FightBand`
+  is now a plain 3-case enum with no properties of its own; a new
+  private `parameters(for:)` looks up interval/intensity/sharpness from
+  `config`. Both `FishFightController()` and `FishingHaptics()`'s
+  existing zero-argument call sites (`WorldViewModel.swift`,
+  `RodApp.swift`) are unaffected — they pick up `FishFightConfig()`'s
+  defaults automatically.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: amended ADR-039 in place — the
+  `baseReelTensionRate` decision now shows both the original (0.85) and
+  corrected (0.55) values with the worked time-to-snap table; added the
+  escape-reset-to-idle decision and the config-extraction decision;
+  Rationale extended with the correction's own reasoning and the
+  time-to-snap table.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: tension-safe-zone formula block
+  updated (config-qualified names, corrected 0.55, the shared
+  escape→idle line); new "Fish Fight Tuning Config" subsection; fixed a
+  stale flow-diagram line that still said `.escaped -> HookPhase
+  .hookInWater` (missed in the previous entry's own docs pass).
+
+### Verification
+
+- Rebuilt `Shared` (now including `FishFightConfig.swift`) as both
+  `arm64-apple-macosx26.0` and `arm64-apple-ios26.0-simulator` modules
+  from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: full `World/World`
+  file list (macOS) and full `Rod/Rod` file list (iOS simulator) — both
+  clean.
+- The 0.55 time-to-snap numbers above were computed with a standalone
+  Python calculation (not run in the app) to sanity-check the fix before
+  writing it up — not a substitute for actually playing it.
+- Not run: any live session. Whether 0.55 actually feels right (vs.
+  needing to land somewhere between 0.55 and the original 0.5), whether
+  the escape-to-idle change feels appropriately punishing rather than
+  tedious, and whether the extracted config is actually convenient to
+  tune from are all unverified — this is explicitly a config the player
+  is expected to keep adjusting directly, not a claim of correct final
+  balance.

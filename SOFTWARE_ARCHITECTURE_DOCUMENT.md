@@ -474,14 +474,15 @@ unclamped, exposed below the clamp) measured the true raw bias at
 still empirical rather than derived from rig geometry, with a small ~6°
 residual pending the next live reading.
 
-**Debug: camera follows the hook mid-flight.** `WorldViewModel.
-updateCameraFollow()`, called every `tick()`, swings `playerCamera` to
-trail behind/above the hook and look directly at it while
-`hookPhase == .flying`, snapping back to the normal fixed player pose
-(`resetCameraToPlayerPose(_:)`) the instant flight ends. Temporary — for
-visually judging cast direction/distance during tuning, not intended
-player-facing behavior. Does not affect the launch-heading clamp above,
-since that's computed once at launch before the hook (and camera) start
+**Camera follows the hook.** `WorldViewModel.updateCameraFollow()`,
+called every `tick()`, swings `playerCamera` to trail behind/above the
+hook and look directly at it while `hookPhase` is `.flying`,
+`.fishOnHook`, or `.reeling`, snapping back to the normal fixed player
+pose (`resetCameraToPlayerPose(_:)`) in every other phase. Began as a
+flight-only debug aid; promoted to intended player-facing behavior for
+the whole cast-and-fight arc by ADR-039 ("biar proses reel nya jadi
+lebih dramatis"). Does not affect the launch-heading clamp above, since
+that's computed once at launch before the hook (and camera) start
 moving.
 
 ------------------------------------------------------------------------
@@ -538,8 +539,8 @@ state directly and drives the controller from `tick(deltaTime:)`:
 .hookInWater                 -> fishFight.updateSearching(deltaTime:)
   -> returns true              -> HookPhase .fishOnHook, send .fishBite
 .fishOnHook / .reeling       -> reeling ? reelHook() : driftHookAway()
-  (merged switch case)       -> fishFight.updateFight(deltaTime:, isReeling:, reelSpeed:)
-  -> returns .escaped          -> HookPhase .hookInWater, send .fishEscaped
+  (merged switch case)       -> fishFight.updateFight(deltaTime:, isReeling:, reelSpeed:, hookDistance:)
+  -> returns .escaped          -> hook disabled, HookPhase .idle, send .fishEscaped (ADR-039)
   -> returns .lineBreak        -> hook disabled, HookPhase .idle, send .lineBreak
 reelHook() reaches rod       -> fishFight.resolveCatch(), send .catchFish
   (hasFishOnHook)
@@ -565,31 +566,76 @@ adding a species is a one-line addition there.
 keeps tension in a safe zone; sustained tension too high *or* too low
 loses the fish. `FishFightController.lineTension: Float` (0...1) starts at
 `initialTension` (0.5) on a bite and updates every tick in
-`updateFight(deltaTime:isReeling:reelSpeed:)`:
+`updateFight(deltaTime:isReeling:reelSpeed:hookDistance:)`:
 
 ```text
-reelPull = isReeling ? reelSpeed * baseReelTensionRate(0.5) : 0
+reelPull = isReeling ? reelSpeed * config.baseReelTensionRate(0.55) : 0
 lineTension += (reelPull - effectiveFishPullRate) * deltaTime
-effectiveFishPullRate = baseFishPullRate(0.15) * (1 + resistance)
+effectiveFishPullRate = config.baseFishPullRate(0.15) * (1 + resistance)
 
+hookDistance > fightStartDistance + config.escapeDistanceAllowance(6 m)
+                 -> .escaped (fish took too much line — ADR-039)
 lineTension <= 0 -> .escaped (line went slack)
 lineTension >= 1 -> .lineBreak (reeled too hard)
+
+Either .escaped case -> hook disabled, HookPhase .idle (a fresh cast is required —
+                          ADR-039's revision; previously only .lineBreak did this)
 ```
+
+All the named constants above (`initialTension`, `baseFishPullRate`,
+`baseReelTensionRate`, `basePullSpeed`, `escapeDistanceAllowance`, and the
+tension-band thresholds/haptic parameters below) live in `FishFightConfig`
+(Shared, new) — see "Fish Fight Tuning Config" below.
 
 Not reeling drains tension toward 0 (the fish is winning); reeling raises
 it, and reeling too hard for too long pushes it past 1. The fish also
 physically drags the hook: `FishFightController.fishPullSpeed: Float`
-(species-scaled m/s, zero unless hooked) is read by
-`WorldViewModel.driftHookAway(deltaTime:)`, which moves the hook entity
-away from the rod along the same rod-to-hook axis
-`reelHook(deltaTime:)` already uses, just reversed — the controller
-publishes a speed only, it never touches RealityKit. Reeling still closes
-that same distance via the existing `reelHook`/catch-distance logic, so
-tension and physical hook position now move together: ignoring a hooked
-fish both drains tension *and* visibly lets it swim away with the hook.
-Species `resistance` scales `effectiveFishPullRate` and `fishPullSpeed`
-together, so a tougher fish both drains tension faster and drags the hook
-away faster when not countered.
+(species-scaled m/s, `config.basePullSpeed` 1.0, zero unless hooked) is
+read by `WorldViewModel.driftHookAway(deltaTime:)` while the player
+rests, and — ADR-039's tug-of-war — *subtracted from the player's reel
+speed inside `reelHook(deltaTime:)`* while reeling: a net-negative speed
+moves the hook away even mid-reel, so a strong fish gains line against
+weak reeling and can win outright via the distance escape above. The
+controller publishes a speed only, it never touches RealityKit. Tension
+and physical hook position move together: ignoring a hooked fish drains
+tension *and* lets it swim away; over-reeling snaps the line;
+under-reeling loses the tug-of-war. Species `resistance` scales
+`effectiveFishPullRate` and `fishPullSpeed` together, so a tougher fish is
+harder on every axis at once.
+
+**Tension-band haptics (ADR-039).** `FishFightController.tensionBand`
+(`nil` outside a fight; below `config.tensionBandMediumThreshold` is low,
+below `config.tensionBandHighThreshold` is medium, at/above it is high)
+is watched by `WorldViewModel.syncTensionBand()` every tick, which sends
+`FishingEvent.reelTensionLow/Medium/High` only on band *transitions* —
+never streaming raw tension over the reliable World→Rod path. Rod's
+`FishingHaptics` stores the band and pulses continuously at the band's
+config-driven rhythm (default spaced 0.5 s / regular 0.28 s / rapid
+0.11 s taps, intensity rising with the band), driven by the same
+every-motion-sample callback as the interest pulse and cleared by
+fight-ending events plus a `stopFight()` guard on `HookPhase` leaving the
+fight phases. This is the product doc's "resistance through rhythm as
+well as intensity" spec, keyed to live fight state rather than static
+fish size.
+
+**Fish Fight Tuning Config (ADR-039).**
+`Shared/Sources/Shared/Gameplay/FishFightConfig.swift` collects every
+number above — line-tension constants, the distance-escape allowance,
+the two tension-band thresholds, and all nine Rod haptic-band parameters
+(interval/intensity/sharpness × low/medium/high) — into one `Codable`/
+`Equatable` struct, each field documented inline, meant to be hand-edited
+directly rather than read as opaque defaults. `FishFightController.init`
+and `FishingHaptics.init` both take `config: FishFightConfig =
+FishFightConfig()`; existing zero-argument call sites are unaffected, and
+both classes read the *same* config values so World's simulated
+difficulty and Rod's haptic rhythm can't drift apart. `maxExpectedCastDistance`
+stayed a private `FishFightController` constant — it's cast physics tied
+to `WorldViewModel.castSpeed`, not fight tuning.
+
+**Fight camera (ADR-039).** `updateCameraFollow()` tracks the hook
+through `.flying`, `.fishOnHook`, and `.reeling` — the whole cast and
+fight are watched up close — snapping back to the fixed player pose in
+every other phase.
 
 `resistance` itself (ADR-030) is not read straight off the species — it is
 scaled by how big *this* catch rolled within the species' own range, so two

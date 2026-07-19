@@ -48,7 +48,9 @@ final class WorldViewModel: ObservableObject {
     /// rather than at world origin (which is now the middle of an 80x60 m lake).
     private let waterHeight: Float = 0
     private let gravity: Float = 4.0
-    private let castSpeed: Float = 3.6
+    /// Raised 3.6 -> 5.0 (ADR-039, "rod casting nya kurang jauh"): max-power ballistic range goes
+    /// from ~13 m to ~24 m. `FishFightController.maxExpectedCastDistance` was retuned to match.
+    private let castSpeed: Float = 5.0
     private let reelSpeed: Float = 3.0
 
     /// Half-angle (radians) of the allowed cast cone around the camera's fixed forward direction
@@ -136,6 +138,8 @@ final class WorldViewModel: ObservableObject {
     private var hookVelocity = SIMD3<Float>.zero
     private var castLaunchPosition = SIMD3<Float>.zero
     private var pendingCastSolution: CastSolution?
+    /// Last tension band sent to Rod (ADR-039); `nil` outside a fight. See `syncTensionBand()`.
+    private var lastSentTensionBand: FishFightController.TensionBand?
     private var hasStarted = false
 
     /// Drives the simulation from RealityKit's own per-frame scene update, with a real
@@ -306,15 +310,17 @@ final class WorldViewModel: ObservableObject {
         )
     }
 
-    /// Debug aid: while the hook is mid-flight, swing the camera to trail behind and above it,
-    /// looking straight at it, so its actual world position/trajectory is visible instead of a
-    /// small yellow dot far off in the static player view. Snaps back to the normal player pose
-    /// the moment `.flying` ends (splash, or any other phase). Temporary, for judging cast
-    /// direction/distance by eye — not the intended player-facing camera behavior.
+    /// Swings the camera to trail behind and above the hook, looking straight at it. Originally a
+    /// flight-only debug aid; now also active through the whole fight (`.fishOnHook`/`.reeling`,
+    /// ADR-039 — "camera langsung geser lagi ke hook biar proses reel nya jadi lebih dramatis"),
+    /// so the tug-of-war (fish dragging line out, player reeling it back) is watched up close
+    /// instead of as a distant dot. Snaps back to the player pose for every other phase —
+    /// including `.result` and the splash-wait, so the camera returns home between bites.
     private func updateCameraFollow() {
         guard let playerCamera, let hookEntity else { return }
 
-        guard hookPhase == .flying else {
+        let followsHook = hookPhase == .flying || hookPhase == .fishOnHook || hookPhase == .reeling
+        guard followsHook else {
             resetCameraToPlayerPose(playerCamera)
             return
         }
@@ -398,17 +404,50 @@ final class WorldViewModel: ObservableObject {
             if let failure = fishFight.updateFight(
                 deltaTime: deltaTime,
                 isReeling: rodState.action == .reeling,
-                reelSpeed: rodState.reelSpeed
+                reelSpeed: rodState.reelSpeed,
+                hookDistance: hookDistanceFromRod()
             ) {
                 resolveFightFailure(failure)
             }
         }
+
+        syncTensionBand()
     }
 
+    private func hookDistanceFromRod() -> Float {
+        guard let controllerEntity, let hookEntity else { return 0 }
+        return simd_length(controllerEntity.position - hookEntity.position)
+    }
+
+    /// Sends a `FishingEvent` to Rod whenever the fight's tension band changes (ADR-039), so Rod
+    /// can pulse continuously at the right rhythm without World streaming raw tension. Cleared
+    /// without sending when the fight ends — the fight-ending events (`fishEscaped`/`catchFish`/
+    /// `lineBreak`) already stop Rod's fight haptics on their own.
+    private func syncTensionBand() {
+        let band = fishFight.tensionBand
+        guard band != lastSentTensionBand else { return }
+        lastSentTensionBand = band
+
+        guard let band else { return }
+        let event: FishingEvent = switch band {
+        case .low: .reelTensionLow
+        case .medium: .reelTensionMedium
+        case .high: .reelTensionHigh
+        }
+        Task { await send(.fishingEvent(event)) }
+    }
+
+    /// Both failures now reset the hook to `.idle` (a fresh cast is required) instead of
+    /// `.escaped` staying `.hookInWater` — requested directly: "kalo tension kerendahan (slack),
+    /// reset langsung bobber ke posisi awal (alias ga hookInWater lagi)." A slack-tension escape
+    /// and a distance-spooled escape (ADR-039) both report as `.escaped`; both get the same
+    /// treatment, since in either case the line/hook is no longer somewhere fishing can sensibly
+    /// continue from without recasting.
     private func resolveFightFailure(_ failure: FishFightController.FightFailure) {
         switch failure {
         case .escaped:
-            setHookPhase(.hookInWater)
+            hookEntity?.isEnabled = false
+            setHookPhase(.idle)
             Task { await send(.fishingEvent(.fishEscaped)) }
         case .lineBreak:
             hookEntity?.isEnabled = false
@@ -597,9 +636,20 @@ final class WorldViewModel: ObservableObject {
             return
         }
 
-        let speed = max(0.35, rodState.reelSpeed * reelSpeed)
-        let step = min(distance, speed * deltaTime)
-        hookEntity.position += simd_normalize(directionToRod) * step
+        // Tug-of-war (ADR-039): the hooked fish's pull speed is subtracted from the player's reel
+        // speed, so a strong fish gains line even while the player is actively (but weakly)
+        // reeling — net-negative speed moves the hook AWAY. Combined with the distance-escape
+        // check in `updateFight`, weak reeling against a strong fish is now a losing strategy
+        // rather than a slow guaranteed win. Empty retrieves (`fishPullSpeed` is 0 with no fish)
+        // behave exactly as before.
+        let playerSpeed = max(0.35, rodState.reelSpeed * reelSpeed)
+        let netSpeed = playerSpeed - fishFight.fishPullSpeed
+        if netSpeed >= 0 {
+            let step = min(distance, netSpeed * deltaTime)
+            hookEntity.position += simd_normalize(directionToRod) * step
+        } else {
+            hookEntity.position -= simd_normalize(directionToRod) * (-netSpeed * deltaTime)
+        }
 
         // Only a hooked fish makes this a "fight" reel. Retrieving an empty
         // line during `.hookInWater` must stay `.hookInWater` — otherwise
