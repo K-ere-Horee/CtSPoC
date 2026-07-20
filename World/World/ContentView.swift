@@ -27,7 +27,12 @@ struct ContentView: View {
                 MainMenuView(connectionState: viewModel.connectionState)
             }
 
-            if viewModel.screen == .playing, viewModel.hookPhase == .result, let result = fishFight.lastCatchResult {
+            if viewModel.screen == .playing, viewModel.isShowingCatchCutscene {
+                CatchCutsceneView()
+            }
+
+            if viewModel.screen == .playing, viewModel.hookPhase == .result,
+                !viewModel.isShowingCatchCutscene, let result = fishFight.lastCatchResult {
                 ResultView(result: result) {
                     viewModel.sounds.uiClick()
                     viewModel.continueFishing()
@@ -91,62 +96,69 @@ struct ContentView: View {
             }
             */
 
-            LineTensionView(
-                isFighting: fishFight.hasFishOnHook,
-                tension: fishFight.lineTension
-            )
+            // Hidden during the catch cutscene (ADR-048) so the routine gameplay HUD doesn't
+            // compete with the dramatic "CATCH!" moment — RealityView/its fps+connection overlay
+            // above stays visible, only this stat block fades.
+            Group {
+                LineTensionView(
+                    isFighting: fishFight.hasFishOnHook,
+                    tension: fishFight.lineTension
+                )
 
-            GroupBox {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Caught")
-                        Spacer()
-                        Text("\(fishFight.caughtCount)")
-                            .bold()
-                    }
-
-                    HStack {
-                        Text("Level \(fishFight.currentLevel)")
-                        Spacer()
-                        if let progress = fishFight.progressTowardNextLevel {
-                            Text("\(progress.caught)/\(progress.needed) to next tier")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("All tiers unlocked")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .font(.caption)
-
-                    if let result = fishFight.lastCatchResult {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text(result.outcome.rawValue)
-                                .foregroundStyle(result.outcome == .caught ? .green : .secondary)
+                            Text("Caught")
                             Spacer()
-                            Text(String(format: "%@ \u{2022} %.1f kg \u{2022} %.0f cm", result.speciesName, result.weight, result.length))
-                                .foregroundStyle(.secondary)
+                            Text("\(fishFight.caughtCount)")
+                                .bold()
+                        }
+
+                        HStack {
+                            Text("Level \(fishFight.currentLevel)")
+                            Spacer()
+                            if let progress = fishFight.progressTowardNextLevel {
+                                Text("\(progress.caught)/\(progress.needed) to next tier")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("All tiers unlocked")
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         .font(.caption)
-                    } else {
-                        Text("No catch attempts yet")
+
+                        if let result = fishFight.lastCatchResult {
+                            HStack {
+                                Text(result.outcome.rawValue)
+                                    .foregroundStyle(result.outcome == .caught ? .green : .secondary)
+                                Spacer()
+                                Text(String(format: "%@ \u{2022} %.1f kg \u{2022} %.0f cm", result.speciesName, result.weight, result.length))
+                                    .foregroundStyle(.secondary)
+                            }
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                        } else {
+                            Text("No catch attempts yet")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
 
-            /*
-            CastMeterView(
-                castSolution: viewModel.rodState.castSolution,
-                power: viewModel.rodState.castPower,
-                phase: viewModel.rodState.motionPhase
-            )
-             */
+                /*
+                CastMeterView(
+                    castSolution: viewModel.rodState.castSolution,
+                    power: viewModel.rodState.castPower,
+                    phase: viewModel.rodState.motionPhase
+                )
+                 */
 
-            if let lastError = viewModel.lastError {
-                Text(lastError).foregroundStyle(.red)
+                if let lastError = viewModel.lastError {
+                    Text(lastError).foregroundStyle(.red)
+                }
             }
+            .opacity(viewModel.isShowingCatchCutscene ? 0 : 1)
+            .animation(.easeOut(duration: 0.2), value: viewModel.isShowingCatchCutscene)
         }
         .padding(20)
         .onAppear { viewModel.start() }
