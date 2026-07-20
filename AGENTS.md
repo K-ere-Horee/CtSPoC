@@ -268,41 +268,12 @@ Do not skip milestones.
 
 # Current Roadmap
 
-Sprint 0
-
-Project cleanup
-
-Sprint 1
-
-Shared models
-
-Sprint 2
-
-Nearby Interaction session
-
-Sprint 3
-
-CoreMotion
-
-Sprint 4
-
-RodState
-
-Sprint 5
-
-Synchronization
-
-Sprint 6
-
-RealityKit visualization
-
-Sprint 7
-
-Gesture detection
-
-Sprint 8
-
-Fishing gameplay
+The original Sprint 0-8 roadmap (project cleanup through fishing gameplay)
+shipped long ago; see `Archive/COMPLETED_SPRINT_ROADMAP.md` for the historical
+plan. The project is now in ongoing Gameplay V1 refinement — read
+`CHECKPOINT.md` (chronological history) and `ARCHITECTURE_DECISIONS.md` (ADR
+log) for current state, and `GAMEPLAY_ARCHITECTURE_V1.md` for the product
+contract.
 
 ------------------------------------------------------------------------
 
@@ -382,8 +353,11 @@ Rules:
 -   World owns the cast HUD and renders live power from `RodState.castPower`.
 -   `RodState.castSolution` is the only cross-process cast result; World must
     not re-resolve a cast from sensor input.
--   Nearby Interaction spatial distance/direction remain the rod's spatial
-    transform source.
+-   `RodState.directionX/Y/Z`/`distance` (Nearby Interaction) remain spatial-only
+    fields, transmitted for potential future use. As of ADR-041, no current
+    gameplay or rendering code reads them — the rod root's actual position
+    comes from a fixed camera-relative offset (ADR-019), not live NI ranging.
+    Do not reintroduce NI-driven rod positioning without a new ADR.
 -   Cast direction, power, and distance must never overwrite rod spatial
     position or orientation.
 -   The rod root remains fixed relative to the controller pose while the hook

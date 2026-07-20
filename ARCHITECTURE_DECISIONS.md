@@ -11,6 +11,65 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-041 --- Nearby Interaction Is Present but Not Load-Bearing for V1 Gameplay
+
+## Decision
+
+Confirmed by direct code audit, not inference from docs: Rod still owns and runs a Nearby
+Interaction session exactly as ADR-014 describes (`NearbyInteractionManager.swift` populates
+`SpatialState.directionX/Y/Z`/`distance`, which flow into `RodState` and transmit every ~30 Hz
+sample), but **no gameplay, rendering, or connection-gating code path anywhere in Rod or World
+reads those fields.** Grepped every plausible consumer:
+
+- `WorldViewModel.updateRodPose()` sets `controllerEntity.position` from the fixed
+  `dockAnchorPosition` constant and `controllerEntity.orientation` from `RodState.orientation`
+  only (ADR-019) — zero reference to `rodState.distance`/`direction`.
+- `CastResolver`/`RodMotionInterpreter` derive cast direction/power from corrected orientation and
+  (ADR-033) live rig geometry — zero reference to NI's spatial fields.
+- `hookDistanceFromRod()`, which drives the ADR-039 fight/escape-distance mechanic, is
+  `simd_length(controllerEntity.position - hookEntity.position)` — a RealityKit scene-space
+  calculation between two entities, unrelated to NI's real-world ranging.
+- `connectionState` (which gates whether the player can start fishing) is set purely from the
+  CoreBluetooth transport's own `onStateChange` callback; `spatialStatus` (NI's own status) is a
+  separate published property read in exactly one place on each device — a debug status/value row
+  in `ContentView.swift` (Rod: `spatialStatus` label plus the direction/distance debug rows;
+  World: the same distance/direction debug rows). Nothing gates on it.
+
+**Decision: leave the Nearby Interaction code in place** (Rod keeps owning the session per
+ADR-014; `SpatialState`/`RodState.directionX/Y/Z`/`distance` are unchanged) rather than removing
+it — a removal is a separate, larger-scope decision not made here. This ADR only corrects
+`AGENTS.md`'s prior "Casting State and Transform Contract" wording, which claimed *"Nearby
+Interaction spatial distance/direction remain the rod's spatial transform source."* That statement
+was accurate before ADR-019, when `updateRodPose()` did position the rod root from live NI
+distance/direction — ADR-019 deliberately decoupled that (to fix the rod visibly moving during a
+cast) and nothing since has restored NI to that role. The doc line was never updated to reflect
+its own project's later decision.
+
+## Rationale
+
+Raised directly by the player after reviewing a separate chat's analysis questioning whether NI
+could ever be "load-bearing" given CoreBluetooth's RSSI-based ranging can't match NI's UWB
+precision/direction — a fair technical point, but the actual question that mattered was whether
+today's V1 gameplay uses NI's precision at all, not whether it theoretically could. Player's own
+framing once the audit above confirmed it doesn't: **"NI awalnya akan dipakai, tapi ternyata
+transport protocol pakai CoreBluetooth aja cukup untuk ngirim data sehingga spatial controller
+belum akan dipakai di fase development ini"** (NI was originally going to be used, but it turned
+out CoreBluetooth transport alone is enough to send data, so the spatial-controller aspect isn't
+going to be used in this phase of development). This project's own name and `ADR-015`'s long-term
+vision ("reusable spatial controller framework" for a tennis racket, golf club, sword, etc.) are
+explicitly built on NI's distance/direction sensing being load-bearing eventually — this ADR does
+not retire that vision, it records that the *current* V1 fishing gameplay never ended up needing
+it, and that the Nearby Interaction plumbing is fully intact and available the moment a future
+feature (e.g. a physical-proximity-driven effect) actually calls for it.
+
+Explicitly not decided here: whether to ever remove NI, whether `AGENTS.md`/`CLAUDE.md`'s framing
+of this project as a "spatial controller" PoC should change, or whether NI's debug rows should be
+trimmed. Documentation-only correction of one stale claim, not a scope change.
+
+Status: Accepted
+
+------------------------------------------------------------------------
+
 # ADR-040 --- World-Side Audio Mirrors the Rod Haptics Router
 
 ## Decision
@@ -1760,7 +1819,9 @@ physical-controller model while allowing World to run as a native macOS app.
 
 No project may import the other project.
 
-Status: Accepted
+Status: Accepted. Ownership as described here is still correct — Rod still runs the session
+exactly this way. See ADR-041: the resulting spatial state is not currently read by any gameplay
+or rendering code, only by debug display; this ADR's ownership rule is unaffected either way.
 
 ------------------------------------------------------------------------
 

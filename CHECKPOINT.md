@@ -4394,29 +4394,27 @@ species was never the complaint.
   frustrating, are both unverified — same explicit expectation as every
   other entry in this config: the player is expected to keep tuning it.
 
-## World-Side Audio Integration (ADR-040)
+## Session Handoff: WINDOW_1.md
 
-Date: 2026-07-20.
+Date: 2026-07-19.
 
-New session, new branch (`feat/audio-integration`, cut from a freshly
-pulled `main` after aborting an unrelated stuck merge on
-`feat/sfx-integration`). User supplied 8 recorded sound effects in a
-repo-root `SFX/` folder and asked for them to be wired to "all the
-features we have."
+Requested directly as the context window neared its limit: "since
+context windownya udah mau abis, bisa ga simpen semua progress kedalam
+1 .md baru, namanya WINDOW_1 aja" (since the context window is about
+to run out, can all the progress be saved into one new .md, just call
+it WINDOW_1). Documentation-only — no Swift/project files touched.
 
-### Scope
-
-World-only audio (Rod keeps haptics, no phone-side sound, per explicit
-user confirmation). Three user decisions locked in before implementation:
-lake ambience plays across both the main menu and gameplay; fish-escaped
-and line-break reuse the water-splash sound (no dedicated asset
-recorded); Rod is out of scope.
-
-### Assets
-
-Moved/renamed from repo-root `SFX/` into `World/World/Assets/SFX/`
-(both Xcode projects use Xcode 16 synchronized root groups, so this
-alone bundles them — no `.pbxproj` edits):
+Added `WINDOW_1.md` (project root): a navigation summary covering
+ADR-030 through ADR-039, not a replacement for the full detail already
+in `ARCHITECTURE_DECISIONS.md`/`CHECKPOINT.md`. Content: a table
+pointing to every ADR from this window, an expanded section on
+ADR-039's two live-tested corrections (reel tension rate, tier
+differentiation) since that's the freshest and most likely area to
+need further tuning, the still-open ADR-030/031 numbering-collision
+issue, and an explicit statement of what "verified" has meant
+throughout this window (`swiftc -typecheck` on macOS + iOS-simulator
+targets only — no `xcodebuild`, no device/simulator run, except the
+specific live-play moments already quoted in the ADRs).
 
 - `Click Sound.wav` -> `ui_click.wav`
 - `Fishing rod (Throw).wav` -> `cast_throw.wav`
@@ -4513,3 +4511,182 @@ file) and removed the now-empty repo-root `SFX/`.
   behavior). iOS-device audio behavior — the silent switch,
   `AVAudioSession` interruptions from calls or backgrounding — is
   entirely unverified and needs on-device testing with Rod.
+
+
+## Session Handoff: WINDOW_1.md
+
+Date: 2026-07-19.
+
+Requested directly as the context window neared its limit: "since
+context windownya udah mau abis, bisa ga simpen semua progress kedalam
+1 .md baru, namanya WINDOW_1 aja" (since the context window is about
+to run out, can all the progress be saved into one new .md, just call
+it WINDOW_1). Documentation-only — no Swift/project files touched.
+
+Added `WINDOW_1.md` (project root): a navigation summary covering
+ADR-030 through ADR-039, not a replacement for the full detail already
+in `ARCHITECTURE_DECISIONS.md`/`CHECKPOINT.md`. Content: a table
+pointing to every ADR from this window, an expanded section on
+ADR-039's two live-tested corrections (reel tension rate, tier
+differentiation) since that's the freshest and most likely area to
+need further tuning, the still-open ADR-030/031 numbering-collision
+issue, and an explicit statement of what "verified" has meant
+throughout this window (`swiftc -typecheck` on macOS + iOS-simulator
+targets only — no `xcodebuild`, no device/simulator run, except the
+specific live-play moments already quoted in the ADRs).
+
+No verification needed beyond confirming the file exists and reads
+correctly — pure documentation, no code path affected.
+
+## Documentation Cleanup: Archive Folder for Superseded/Stale Docs
+
+Date: 2026-07-20.
+
+Requested directly: with a full read-through of `CHECKPOINT.md`,
+`ARCHITECTURE_DECISIONS.md`, `SOFTWARE_ARCHITECTURE_DOCUMENT.md`, and
+`SPATIAL_CONTROLLER_DOCUMENT.md` just completed, the player asked which
+project-root `.md` files had become redundant/irrelevant, since the root
+was accumulating too many of them. After giving that assessment, asked to
+tidy up and move everything unused into an `Archive/` folder. Documentation-
+only — no Swift, Xcode project, asset, or runtime structure changed.
+
+### New `Archive/` folder
+
+- `Archive/SPATIAL_CONTROLLER_DOCUMENT.md` (moved via `git mv`): the original
+  pre-gameplay spatial-controller pitch. Fully superseded by
+  `SOFTWARE_ARCHITECTURE_DOCUMENT.md` (technical) and
+  `GAMEPLAY_ARCHITECTURE_V1.md` (product); its own `RodState` code snippet had
+  gone stale (missing `orientation`, `castSolution`, `action`, `reelSpeed`,
+  `motionPhase`, `castPower`, `isFishing` — all added since) and its
+  Milestone 1-7 roadmap shipped long ago.
+- `Archive/WINDOW_1.md` (moved via `git mv`): the prior session's
+  context-window handoff summary (ADR-030 through ADR-039). Its own header
+  already called itself "not a replacement" for `CHECKPOINT.md`/
+  `ARCHITECTURE_DECISIONS.md` — archived once confirmed its content is fully
+  captured in both. Future handoff notes of this shape should be archived the
+  same way rather than accumulating at the project root.
+- `Archive/COMPLETED_SPRINT_ROADMAP.md` (new): the Sprint 0-8 roadmap
+  extracted out of `AGENTS.md` ("Current Roadmap") and
+  `SOFTWARE_ARCHITECTURE_DOCUMENT.md` ("Implementation Plan") — both carried
+  a near-identical, fully-completed copy of the same list. All eight sprints
+  shipped long ago; current state lives in `CHECKPOINT.md`/
+  `ARCHITECTURE_DECISIONS.md` instead.
+- `Archive/README.md` (new): explains what's archived and why, and points
+  back to the live docs for current state.
+
+### Live docs updated
+
+- `AGENTS.md`: "Current Roadmap" section replaced with a short pointer to
+  `Archive/COMPLETED_SPRINT_ROADMAP.md` and the live docs that now track
+  actual state.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: "Implementation Plan" section
+  (Sprint 0-8) replaced the same way.
+- `CLAUDE.md`: "Project Structure" tree updated — removed the
+  `SPATIAL_CONTROLLER_DOCUMENT.md` entry, removed a stale `SESSION_MEMORY.md`
+  reference (that file no longer exists; its role was absorbed into
+  `CHECKPOINT.md` per this file's own much earlier "Session Memory
+  Restoration"/"Terminal Session Memory" entries), and added an `Archive/`
+  line. Also fixed an unrelated but real staleness bug found while editing
+  this section: `CLAUDE.md`'s "Tech Stack" and folder-comment lines still
+  said `MultipeerConnectivity`/"Multipeer client"/"Multipeer host" for
+  transport, even though ADR-035 fully replaced it with CoreBluetooth
+  (confirmed at the time via `grep` that zero `import MultipeerConnectivity`
+  remains anywhere in the repo) — updated to describe CoreBluetooth
+  (Rod = BLE peripheral, World = BLE central) instead, since this is the
+  main file governing agent behavior and was actively wrong about the
+  current transport layer.
+
+### Explicitly not touched in this pass
+
+- `ARCHITECTURE_DECISIONS.md`'s genuine ADR-030/ADR-031 numbering collision
+  (two unrelated ADR-030s, two unrelated ADR-031s — one set from gameplay
+  tuning, one from the asset-integration merge) is a separate bug, not a
+  redundant-doc issue, and was left as-is per this task's own scope. Flagged
+  again here since it's now been noted four times without being fixed.
+- `ARCHITECTURE_DECISIONS.md`'s early ADRs (ADR-001 through ADR-021) overlap
+  heavily with `AGENTS.md`/`CLAUDE.md`'s foundational rules, but were left
+  alone — the ADR format's decision/rationale/status shape (and the
+  superseded-decision chains elsewhere in the file) still carries value the
+  other docs don't restate, so this was judged overlap worth keeping, not
+  dead content worth archiving.
+
+### Verification
+
+- `git status` confirmed both archived files moved as renames (`git mv`),
+  not delete+recreate, preserving history.
+- `grep` across every `.md` file confirmed no live doc still links to
+  `SPATIAL_CONTROLLER_DOCUMENT.md`/`WINDOW_1.md` at their old root paths;
+  every reference to either name left untouched inside `CHECKPOINT.md`
+  itself is historical log content (per this project's own no-delete rule
+  for past checkpoint entries), not a live link.
+- `git diff --check` passes on every touched file.
+- No Swift/Xcode/asset changes in this pass, so no build/typecheck
+  verification applies.
+
+## Documentation: Nearby Interaction Confirmed Non-Load-Bearing for V1 (ADR-041)
+
+Date: 2026-07-20.
+
+Follow-up discussion after the archive cleanup above: the player asked whether Nearby
+Interaction's precision ranging was actually being used anywhere in current gameplay, prompted by
+a separate chat's analysis questioning it. Rather than answer from the docs (which the previous
+entry had just shown could be stale), did a direct code audit before confirming anything.
+Documentation-only — no Swift, Xcode project, asset, or runtime structure changed; NI code itself
+is untouched.
+
+### Audit performed (all via direct `grep`/`Read`, not inference)
+
+- `RodState.directionX/Y/Z`/`distance` are set from `NearbyInteractionManager.swift` via
+  `SpatialState`, confirmed still transmitting every ~30 Hz sample.
+- Consumers of those fields, searched across `Rod/Rod`, `World/World`, and `Shared/Sources`:
+  exactly two, both debug-display rows in `ContentView.swift` (Rod and World). Zero matches in
+  `WorldViewModel.updateRodPose()`, `CastResolver.swift`, `RodMotionInterpreter.swift`, or
+  `hookDistanceFromRod()` (the ADR-039 fight/escape-distance function — confirmed to be a pure
+  RealityKit scene-space `simd_length` between two entities, unrelated to NI ranging).
+- `connectionState` (gates whether the player can start fishing) is set purely from the
+  CoreBluetooth transport's own callback; `spatialStatus` (NI's status) is a separate published
+  property read only by one debug row per device, gating nothing.
+- Conclusion, confirmed to the player: Nearby Interaction is fully present and running (Rod owns
+  the session exactly per ADR-014) but is not read by any gameplay, rendering, or connection-
+  gating code path anywhere in the app — debug display only.
+
+### Player's framing, recorded as the actual decision driver
+
+"NI awalnya akan dipakai, tapi ternyata transport protocol pakai CoreBluetooth aja cukup untuk
+ngirim data sehingga spatial controller belum akan dipakai di fase development ini" (NI was
+originally going to be used, but it turned out CoreBluetooth transport alone is enough to send
+data, so the spatial-controller aspect isn't going to be used in this development phase). Decided
+to keep the NI code in place (removal is a separate, larger-scope decision not made here) and
+instead correct the documentation that had drifted from this reality.
+
+### Documentation updated
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-041 recording the audit and the decision to leave NI code
+  in place while correcting the stale claim; added a short status note to ADR-014 (ownership rule
+  itself unaffected, still correct) pointing at ADR-041 for the load-bearing finding.
+- `AGENTS.md`: "Casting State and Transform Contract" section's line claiming "Nearby Interaction
+  spatial distance/direction remain the rod's spatial transform source" — accurate before ADR-019,
+  false since (ADR-019 deliberately moved the rod root to a fixed camera-relative offset) — rewritten
+  to state the current, correct behavior and reference ADR-041.
+- `CLAUDE.md`: "Tech Stack" Nearby Interaction bullet and the "Architecture Contracts" NI sentence
+  both gained a short clause noting the fields are transmitted but not currently consumed.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: "World Controller and Hook Separation" section gained a
+  paragraph with the same finding, keeping the existing ADR-019/033/034 narrative in that section
+  intact and just adding this alongside it.
+
+### Explicitly not done
+
+- Did not remove any Nearby Interaction code, permissions, or debug rows — this pass only fixes
+  documentation accuracy, per the player's own explicit request ("update dokumennya aja at this
+  point").
+- Did not reframe the project's "spatial controller" identity/name (`AGENTS.md`'s ADR-015 long-term
+  vision, the project's own "CtSPoC" name) — that's a bigger, separate call the player hasn't made;
+  this ADR explicitly says it doesn't retire that vision, only records that V1 fishing gameplay
+  didn't end up needing it.
+
+### Verification
+
+- `grep` re-run after all edits confirms every new cross-reference (`ADR-041`) resolves to content
+  that actually exists in `ARCHITECTURE_DECISIONS.md`.
+- `git diff --check` passes on every touched file.
+- No Swift/Xcode/asset changes, so no build/typecheck verification applies.

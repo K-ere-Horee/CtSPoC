@@ -9,11 +9,11 @@ Never delete previous checkpoint entries.
 
 ```text
 CtSPoC/
-├── AGENTS.md / SESSION_MEMORY.md / CHECKPOINT.md
+├── AGENTS.md / CHECKPOINT.md
 ├── ARCHITECTURE_DECISIONS.md
 ├── SOFTWARE_ARCHITECTURE_DOCUMENT.md
-├── SPATIAL_CONTROLLER_DOCUMENT.md
 ├── GAMEPLAY_ARCHITECTURE_V1.md
+├── Archive/          # superseded docs kept for history — not current state
 ├── CtSPoC.xcworkspace/
 ├── Shared/
 │   ├── Package.swift
@@ -27,7 +27,7 @@ CtSPoC/
 │   ├── RodApp.swift / ContentView.swift
 │   ├── ViewModel/RodViewModel.swift
 │   ├── Sensors/         # CoreMotion and Nearby Interaction adapters
-│   ├── Transport/       # Multipeer client
+│   ├── Transport/       # CoreBluetooth client (Rod = BLE peripheral)
 │   ├── Haptics/         # Core Haptics
 │   └── Views/           # controller/debug views only
 └── World/World/
@@ -35,7 +35,7 @@ CtSPoC/
     ├── ViewModels/WorldViewModel.swift
     ├── Gameplay/        # FishFightController, FishCatalog, FishCatchResult, FishRecordStore
     ├── Audio/           # SoundManager, FishingSounds (ADR-040) — World-only SFX, mirrors Rod's Haptics
-    ├── Transport/       # Multipeer host
+    ├── Transport/       # CoreBluetooth host (World = BLE central)
     ├── Views/CastMeterView.swift, LineTensionView.swift, ResultView.swift
     └── Assets/Rod.usdz, Assets/SFX/ (ui_click.wav, cast_throw.wav, hook_splash.wav,
         fish_interested_loop.wav, fish_bite.wav, reel_loop.wav, catch_splash.wav, ambience_lake.mp3)
@@ -46,8 +46,12 @@ CtSPoC/
 - Swift and Xcode: implementation and app targets.
 - SwiftUI: Rod controls, World layout, and HUD presentation.
 - CoreMotion: Rod-only device attitude, acceleration, and angular velocity.
-- Nearby Interaction: Rod-only spatial distance/direction measurement.
-- MultipeerConnectivity: Rod/World discovery and Codable state transport.
+- Nearby Interaction: Rod-only spatial distance/direction measurement. Session
+  is live and data transmits, but as of ADR-041 no gameplay/rendering code
+  currently reads it — the "spatial controller" aspect isn't load-bearing in
+  this development phase; CoreBluetooth alone carries what V1 gameplay needs.
+- CoreBluetooth: Rod/World discovery and Codable state transport (Rod = BLE
+  peripheral, World = BLE central; replaced MultipeerConnectivity, ADR-035).
 - RealityKit: World-only rod, hook, water, and scene rendering.
 - Core Haptics: Rod-only feedback through `HapticManager` and
   `FishingHaptics`.
@@ -67,7 +71,7 @@ calibration offsets.
 ```text
 CoreMotion -> MotionManager -> RodMotionInterpreter
            -> CastSnapshot -> CastResolver -> CastSolution -> RodState
-           -> Multipeer transport -> WorldViewModel -> RealityKit/HUD
+           -> CoreBluetooth transport -> WorldViewModel -> RealityKit/HUD
 ```
 
 Calibration captures an Idle `RodOrientation` reference and applies
@@ -86,7 +90,9 @@ or `HookPhase.idle` reset.
 
 `RodState.directionX/Y/Z` and `distance` are spatial-only values from Nearby
 Interaction. Never use cast direction or distance to move the rod root. Only
-the hook receives cast velocity and moves through the scene.
+the hook receives cast velocity and moves through the scene. Per ADR-041,
+these NI fields are not currently consumed anywhere in gameplay or rendering
+— present and transmitted, but debug-display-only for now.
 
 World's `updateRodPose()` maintains a fixed camera-relative controller offset
 and applies only `RodState.orientation`. `launchHook()`, flying simulation, and
