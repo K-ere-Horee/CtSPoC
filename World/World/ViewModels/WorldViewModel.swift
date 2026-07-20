@@ -178,6 +178,16 @@ final class WorldViewModel: ObservableObject {
     private let interestDipFrequency: Float = 2.0
     private var bobberBobPhase: Float = 0
 
+    /// m/s the hook drifts sideways (world X — this scene's fixed camera forward is -Z, so world
+    /// X reads as screen-space left/right, matching `fishFight.fightDirection`'s own left/right
+    /// convention) while `fishFight.fightDirection` is set, in `updateFightDirectionDrift`. Purely
+    /// visual — the actual counter-pull success/failure is evaluated in `FishFightController`
+    /// from `RodState.roll`, not from this drift.
+    private let fightDirectionLateralSpeed: Float = 0.35
+    /// Cap (meters, either side of the rod's own X) on how far the juking drift can push the hook,
+    /// so a long juking phase can't walk it arbitrarily far sideways.
+    private let fightDirectionMaxLateralOffset: Float = 1.0
+
     /// Fixed speed (m/s), overriding the tug-of-war reel math, that `reelHook` climbs at once inside
     /// `hookLiftDistance` of `hookLiftTargetPosition` (ADR-044). Outside that zone, hook movement is
     /// `rodState.reelSpeed * reelSpeed` net `fishFight.fishPullSpeed` (ADR-039's tug-of-war), which can
@@ -309,6 +319,12 @@ final class WorldViewModel: ObservableObject {
     /// player's way to re-pair with a different phone without reinstalling or clearing app data.
     func forgetPairedDevice() {
         transport.forgetPairedDevice()
+    }
+
+    /// Resets tier-unlock progression back to Level 1 — the player's way to replay the unlock
+    /// curve without reinstalling or clearing app data by hand.
+    func resetProgression() {
+        fishFight.resetProgression()
     }
 
     /// Called once from `ContentView`'s `RealityView` `make` closure. Subscribes to the scene's
@@ -534,12 +550,14 @@ final class WorldViewModel: ObservableObject {
                 driftHookAway(deltaTime: deltaTime)
                 setHookPhase(.fishOnHook)
             }
+            updateFightDirectionDrift(deltaTime: deltaTime)
 
             if let failure = fishFight.updateFight(
                 deltaTime: deltaTime,
                 isReeling: rodState.action == .reeling,
                 reelSpeed: rodState.reelSpeed,
-                hookDistance: hookDistanceFromRod()
+                hookDistance: hookDistanceFromRod(),
+                rodRoll: rodState.roll
             ) {
                 resolveFightFailure(failure)
             }
@@ -651,6 +669,21 @@ final class WorldViewModel: ObservableObject {
             hookEntity.position -= simd_normalize(horizontalOffset) * step
             hookEntity.position.y = waterHeight
         }
+    }
+
+    /// Visually sells the fish's juke (`fishFight.fightDirection`) as a distinct sideways nudge on
+    /// top of whatever `reelHook`/`driftHookAway` already did to the hook's position this tick — a
+    /// small, continuous world-X drift toward the current direction, clamped to stay within
+    /// `fightDirectionMaxLateralOffset` of the rod's own X so a long juking phase can't walk the
+    /// hook arbitrarily far sideways. No-op whenever the juking phase isn't active.
+    private func updateFightDirectionDrift(deltaTime: Float) {
+        guard let hookEntity, let controllerEntity, let direction = fishFight.fightDirection else { return }
+
+        let sign: Float = direction == .left ? -1 : 1
+        let targetX = hookEntity.position.x + sign * fightDirectionLateralSpeed * deltaTime
+        let minX = controllerEntity.position.x - fightDirectionMaxLateralOffset
+        let maxX = controllerEntity.position.x + fightDirectionMaxLateralOffset
+        hookEntity.position.x = max(minX, min(maxX, targetX))
     }
 
     /// Per ADR-018/ADR-019 and the calibration contract in `AGENTS.md`: the rod root stays at a

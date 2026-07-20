@@ -97,13 +97,15 @@ public final class RodMotionInterpreter {
     private var hasIdleReference = false
     private var previousCastPhase: RodMotionPhase = .idle
     private var releasedCastPower: Float = 0
-    /// Peak angular distance (radians) from the idle pose reached so far
-    /// during the current cast gesture. Reset when a fresh cast gesture
-    /// begins; feeds both the live `castPower` meter and, via `CastSnapshot`,
-    /// `CastResolver`'s final gameplay power.
-    private var backswingPeakDistance: Double = 0
-    private let minimumBackswingDistance: Double = 0.12
-    private let maximumBackswingDistance: Double = 1.0
+    /// Timestamp the current cast gesture's backswing/charging hold began — `nil` whenever not
+    /// currently holding one. Reset (cleared) whenever a fresh cast gesture begins; feeds both the
+    /// live `castPower` meter and, via `CastSnapshot`, `CastResolver`'s final gameplay power. A
+    /// "hold to charge" timer (ADR-054) replacing the earlier pull-back-*distance* measurement
+    /// (ADR-032) — the longer the player holds the phone back after arming a cast (`isCastingArmed`),
+    /// the more powerful the eventual flick, regardless of exactly how far back it physically moved.
+    private var castHoldStartTimestamp: TimeInterval?
+    private let minimumBackswingHoldDuration: TimeInterval = 0.15
+    private let maximumBackswingHoldDuration: TimeInterval = 1.5
 
     private enum Classification: String {
         case idle
@@ -121,7 +123,7 @@ public final class RodMotionInterpreter {
         castEndsAt = 0
         previousCastPhase = .idle
         releasedCastPower = 0
-        backswingPeakDistance = 0
+        castHoldStartTimestamp = nil
         hasIdleReference = profile.isComplete
     }
 
@@ -135,7 +137,7 @@ public final class RodMotionInterpreter {
         castEndsAt = 0
         previousCastPhase = .idle
         releasedCastPower = 0
-        backswingPeakDistance = 0
+        castHoldStartTimestamp = nil
     }
 
     /// - Parameter isCastingArmed: Gates whether a pose classified closest to `castPose` is
@@ -181,26 +183,27 @@ public final class RodMotionInterpreter {
         switch classification {
         case .cast where !isCastingArmed:
             // Pose reads closest to `castPose`, but no "Start Casting" press has armed a cast
-            // attempt — treat exactly like `.idle` rather than silently tracking a backswing the
+            // attempt — treat exactly like `.idle` rather than silently starting a hold timer the
             // player never asked for.
             previousClassification = .idle
             previousCastPhase = .idle
-            backswingPeakDistance = 0
+            castHoldStartTimestamp = nil
             return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .idle, action: .idle, reelSpeed: 0, castPower: 0, debug: debug)
         case .cast:
             let enteredCast = previousClassification != .cast
             if enteredCast {
-                backswingPeakDistance = 0
+                castHoldStartTimestamp = input.timestamp
             }
-            backswingPeakDistance = max(backswingPeakDistance, distances.idle)
+            let holdDuration = input.timestamp - (castHoldStartTimestamp ?? input.timestamp)
 
-            let distancePower = Float(min(1, max(0, (backswingPeakDistance - minimumBackswingDistance) / max(0.0001, maximumBackswingDistance - minimumBackswingDistance))))
+            let holdSpan = max(0.0001, maximumBackswingHoldDuration - minimumBackswingHoldDuration)
+            let holdPower = Float(min(1, max(0, (holdDuration - minimumBackswingHoldDuration) / holdSpan)))
             let flickPower = Float(min(1, max(0, input.rotationRateMagnitude / 5)))
-            // How far the backswing traveled sets the base power; a fast
+            // How long the backswing was held sets the base power; a fast
             // flick only adds up to a 30% bonus on top — matches
             // `CastResolver.resolve(_:)`'s blend, so the live meter tracks
             // what the release will actually produce.
-            let castPower = distancePower * (0.7 + 0.3 * flickPower)
+            let castPower = holdPower * (0.7 + 0.3 * flickPower)
 
             let forwardMotion = input.accelerationZ * profile.castAccelerationSign >= profile.castAcceleration
             let backswing = input.accelerationZ * profile.castAccelerationSign < -profile.castAcceleration
@@ -213,7 +216,7 @@ public final class RodMotionInterpreter {
             if forwardMotion && (enteredCast || !wasReleased) {
                 castEndsAt = input.timestamp + profile.castDuration
                 releasedCastPower = castPower
-                return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .release, action: .casting, reelSpeed: 0, castPower: castPower, debug: debug, castSnapshot: snapshot(input: input, orientation: correctedOrientation(currentOrientation)))
+                return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .release, action: .casting, reelSpeed: 0, castPower: castPower, debug: debug, castSnapshot: snapshot(input: input, orientation: correctedOrientation(currentOrientation), holdDuration: holdDuration))
             }
             return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: phase, action: .idle, reelSpeed: 0, castPower: castPower, debug: debug)
         case .reel:
@@ -300,12 +303,12 @@ public final class RodMotionInterpreter {
         RodMotionInterpretation(pose: pose, orientation: orientation, isPoseValid: profile.isComplete, phase: phase, action: action, reelSpeed: reelSpeed, castPower: castPower, debug: debug, castSnapshot: castSnapshot)
     }
 
-    private func snapshot(input: RodMotionInput, orientation: RodOrientation) -> CastSnapshot {
+    private func snapshot(input: RodMotionInput, orientation: RodOrientation, holdDuration: TimeInterval) -> CastSnapshot {
         CastSnapshot(
             orientation: orientation,
             angularVelocity: CastVector3(x: Float(input.rotationRateX), y: Float(input.rotationRateY), z: Float(input.rotationRateZ)),
             timestamp: input.timestamp,
-            backswingDistance: Float(backswingPeakDistance)
+            backswingHoldDuration: holdDuration
         )
     }
 }

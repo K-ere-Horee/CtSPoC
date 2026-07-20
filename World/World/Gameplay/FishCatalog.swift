@@ -32,7 +32,7 @@ enum FishCatalog {
             name: "Fish B",
             weightRange: FishSpeciesRange(min: 3.5, max: 9.0),
             lengthRange: FishSpeciesRange(min: 55, max: 90),
-            resistance: 0.55,
+            resistance: 0.50,
             value: 25,
             tier: .medium
         ),
@@ -41,7 +41,9 @@ enum FishCatalog {
             name: "Fish C",
             weightRange: FishSpeciesRange(min: 9.0, max: 20.0),
             lengthRange: FishSpeciesRange(min: 90, max: 140),
-            resistance: 0.75,
+            // Eased further after ADR-054's initial 0.75 -> 0.60 pass (requested directly:
+            // "mudahin dikit dong ikan level 3 dan 4 nya") to 0.10, alongside fish_b.
+            resistance: 0.65,
             value: 60,
             tier: .big
         ),
@@ -50,7 +52,9 @@ enum FishCatalog {
             name: "Scott",
             weightRange: FishSpeciesRange(min: 20.0, max: 40.0),
             lengthRange: FishSpeciesRange(min: 140, max: 200),
-            resistance: 0.95,
+            // Eased further after ADR-054's initial 0.95 -> 0.75 pass to 0.10, same request as
+            // fish_c above.
+            resistance: 0.70,
             value: 500,
             tier: .boss
         )

@@ -57,12 +57,14 @@ struct ContentView: View {
                 }
 
                 Spacer()
-
+                
+                /*
                 DisclosureGroup("Developer Details", isExpanded: $showDeveloperDetails) {
                     developerDetails
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 12)
+                 */
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

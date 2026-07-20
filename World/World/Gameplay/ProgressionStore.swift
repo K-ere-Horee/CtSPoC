@@ -85,6 +85,14 @@ final class ProgressionStore {
         return level
     }
 
+    /// Clears every tier's catch count, dropping `level` back to 1 (only `.small` catchable) —
+    /// the player's way to replay the unlock progression from scratch without reinstalling or
+    /// clearing app data by hand.
+    func reset() {
+        counts = Counts()
+        save()
+    }
+
     private static func load() -> Counts {
         guard let data = UserDefaults.standard.data(forKey: storageKey) else { return Counts() }
         return (try? JSONDecoder().decode(Counts.self, from: data)) ?? Counts()

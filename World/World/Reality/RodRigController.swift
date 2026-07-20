@@ -6,6 +6,7 @@
 //
 
 import RealityKit
+import AppKit
 import simd
 
 /// Drives the live bone-driven pose of `rod_main.usdz` and `rod_line.usdz`. Both assets ship

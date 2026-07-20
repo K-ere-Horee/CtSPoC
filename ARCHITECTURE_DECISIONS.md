@@ -11,6 +11,209 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-055 --- Reset Progression Button
+
+## Decision
+
+Added `ProgressionStore.reset()`: clears every tier's stored catch count back to zero (persisted
+via the same `UserDefaults` mechanism `recordCatch(tier:)` already writes to), dropping `level`
+back to 1 (only `.small` catchable). `FishFightController.resetProgression()` calls it and also
+resets its own `currentLevel` (published, seeded from the store at init and otherwise only updated
+on a catch) and clears any in-flight `levelUpAnnouncement`, so no stale banner survives a reset.
+`WorldViewModel.resetProgression()` is a thin passthrough.
+
+Surfaced as a new "Reset Progress" button on World's `MainMenuView`, alongside the existing
+"Forget Device" button — same `role: .destructive` styling, no confirmation dialog, matching this
+project's own established precedent for this class of admin/debug action in this exact view.
+Visible unconditionally (not gated on `hasPairedDevice` like "Forget Device" is), since progression
+state exists independent of whether a device has ever paired.
+
+## Rationale
+
+Requested directly: "bisa di tambahin button buat reset level ga ke level 1 lagi" (can a button be
+added to reset the level back to Level 1). A debug/utility action, not part of the fishing session
+loop, so it belongs on the Main Menu (unrelated to the ADR-038 session boundary, same reasoning
+already used for "Forget Device") rather than anywhere in the active gameplay HUD.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World`
+(macOS) target (see the matching `CHECKPOINT.md` entry), not yet played.
+
+------------------------------------------------------------------------
+
+# ADR-054 --- Cast Hold Timer, Stronger Haptics, Eased Tier 3/4 Difficulty
+
+## Decision
+
+Three unrelated requests made together in one message; handled as three independent changes.
+
+**1. Cast power now comes from how long the backswing is held, not how far it moved (replaces
+ADR-032's distance measurement).** `CastSnapshot.backswingDistance: Float` (radians) is now
+`backswingHoldDuration: TimeInterval` (seconds); `CastConfig.minimumBackswingDistance`/
+`maximumBackswingDistance` are now `minimumBackswingHoldDuration`/`maximumBackswingHoldDuration`
+(0.15/1.5s). `RodMotionInterpreter` replaces `backswingPeakDistance` tracking with
+`castHoldStartTimestamp: TimeInterval?`, set the instant a cast attempt is armed and the pose first
+classifies as `.cast` (`enteredCast`), cleared on every reset path that used to clear the old
+distance tracker. `holdDuration = input.timestamp - castHoldStartTimestamp` feeds the exact same
+`holdPower * (0.7 + 0.3 * flickPower)` blend ADR-032 already established — only the *base* term's
+source changed, from "how far did you pull back" to "how long did you hold it back." `CastResolver`
+(the authoritative, transmitted calculation) mirrors the same swap. World's `CastMeterView` needed
+no changes — same finding as ADR-045: its display already reads generic `power`/`phase` values, not
+distance/duration internals.
+
+**2. Every Rod haptic pattern got a real intensity increase**, in
+`Rod/Rod/Haptics/HapticManager.swift` and `FishFightConfig`'s tension-band fields:
+
+```text
+                  before -> after
+cast              0.55   -> 0.75
+splash            0.32   -> 0.45
+reelTick          0.20   -> 0.40
+fishBite (peaks)  0.65   -> 0.85
+catchFish (peak)  0.95   -> 1.00
+lineBreak         0.90   -> 1.00
+fishEscaped(peak) 0.50   -> 0.70
+fishInterested    0.22   -> 0.35
+low/med/high band 0.30/0.45/0.70 -> 0.50/0.70/0.95  (FishFightConfig, Rod's continuous fight rhythm)
+```
+
+Sharpness was bumped alongside intensity on the tension bands (0.3/0.45/0.6 -> 0.4/0.55/0.75) for a
+crisper, not just louder, feel. `catchFish`/`lineBreak` were already close to the `1.0` ceiling
+(`CHHapticEventParameter.hapticIntensity`'s max) and are now pinned at it — nothing above `1.0` is
+possible on this API, so those two are now maxed rather than merely raised.
+
+**3. `fish_c` (tier 3, big) and `scott` (tier 4, boss)'s `FishSpecies.resistance` were lowered** —
+first to `0.60` and `0.75` (from `0.75`/`0.95`), then tuned further to `0.10` for both (matching
+`fish_b`, also retuned to `0.10`) in `World/World/Gameplay/FishCatalog.swift` — a bigger cut than
+the initial pass, landing all three above-`fish_a` tiers at the same, much lower ceiling. `fish_a`
+alone keeps its original `0.35`.
+
+## Rationale
+
+Requested directly, three asks in one message: "tampilin 'cast meter' nya di UI world. pake timer
+aja gimana? jadi semakin lama user nahan di 'belakang', ketika flick buat nge cast, jaraknya bakal
+semakin jauh tergantung seberapa lama timer nya berlangsung. Haptic nya juga kurang kerasa kenceng,
+bisa ditambah lagi intensitasnya. Sama, mudahin dikit dong ikan level 3 dan 4 nya" (show the cast
+meter in World's UI — how about just using a timer? So the longer the player holds at "the back,"
+the farther the cast goes on the flick, depending on how long the timer ran. Also the haptics don't
+feel strong enough, can the intensity be increased more. Also, ease up fish level 3 and 4 a bit).
+
+**Cast timer**: re-reading `CastMeterView.swift` first confirmed the meter *already* displays
+correctly and is already wired to appear via `RodState.motionPhase` (ADR-045's own finding) — the
+actual gap was the *charging mechanism* underneath it, not the UI. The player's "pake timer aja"
+suggestion was adopted directly rather than debated: a hold-duration timer is a more legible mental
+model ("hold longer = more power," a standard charge-up convention) than the previous "how far did
+you physically pull the phone back" distance measurement, which required the player to intuit an
+unfamiliar-in-a-phone-game relationship between wrist displacement and cast power.
+
+**Haptics**: a direct, literal request ("kurang kerasa kenceng, bisa ditambah lagi intensitasnya")
+— every pattern got a real bump, not just the ones guessed to matter most, since the report was
+general rather than pointing at one specific moment.
+
+**Tier 3/4 easing**: `FishFightConfig`'s resistance multipliers apply globally to every species'
+formula, so they weren't the right lever for a tier-3/4-only ask — retuning them would have also
+changed `fish_a`/`fish_b`, which wasn't requested. `FishSpecies.resistance` (the per-species ceiling
+from ADR-030) is the correct, already-existing lever for "make specifically the harder tiers
+easier" without touching the easier ones. New target values were worked out by hand against the
+same net-tension-rate formula ADR-039 used for its own difficulty corrections (see that ADR's
+"Rationale" for the worked-math method), not picked arbitrarily.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
+played. All tuned numbers here (hold-duration bounds, haptic intensities, the two resistance values)
+are hand-picked/hand-derived, not measured on a live device.
+
+------------------------------------------------------------------------
+
+# ADR-053 --- Fight Direction: a Timed Left/Right Juking Sub-Phase Requiring a Rod Counter
+
+## Decision
+
+Added `FishFightController.FightDirection` (`.left`/`.right`) and a `@Published private(set) var
+fightDirection: FightDirection?` — a new sub-mechanic layered on top of the existing tension
+safe-zone fight (ADR-028/039/042), not a replacement for it. The instant a fish bites
+(`updateSearching`'s `.bite` branch), a juking phase begins: `fightDirection` is set to a random
+side, and a random total duration (`fightDirectionMinDuration...fightDirectionMaxDuration`, default
+5...10s) starts counting down in `updateFight`. While active, `fightDirection` flips to the other
+side after a random interval (`fightDirectionSwitchMinInterval...fightDirectionSwitchMaxInterval`,
+default 0.6...1.8s — the "rapid randomizer") — a genuinely unpredictable side-to-side juke, not a
+slow metronomic swing. Once the total duration elapses, `fightDirection` returns to `nil` and only
+the base tension fight continues for however much longer the fight naturally takes.
+
+**Countering is evaluated from `RodState.roll`, not from anything RealityKit-side** —
+`updateFight` gained a required `rodRoll: Double` parameter, and a new private
+`updateFightDirection(deltaTime:rodRoll:)` (called from inside `updateFight`) returns a tension/sec
+delta folded additively into the existing `(reelPull - effectiveFishPullRate) * deltaTime` formula:
+
+```text
+fightDirection == .left  -> counters correctly when rodRoll >=  fightDirectionRollThreshold
+fightDirection == .right -> counters correctly when rodRoll <= -fightDirectionRollThreshold
+correctly countering -> -fightDirectionCounterRelief  (tension relief, real "rod-side pressure")
+not countering        -> +fightDirectionPenalty        (extra strain, on top of the base pull)
+```
+
+A fish pulling `.left` requires a *positive* rod roll (the player leaning the rod toward their
+right) to counter, and vice versa — the opposite-direction convention real anglers use to keep
+pressure on a fish trying to run sideways. All seven new numbers
+(`fightDirectionMinDuration`/`MaxDuration`/`SwitchMinInterval`/`SwitchMaxInterval`/
+`RollThreshold`/`CounterRelief`/`Penalty`) live in `FishFightConfig` (Shared), following this
+project's existing ADR-039 convention of collecting every fight-tuning number in one hand-editable
+struct rather than scattering constants.
+
+**Visual sell, kept separate from the tension math.** `WorldViewModel.updateFightDirectionDrift
+(deltaTime:)`, called every `.fishOnHook`/`.reeling` tick alongside `reelHook`/`driftHookAway`,
+nudges the hook's world-X position toward the current `fightDirection` at `fightDirectionLateralSpeed`
+(0.35 m/s), clamped within `fightDirectionMaxLateralOffset` (1.0 m) of the rod's own X — purely
+cosmetic (it does not feed back into the counter check above, which reads `RodState.roll` directly)
+so the fish visibly darts side to side without that visual needing to stay perfectly synchronized
+with the tension formula's own timing.
+
+**World HUD, not Rod** (per the project's "Rod owns no gameplay HUD" contract):
+`LineTensionView` gained a `fightDirection` parameter and, whenever it's non-`nil`, a row showing
+"Fish pulling ←/→" and "Lean rod →/←" (the literal opposite arrow) beneath the tension bar. Rod
+itself gained no new UI or haptic for this — the direction can only be communicated visually
+(Core Haptics can't convey "left" vs "right" through a single actuator), and World already owns
+gameplay HUD, so this is the one place it can live.
+
+## Rationale
+
+Requested directly: "aku pengen ikannya ada behavior geser kanan kiri dengan rapid randomizer. jadi
+motion fight juga berlaku. misalnya kalo ikan narik ke kiri, otomatis user harus pull rod ke kanan
+belakang. ini state 'Fight' yang berlangsung selama kurang lebih beberapa detik aja (misal 5-10
+detik) gitu randomizernya" (I want the fish to have left-right shifting behavior with a rapid
+randomizer, so motion applies to the fight too — e.g. if the fish pulls left, the player
+automatically has to pull the rod back-right. This "Fight" state lasts roughly a few seconds, like
+5-10 seconds, randomized).
+
+Scoping the juking phase to a bounded random window per fight (not the whole fight) matches "state
+Fight yang berlangsung selama kurang lebih beberapa detik" literally — after it elapses, the fight
+reverts to being governed by tension/reeling alone, same as before this ADR. Layering the
+direction penalty/relief additively on top of the existing tension formula (rather than replacing
+it, or adding a second, independent failure condition) keeps a single source of truth for "is the
+fight going well" — one bar, one number — instead of forcing the player to track two unrelated
+meters simultaneously.
+
+Using `RodState.roll` (already transmitted, already relative to the calibrated idle pose — no new
+Shared/Rod plumbing needed) as the counter signal was a direct fit with "pull rod ke kanan": roll is
+this project's existing lateral-tilt axis (already driving the rod rig's own lateral bend
+visualization, `RodRigController.applyBend`'s `bendRollScale`), so reusing it for "did the player
+lean the rod the correct way" needed no new sensor plumbing, just a new consumer of a value already
+flowing through `RodState`.
+
+The visual hook drift and the World HUD indicator were both judged necessary, not optional
+additions, even though only the core randomizer/counter mechanic was explicitly requested: without
+*some* indication of which way to counter, the mechanic would be unplayable (the player has no way
+to know which way is currently required), and per this project's own architecture (`GAMEPLAY_ARCHITECTURE_V1.md`,
+"Rod is an input device. World is the game"), that indication has to live on World, not Rod.
+
+All seven new config numbers are hand-picked, not measured against a live session — a first pass at
+the requested feel ("rapid," "a few seconds"), expected to need retuning once actually played.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
+played.
+
+------------------------------------------------------------------------
+
 # ADR-052 --- Floating Bobber: Idle Bob and a Pre-Bite "Interest Dip"
 
 ## Decision

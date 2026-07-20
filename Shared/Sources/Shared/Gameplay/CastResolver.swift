@@ -33,23 +33,23 @@ public struct CastSnapshot: Codable, Sendable, Equatable {
     public let orientation: RodOrientation
     public let angularVelocity: CastVector3
     public let timestamp: TimeInterval
-    /// Peak angular distance (radians) the pose traveled away from the
-    /// calibrated idle pose during this cast gesture's backswing, before
-    /// release. Lets `CastResolver` weigh "how far did you pull back"
-    /// alongside raw release-moment flick speed, instead of flick speed
-    /// alone.
-    public let backswingDistance: Float
+    /// Seconds the pose was held in the backswing/charging zone (since "Start Casting" armed and
+    /// the pose first classified as a cast attempt) before this release. Lets `CastResolver` weigh
+    /// "how long did you hold it back" alongside raw release-moment flick speed, instead of flick
+    /// speed alone — a deliberate "hold to charge" timer, replacing the earlier pull-back-distance
+    /// measurement (ADR-032) with something more legible on the cast meter.
+    public let backswingHoldDuration: TimeInterval
 
     public init(
         orientation: RodOrientation,
         angularVelocity: CastVector3,
         timestamp: TimeInterval,
-        backswingDistance: Float = 0
+        backswingHoldDuration: TimeInterval = 0
     ) {
         self.orientation = orientation
         self.angularVelocity = angularVelocity
         self.timestamp = timestamp
-        self.backswingDistance = backswingDistance
+        self.backswingHoldDuration = backswingHoldDuration
     }
 }
 
@@ -58,25 +58,25 @@ public struct CastConfig: Codable, Sendable, Equatable {
     public var maximumCastVelocity: Float
     public var minimumLaunchAngle: Float
     public var maximumLaunchAngle: Float
-    /// `backswingDistance` (radians from idle) below which the backswing
-    /// contributes no power, and at/above which it contributes full power.
-    public var minimumBackswingDistance: Float
-    public var maximumBackswingDistance: Float
+    /// `backswingHoldDuration` (seconds) below which holding the backswing contributes no power,
+    /// and at/above which it contributes full power.
+    public var minimumBackswingHoldDuration: TimeInterval
+    public var maximumBackswingHoldDuration: TimeInterval
 
     public init(
         minimumCastVelocity: Float = 0.8,
         maximumCastVelocity: Float = 5.0,
         minimumLaunchAngle: Float = 0.15,
         maximumLaunchAngle: Float = 0.65,
-        minimumBackswingDistance: Float = 0.12,
-        maximumBackswingDistance: Float = 1.0
+        minimumBackswingHoldDuration: TimeInterval = 0.15,
+        maximumBackswingHoldDuration: TimeInterval = 1.5
     ) {
         self.minimumCastVelocity = minimumCastVelocity
         self.maximumCastVelocity = maximumCastVelocity
         self.minimumLaunchAngle = minimumLaunchAngle
         self.maximumLaunchAngle = maximumLaunchAngle
-        self.minimumBackswingDistance = minimumBackswingDistance
-        self.maximumBackswingDistance = maximumBackswingDistance
+        self.minimumBackswingHoldDuration = minimumBackswingHoldDuration
+        self.maximumBackswingHoldDuration = maximumBackswingHoldDuration
     }
 }
 
@@ -135,13 +135,13 @@ public struct CastResolver: Sendable {
         let velocitySpan = max(config.maximumCastVelocity - config.minimumCastVelocity, 0.001)
         let flickPower = min(1, max(0, (snapshot.angularVelocity.length - config.minimumCastVelocity) / velocitySpan))
 
-        let distanceSpan = max(config.maximumBackswingDistance - config.minimumBackswingDistance, 0.001)
-        let distancePower = min(1, max(0, (snapshot.backswingDistance - config.minimumBackswingDistance) / distanceSpan))
+        let holdSpan = max(config.maximumBackswingHoldDuration - config.minimumBackswingHoldDuration, 0.001)
+        let holdPower = Float(min(1, max(0, (snapshot.backswingHoldDuration - config.minimumBackswingHoldDuration) / holdSpan)))
 
-        // How far the backswing traveled sets the base power; a fast release
+        // How long the backswing was held sets the base power; a fast release
         // flick only adds up to a 30% bonus on top. You can't cast far with
-        // a fast flick alone if you never pulled back for it.
-        let normalizedPower = distancePower * (0.7 + 0.3 * flickPower)
+        // a fast flick alone if you never held the charge for it.
+        let normalizedPower = holdPower * (0.7 + 0.3 * flickPower)
         let launchAngle = config.minimumLaunchAngle
             + ((config.maximumLaunchAngle - config.minimumLaunchAngle) * normalizedPower)
 

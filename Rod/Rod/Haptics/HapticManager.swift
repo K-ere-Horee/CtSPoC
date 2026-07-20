@@ -25,42 +25,42 @@ final class HapticManager {
     }
 
     func cast() {
-        playTransient(intensity: 0.55, sharpness: 0.45)
+        playTransient(intensity: 0.75, sharpness: 0.5)
     }
 
     func splash() {
-        playTransient(intensity: 0.32, sharpness: 0.12)
+        playTransient(intensity: 0.45, sharpness: 0.15)
     }
 
     func reelTick() {
-        playTransient(intensity: 0.2, sharpness: 0.7)
+        playTransient(intensity: 0.4, sharpness: 0.75)
     }
 
     func fishBite() {
         playPattern([
-            (0.65, 0.35, 0),
-            (0.55, 0.3, 0.18),
-            (0.55, 0.3, 0.28),
-            (0.65, 0.35, 0.55)
+            (0.85, 0.4, 0),
+            (0.75, 0.35, 0.18),
+            (0.75, 0.35, 0.28),
+            (0.85, 0.4, 0.55)
         ])
     }
 
     func catchFish() {
         playPattern([
-            (0.95, 0.65, 0),
-            (0.45, 0.25, 0.18)
+            (1.0, 0.7, 0),
+            (0.6, 0.3, 0.18)
         ])
     }
 
     func lineBreak() {
-        playTransient(intensity: 0.9, sharpness: 1)
+        playTransient(intensity: 1.0, sharpness: 1)
     }
 
     func fishEscaped() {
         playPattern([
-            (0.5, 0.4, 0),
-            (0.35, 0.3, 0.12),
-            (0.2, 0.2, 0.26)
+            (0.7, 0.45, 0),
+            (0.55, 0.35, 0.12),
+            (0.35, 0.25, 0.26)
         ])
     }
 
@@ -68,7 +68,7 @@ final class HapticManager {
     /// `FishingHaptics.interestPulse(now:)` while a fish is interested but
     /// hasn't bitten. Deliberately softer/duller than `fishBite()`.
     func fishInterested() {
-        playTransient(intensity: 0.22, sharpness: 0.15)
+        playTransient(intensity: 0.35, sharpness: 0.2)
     }
 
     /// One tap of the continuous fight rhythm (ADR-039); repeated externally by

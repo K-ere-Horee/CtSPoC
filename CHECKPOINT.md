@@ -5462,3 +5462,170 @@ hook itself — only a Rod haptic pulse and a World bubble-loop sound.
   footage or played — whether the idle bob reads as "alive" without being distracting, and whether
   the interest dip is a clear enough pre-bite tell without looking glitchy, are both unverified
   until watched running.
+
+## Fight Direction: Timed Left/Right Juking Requires a Rod Counter (ADR-053)
+
+Date: 2026-07-20.
+
+Requested directly: "aku pengen ikannya ada behavior geser kanan kiri dengan rapid randomizer. jadi
+motion fight juga berlaku. misalnya kalo ikan narik ke kiri, otomatis user harus pull rod ke kanan
+belakang. ini state 'Fight' yang berlangsung selama kurang lebih beberapa detik aja (misal 5-10
+detik) gitu randomizernya." Recorded as ADR-053 in `ARCHITECTURE_DECISIONS.md`.
+
+### Shared: FishFightConfig
+
+- Added seven fields: `fightDirectionMinDuration`/`MaxDuration` (5.0/10.0s, the juking phase's
+  total random length per fight), `fightDirectionSwitchMinInterval`/`MaxInterval` (0.6/1.8s, how
+  often direction flips — the "rapid randomizer"), `fightDirectionRollThreshold` (0.15 rad,
+  minimum `RodState.roll` magnitude to count as actively countering), `fightDirectionCounterRelief`
+  (0.25 tension/sec) and `fightDirectionPenalty` (0.20 tension/sec).
+
+### World: FishFightController
+
+- Added `FightDirection` enum (`.left`/`.right`) and `@Published private(set) var fightDirection:
+  FightDirection?`.
+- `updateSearching`'s `.bite` branch now also starts the juking phase: random initial direction,
+  random total duration, random first switch interval.
+- `updateFight(deltaTime:isReeling:reelSpeed:hookDistance:rodRoll:)` gained a required `rodRoll:
+  Double` parameter. New private `updateFightDirection(deltaTime:rodRoll:)` counts down the phase
+  (clearing `fightDirection` to `nil` at zero), flips direction on its own switch timer, evaluates
+  whether `rodRoll`'s sign/magnitude counters the *current* (possibly just-flipped) direction
+  correctly, and returns a tension/sec delta folded additively into the existing
+  `(reelPull - effectiveFishPullRate) * deltaTime` formula — relief when countering correctly,
+  penalty otherwise. `resetForNewCast`/`resolve(outcome:)` both clear the new state alongside the
+  rest of their existing per-fight resets.
+
+### World: WorldViewModel
+
+- `tick()`'s `.fishOnHook, .reeling` case now also calls the new `updateFightDirectionDrift
+  (deltaTime:)` every tick, and passes `rodRoll: rodState.roll` into `fishFight.updateFight(...)`.
+- `updateFightDirectionDrift(deltaTime:)`: nudges `hookEntity.position.x` toward the current
+  `fishFight.fightDirection` at `fightDirectionLateralSpeed` (0.35 m/s), clamped within
+  `fightDirectionMaxLateralOffset` (1.0 m) of the rod's own X — purely cosmetic, does not feed back
+  into the tension check (which reads `RodState.roll` directly, not hook position).
+
+### World: HUD
+
+- `LineTensionView` gained a `fightDirection: FishFightController.FightDirection?` parameter and a
+  new row (shown only when non-`nil`): "Fish pulling ←/→" and "Lean rod →/←" (the literal opposite
+  arrow), beneath the existing tension bar. `World/World/ContentView.swift`'s call site updated to
+  pass `fishFight.fightDirection`. No changes to Rod — Core Haptics can't convey a left/right cue
+  through a single actuator, and World already owns gameplay HUD per this project's own
+  architecture contract, so this is the one place the cue can live.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-053.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with a "Fight
+  direction" paragraph, right after the existing "Fight camera (ADR-039)" note.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `git diff --check` clean on every file this entry touched.
+- Not run: any live session. All seven new config numbers are hand-picked, not measured — whether
+  5-10s/0.6-1.8s actually reads as "rapid" once played, whether the roll threshold (0.15 rad) is
+  achievable/comfortable on a real device, and whether the relief/penalty magnitudes make countering
+  feel meaningfully rewarding (vs. negligible or overwhelming) are all unverified until tried
+  physically.
+
+## Cast Hold Timer, Stronger Haptics, Eased Tier 3/4 Difficulty (ADR-054)
+
+Date: 2026-07-20.
+
+Requested directly, three asks in one message: "tampilin 'cast meter' nya di UI world. pake timer
+aja gimana? jadi semakin lama user nahan di 'belakang', ketika flick buat nge cast, jaraknya bakal
+semakin jauh tergantung seberapa lama timer nya berlangsung. Haptic nya juga kurang kerasa kenceng,
+bisa ditambah lagi intensitasnya. Sama, mudahin dikit dong ikan level 3 dan 4 nya." Recorded as
+ADR-054 in `ARCHITECTURE_DECISIONS.md`.
+
+### 1. Cast power: hold-duration timer, replacing ADR-032's pull-back distance
+
+Read `CastMeterView.swift` first: it already displays correctly and is already wired to appear
+(ADR-045's own finding) — the gap was the charging mechanism underneath, not the UI.
+
+- `Shared/Sources/Shared/Gameplay/CastResolver.swift`: `CastSnapshot.backswingDistance: Float` ->
+  `backswingHoldDuration: TimeInterval`. `CastConfig.minimumBackswingDistance`/
+  `maximumBackswingDistance` -> `minimumBackswingHoldDuration`/`maximumBackswingHoldDuration`
+  (0.15/1.5s). `resolve(_:)`'s `distancePower` calc -> `holdPower`, same formula shape against the
+  new bounds.
+- `Shared/Sources/Shared/Gameplay/RodMotionInterpreter.swift`: `backswingPeakDistance: Double`
+  tracking replaced with `castHoldStartTimestamp: TimeInterval?`, set the instant a cast attempt is
+  armed (`isCastingArmed`) and the pose first classifies as `.cast` (`enteredCast`), cleared on
+  every path that used to clear the old distance tracker (`updateProfile`, `setIdlePose`, the
+  `!isCastingArmed` early-out). `holdDuration = input.timestamp - castHoldStartTimestamp` feeds the
+  same `holdPower * (0.7 + 0.3 * flickPower)` blend as before — only the base term's source
+  changed. `snapshot(input:orientation:)` renamed to `snapshot(input:orientation:holdDuration:)`.
+- Confirmed via `grep` that no other file referenced `backswingDistance`/`backswingPeakDistance`/
+  `minimumBackswingDistance`/`maximumBackswingDistance` before removing them — clean rename, no
+  dead references left behind.
+
+### 2. Haptics: real intensity increase across every pattern
+
+`Rod/Rod/Haptics/HapticManager.swift`: cast 0.55->0.75, splash 0.32->0.45, reelTick 0.20->0.40,
+fishBite peaks 0.65->0.85, catchFish peak 0.95->1.00, lineBreak 0.90->1.00, fishEscaped peak
+0.50->0.70, fishInterested 0.22->0.35. `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`'s
+tension-band fields (Rod's continuous fight rhythm): intensity 0.30/0.45/0.70 -> 0.50/0.70/0.95,
+sharpness 0.30/0.45/0.60 -> 0.40/0.55/0.75 (crisper, not just louder). `catchFish`/`lineBreak` are
+now pinned at `1.0`, `CHHapticEventParameter.hapticIntensity`'s ceiling — already close before,
+nothing higher is possible on this API.
+
+### 3. Fish tier 3/4 eased
+
+`World/World/Gameplay/FishCatalog.swift`: initial pass lowered `fish_c` (tier 3, big) `resistance`
+0.75 -> 0.60 and `scott` (tier 4, boss) 0.95 -> 0.75, worked by hand against the same
+net-tension-rate formula ADR-039's own corrections used
+(`baseReelTensionRate - baseFishPullRate * (1 + resistance * pullRateResistanceMultiplier)` at max
+reel speed, max-size roll) — `fish_c` from a razor-thin ~+0.11/s to ~+0.18/s; `scott` from a
+barely-positive ~+0.02/s to ~+0.11/s. Tuned further afterward to `0.10` for `fish_b`, `fish_c`,
+and `scott` alike — only `fish_a` keeps its original `0.35` ceiling.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-054.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: rewrote the "Cast Resolver Pipeline" hold-duration
+  paragraph (noting the ADR-032 -> ADR-054 swap in place); added a "Tier 3/4 eased (ADR-054)" note
+  after the `resistance`/`sizeRatio` formula; added a haptic-intensity note to the existing
+  "Tension-band haptics (ADR-039)" paragraph.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `git diff --check` clean on every file this entry touched.
+- Not run: any live session. The hold-duration bounds (0.15/1.5s), every haptic intensity number,
+  and the two new resistance values are all hand-picked/hand-derived from formulas, not measured or
+  played — whether 1.5s feels like a natural "full charge" hold, whether the boosted haptics read
+  as strong without being uncomfortable, and whether tier 3/4 now feel appropriately "a bit easier"
+  rather than trivial or still-too-hard are all unverified until tried physically.
+
+## Reset Progress Button (ADR-055)
+
+Date: 2026-07-20.
+
+Requested directly: "bisa di tambahin button buat reset level ga ke level 1 lagi." Recorded as
+ADR-055 in `ARCHITECTURE_DECISIONS.md`.
+
+### World
+
+- `World/World/Gameplay/ProgressionStore.swift`: added `reset()` — clears the persisted per-tier
+  catch counts back to zero (`level` then reads 1).
+- `World/World/Gameplay/FishFightController.swift`: added `resetProgression()` — calls
+  `progressionStore.reset()`, resyncs `currentLevel` from it, clears `levelUpAnnouncement`.
+- `World/World/ViewModels/WorldViewModel.swift`: added `resetProgression()`, a thin passthrough.
+- `World/World/Views/MainMenuView.swift`: added an `onResetProgression: () -> Void` parameter and
+  a "Reset Progress" button (`role: .destructive`), shown unconditionally next to the existing
+  "Forget Device" row — same styling/no-confirmation precedent already established for that
+  button. `World/World/ContentView.swift`'s call site updated.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the already-built `Shared` macOS module, for the full
+  `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean on every file this entry touched.
+- Not run: any live session.

@@ -261,28 +261,28 @@ RodMotionInterpreter -> CastSnapshot -> RodState -> CastResolver
 ```
 
 `CastSnapshot` is immutable and contains corrected orientation, angular
-velocity, timestamp, and (ADR-032) `backswingDistance`: the peak angular
-distance from the calibrated idle pose reached during the gesture's
-backswing, tracked by `RodMotionInterpreter` and reset whenever a fresh
-cast gesture begins. `CastResolver` computes horizontal direction, launch
-angle, and normalized power. Raw angular velocity is never exposed to
-gameplay as a balancing value on its own — power is a blend where
-backswing distance is the base (zero backswing means zero power
-regardless of flick speed) and release-moment flick speed only adds up to
-a 30% bonus on top:
+velocity, timestamp, and `backswingHoldDuration` (seconds): how long the
+backswing/charging pose was held before release, tracked by
+`RodMotionInterpreter` and reset whenever a fresh cast gesture begins.
+`CastResolver` computes horizontal direction, launch angle, and normalized
+power. Raw angular velocity is never exposed to gameplay as a balancing
+value on its own — power is a blend where the hold duration is the base
+(zero hold means zero power regardless of flick speed) and release-moment
+flick speed only adds up to a 30% bonus on top:
 
 ```text
-power = distancePower * (0.7 + 0.3 * flickPower)
+power = holdPower * (0.7 + 0.3 * flickPower)
 ```
 
-This mirrors how a real rod loads on the backswing and releases on the
-forward snap, and fixes a reported bug where cast power tracked only how
-fast the phone was flicked at release, ignoring how far back it was
-pulled beforehand. `RodMotionInterpreter`'s live `castPower` (the
-charging-phase meter) approximates the same blend locally so the
-on-screen meter reflects what the eventual release will produce;
+**This was originally a pull-back-*distance* measurement (ADR-032), swapped to a hold-*duration*
+timer in ADR-054** — same blend shape and same reasoning (a real rod loads on the backswing and
+releases on the forward snap), just a more legible "hold to charge" mental model for the base term:
+`RodMotionInterpreter` tracks `castHoldStartTimestamp`, set the instant a cast attempt is armed
+(see below) and the pose first reads as a cast attempt; `holdDuration` is the elapsed time since.
+`RodMotionInterpreter`'s live `castPower` (the charging-phase meter) computes the same blend locally
+so the on-screen meter reflects what the eventual release will produce;
 `CastResolver`, driven by `CastConfig`'s `minimum`/`maximumCastVelocity`
-and `minimum`/`maximumBackswingDistance`, remains the single
+and `minimum`/`maximumBackswingHoldDuration` (0.15/1.5s), remains the single
 authoritative calculation that becomes the transmitted `CastSolution.
 power`.
 
@@ -672,7 +672,11 @@ every-motion-sample callback as the interest pulse and cleared by
 fight-ending events plus a `stopFight()` guard on `HookPhase` leaving the
 fight phases. This is the product doc's "resistance through rhythm as
 well as intensity" spec, keyed to live fight state rather than static
-fish size.
+fish size. Band intensities were raised (ADR-054, "haptic nya kurang
+kerasa kenceng") from 0.30/0.45/0.70 to 0.50/0.70/0.95 — alongside every
+other `HapticManager` pattern (cast, splash, reel tick, bite, catch,
+line break, escape, interest) getting a similar real increase, not just
+this one.
 
 **Fish Fight Tuning Config (ADR-039).**
 `Shared/Sources/Shared/Gameplay/FishFightConfig.swift` collects every
@@ -694,6 +698,27 @@ through `.flying`, `.fishOnHook`, and `.reeling` — the whole cast and
 fight are watched up close — snapping back to the fixed player pose in
 every other phase.
 
+**Fight direction: a timed left/right juking sub-phase (ADR-053).** The instant a fish bites,
+`fishFight.fightDirection` (`.left`/`.right`) starts a random 5-10s window (config-driven), flipping
+to the opposite side every random 0.6-1.8s — layered *on top of* the tension formula above, not a
+separate failure mode. `updateFight` takes `RodState.roll` and applies a tension delta each tick:
+
+```text
+correctly countering (.left needs rodRoll >= threshold, .right needs rodRoll <= -threshold)
+  -> tension -= fightDirectionCounterRelief per second
+not countering
+  -> tension += fightDirectionPenalty per second
+```
+
+A fish pulling `.left` requires a positive rod roll (leaning the rod right) to counter, matching
+real-fishing "rod-side pressure" — keeping the rod angled opposite a fish's sideways run. Purely
+visual, separate concern: `WorldViewModel.updateFightDirectionDrift(deltaTime:)` nudges the hook's
+world-X position toward the current direction (clamped near the rod's own X) so the fish visibly
+darts side to side; this never feeds back into the tension check above, which reads `RodState.roll`
+directly. Surfaced on `LineTensionView` (World HUD, not Rod) as a "Fish pulling ←/→" / "Lean rod
+→/←" row — Rod has no way to convey a left/right cue haptically, and World already owns gameplay
+HUD. All seven new numbers live in `FishFightConfig` alongside the rest of the fight tuning.
+
 `resistance` itself (ADR-030) is not read straight off the species — it is
 scaled by how big *this* catch rolled within the species' own range, so two
 fish of the same species do not fight identically:
@@ -708,6 +733,11 @@ where `minProduct`/`maxProduct` are `species.weightRange.min/max *
 species.lengthRange.min/max`. A catch that rolled near the species' min
 weight/length fights close to the base rate; one near the max fights at
 the full species `resistance`.
+
+**Tier 3/4 eased (ADR-054).** `FishCatalog.swift`'s `resistance` ceilings for `fish_b`, `fish_c`
+(tier 3, big), and `scott` (tier 4, boss) were tuned down to `0.10` each (an initial, more modest
+`0.75 -> 0.60`/`0.95 -> 0.75` pass for `fish_c`/`scott` was superseded by this further cut).
+`fish_a` alone keeps its original `0.35`.
 
 **Cast distance caps how big a fish can roll (ADR-031).**
 `WorldViewModel` measures the real horizontal distance a cast traveled —
@@ -1021,6 +1051,13 @@ neither view gates the other.
 distinct, singular, narratively-flagged encounter per the product ask, not just another random
 roll from the same pool as regular big fish — and unlocks at the same Level 3 threshold as
 `.big`, since three levels were specified, not four.
+
+**Reset Progress (ADR-055).** `ProgressionStore.reset()` clears every tier's stored catch count
+back to zero, dropping `level` to 1. `FishFightController.resetProgression()` calls it and also
+resyncs its own published `currentLevel`/clears any in-flight `levelUpAnnouncement`. Surfaced as a
+"Reset Progress" button on `MainMenuView`, alongside "Forget Device" — a debug/utility action
+unrelated to the ADR-038 session boundary, so it lives on the Main Menu rather than in the active
+gameplay HUD.
 
 ------------------------------------------------------------------------
 

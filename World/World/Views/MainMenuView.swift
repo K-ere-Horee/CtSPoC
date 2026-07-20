@@ -16,13 +16,14 @@ import SwiftUI
 /// No session-control button here (ADR-038): the session start/end boundary is owned entirely by
 /// Rod's own "Start Fishing"/"End Fishing" button — this screen only reflects status. Leaving is
 /// driven by `WorldViewModel` reacting to `RodState.isFishing` flipping true, not by anything
-/// tapped here. The one control this screen does own is "Forget Device," for device pairing —
-/// unrelated to the fishing session boundary.
+/// tapped here. The controls this screen does own — "Forget Device" (device pairing) and "Reset
+/// Progress" (tier-unlock progression) — are both unrelated to the fishing session boundary.
 struct MainMenuView: View {
     let connectionState: ConnectionState
     let pairedDeviceName: String?
     let hasPairedDevice: Bool
     let onForgetDevice: () -> Void
+    let onResetProgression: () -> Void
 
     private var isRodReady: Bool {
         connectionState == .ready || connectionState == .streaming
@@ -71,8 +72,14 @@ struct MainMenuView: View {
                         .foregroundStyle(.white.opacity(0.8))
                 }
 
-                pairedDeviceRow
-                    .padding(.bottom, 60)
+                VStack(spacing: 10) {
+                    pairedDeviceRow
+                    Button("Reset Progress", role: .destructive, action: onResetProgression)
+                        .font(.caption)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.red.opacity(0.8))
+                }
+                .padding(.bottom, 60)
             }
         }
     }

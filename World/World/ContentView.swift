@@ -28,7 +28,8 @@ struct ContentView: View {
                     connectionState: viewModel.connectionState,
                     pairedDeviceName: viewModel.pairedDeviceName,
                     hasPairedDevice: viewModel.hasPairedDevice,
-                    onForgetDevice: viewModel.forgetPairedDevice
+                    onForgetDevice: viewModel.forgetPairedDevice,
+                    onResetProgression: viewModel.resetProgression
                 )
             }
 
@@ -107,7 +108,8 @@ struct ContentView: View {
             Group {
                 LineTensionView(
                     isFighting: fishFight.hasFishOnHook,
-                    tension: fishFight.lineTension
+                    tension: fishFight.lineTension,
+                    fightDirection: fishFight.fightDirection
                 )
 
                 GroupBox {
