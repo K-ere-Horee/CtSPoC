@@ -4740,3 +4740,65 @@ as ADR-042 in `ARCHITECTURE_DECISIONS.md`.
   against the dock/water asset geometry or played — whether the lift point looks natural, and
   whether the reworked catch threshold now feels like "right at the pier" rather than too early or
   too late, are both unverified until played.
+
+## Known Issue (TODO, Not Fixed Here): Reel Speed Feel and Hook Overlapping the Pier on Lift
+
+Date: 2026-07-20.
+
+Live playtest of the ADR-042 fix above surfaced two follow-up problems, reported directly: "masih
+aga wongky soalnya bobber spednya masih konstan, sekaligus waktu ngangkat, kayanya masih overlap
+sama pier (maybe kurang ke depan dikit?)" (still a bit wonky — the bobber's speed still feels
+constant, and when it lifts, it seems to still overlap with the pier — maybe it needs to be a
+little more forward?). Recorded here as a TODO for a future session, not fixed in this pass — no
+code changed. A background task chip was also spawned for this (see the session's task list); this
+entry is the durable record in case that chip is dismissed or this repo is picked up from a fresh
+session instead.
+
+### Issue 1: reel-in speed feels constant
+
+`WorldViewModel.reelHook(deltaTime:)`'s `playerSpeed = max(0.35, rodState.reelSpeed * reelSpeed)`
+(`reelSpeed` the private `3.0` base constant, `rodState.reelSpeed` the live 0...1 value from Rod's
+calibrated rotation-rate ramp, ADR-025) is written to vary with how fast the player physically
+reels — but the player's report is that it doesn't read that way in practice. Not root-caused in
+this pass. Worth checking, in rough priority order:
+
+- Whether this is a recurrence of the original ADR-025 bug (`RodState.reelSpeed` itself reading as
+  near-constant instead of ramping 0...1) rather than a problem in `reelHook`'s own math — that bug
+  was fixed by calibrating against the player's own demonstrated peak rotation rate
+  (`reelFullRotationRate`), so a poorly-calibrated or stale `MotionProfile` could reintroduce the
+  same symptom without the `reelHook` code itself regressing.
+- Whether the `0.35` floor dominates perceived motion (i.e. most real reeling inputs land close to
+  the floor, so the variable part above it rarely shows).
+- Whether the ADR-039 tug-of-war subtraction (`netSpeed = playerSpeed - fishFight.fishPullSpeed`)
+  is flattening the visible range during an actual fight — distinct from a fishless empty retrieve,
+  worth testing both cases separately to isolate which path feels constant.
+- Whether "wongky" actually means "no acceleration/deceleration curve" (an expectation of eased
+  motion) rather than literally "the number never changes" — worth clarifying against a live
+  session with the existing Rod debug reel-speed readout before assuming which of the above it is.
+
+### Issue 2: hook appears to overlap the pier when lifted near the end of a reel-in
+
+`dockAnchorPosition` (`[0.22, 1.95, -2.1]`, `WorldViewModel.swift`) — the point `reelHook`'s
+full-3D lift phase (inside `hookLiftDistance`, ADR-042) moves the hook toward — was derived from
+the camera position and the rod's held offset (see its own doc comment: `playerCameraPosition +
+(0.22, -0.45, -0.60)`), not from the dock/pier's actual collision geometry. It was never checked
+against where the physical dock mesh actually sits, so there's no guarantee the lift target clears
+it. Player's own guess ("kurang ke depan dikit," needs to be a bit more forward) points at the
+same conclusion. Worth checking, in rough priority order:
+
+- Whether nudging `dockAnchorPosition` further along -Z (further out over the water, away from the
+  dock structure) resolves it outright, or whether it needs to move without disturbing the rod's
+  own held-position feel (`dockAnchorPosition` also anchors the rendered rod/line rig, not just the
+  reel-in lift target — moving it affects both).
+- Whether the cleaner fix is a *separate* "lift target" point distinct from `dockAnchorPosition`
+  specifically for where `reelHook`'s near-zone motion aims, so the rod-hold anchor (rendering) and
+  the "where the bobber should visually emerge from the water" point (gameplay motion) aren't
+  conflated — consistent with this project's existing rod-root/hook separation (ADR-019).
+- Whichever fix is chosen, verify against the actual `dock_main.usdz` geometry (not just eyeballed
+  in a screenshot) — this project's own asset-integration history has repeated "checked the asset
+  directly instead of guessing" as the reliable way to resolve exactly this kind of
+  geometry-vs-constant mismatch.
+
+### Verification
+
+Not applicable — no code changed in this entry, TODO only.
