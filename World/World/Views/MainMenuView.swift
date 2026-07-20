@@ -13,11 +13,16 @@ import SwiftUI
 /// scene keeps loading/connecting underneath it, but the player shouldn't see gameplay peeking
 /// through a title screen.
 ///
-/// No button here (ADR-038): the session start/end boundary is owned entirely by Rod's own
-/// "Start Fishing"/"End Fishing" button — this screen only reflects status. Leaving is driven by
-/// `WorldViewModel` reacting to `RodState.isFishing` flipping true, not by anything tapped here.
+/// No session-control button here (ADR-038): the session start/end boundary is owned entirely by
+/// Rod's own "Start Fishing"/"End Fishing" button — this screen only reflects status. Leaving is
+/// driven by `WorldViewModel` reacting to `RodState.isFishing` flipping true, not by anything
+/// tapped here. The one control this screen does own is "Forget Device," for device pairing —
+/// unrelated to the fishing session boundary.
 struct MainMenuView: View {
     let connectionState: ConnectionState
+    let pairedDeviceName: String?
+    let hasPairedDevice: Bool
+    let onForgetDevice: () -> Void
 
     private var isRodReady: Bool {
         connectionState == .ready || connectionState == .streaming
@@ -65,7 +70,27 @@ struct MainMenuView: View {
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.8))
                 }
-                .padding(.bottom, 60)
+
+                pairedDeviceRow
+                    .padding(.bottom, 60)
+            }
+        }
+    }
+
+    /// Shows which Rod this Mac is paired with (see `PairedDeviceStore`/ADR-043), and a way to
+    /// clear that pairing to pair with a different phone — device pairing is unrelated to the
+    /// fishing session boundary, so it lives here rather than gated behind `isRodReady`.
+    @ViewBuilder
+    private var pairedDeviceRow: some View {
+        if hasPairedDevice {
+            VStack(spacing: 4) {
+                Text("Paired with \(pairedDeviceName ?? "Rod")")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.5))
+                Button("Forget Device", role: .destructive, action: onForgetDevice)
+                    .font(.caption)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.red.opacity(0.8))
             }
         }
     }

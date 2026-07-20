@@ -35,6 +35,11 @@ struct ContentView: View {
                 fishingButton
                     .padding(.horizontal, 32)
 
+                if viewModel.isFishing {
+                    startCastingButton
+                        .padding(.horizontal, 32)
+                }
+
                 if viewModel.calibrationStep != .complete {
                     Text(calibrationInstruction)
                         .font(.caption)
@@ -104,6 +109,23 @@ struct ContentView: View {
         }
     }
 
+    /// Arms one cast attempt (see `RodViewModel.startCasting()`/`RodMotionInterpreter`'s own doc
+    /// comment) rather than casting always being live off ordinary phone motion. Disabled once
+    /// `hookPhase != .idle` (per `HookPhase.allowsCasting` — a cast couldn't complete anyway) or
+    /// once already armed, so re-pressing mid-charge does nothing rather than looking like a
+    /// second, independent arm.
+    private var startCastingButton: some View {
+        Button {
+            viewModel.startCasting()
+        } label: {
+            Label(viewModel.isCastingArmed ? "Casting Armed\u{2026}" : "Start Casting", systemImage: "arrow.up.forward")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+        .disabled(viewModel.hookPhase != .idle || viewModel.isCastingArmed)
+    }
+
     private var developerDetails: some View {
         VStack(alignment: .leading, spacing: 16) {
             Group {
@@ -115,6 +137,13 @@ struct ContentView: View {
                 statusRow("Motion Phase", value: viewModel.motionPhase.rawValue)
                 statusRow("Hook Phase", value: viewModel.hookPhase.rawValue)
                 statusRow("Fishing", value: viewModel.isFishing ? "active" : "inactive")
+                if viewModel.hasPairedDevice {
+                    statusRow("Paired Mac", value: viewModel.pairedDeviceShortID ?? "--")
+                    Button("Forget Paired Mac", role: .destructive) {
+                        viewModel.forgetPairedDevice()
+                    }
+                    .font(.caption)
+                }
             }
 
             Group {

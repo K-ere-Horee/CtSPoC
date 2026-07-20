@@ -38,6 +38,12 @@ final class RodViewModel: ObservableObject {
     /// "Start Fishing" (after calibrating) before physical motion is
     /// interpreted as gameplay intent; "End Fishing" clears it again.
     @Published private(set) var isFishing = false
+    /// Gates whether `RodMotionInterpreter` treats a cast-classified pose as a real cast attempt.
+    /// Set by the "Start Casting" button, not automatic — otherwise ordinary phone movement that
+    /// happens to read closest to the calibrated `castPose` would silently start charging. Cleared
+    /// automatically once a cast actually fires (`updateAction()`), whenever `hookPhase` leaves
+    /// `.idle`, or on `endFishing()` — a stale arm can never survive past one cast attempt.
+    @Published private(set) var isCastingArmed = false
 
     /// Debug-only: the calibrated `reelSpeed` ramp's min/max rotation rate (`calibrateMotion()`'s
     /// `.reel` step), surfaced so a narrow calibrated range — the leading suspect for the
@@ -165,6 +171,17 @@ final class RodViewModel: ObservableObject {
         hasStarted = false
     }
 
+    /// The World this session is paired with (see `PairedCentralStore`), for display in Developer
+    /// Details — `nil` until a central has ever subscribed. `CBCentral` has no display name, only
+    /// an identifier, so only a short ID is shown.
+    var pairedDeviceShortID: String? { transport.pairedDeviceShortID }
+    var hasPairedDevice: Bool { transport.hasPairedDevice }
+
+    /// Clears the saved pairing so the next Mac to subscribe becomes the new paired device.
+    func forgetPairedDevice() {
+        transport.forgetPairedDevice()
+    }
+
     func startFishing() {
         guard calibrationStep == .complete else { return }
         isFishing = true
@@ -172,6 +189,17 @@ final class RodViewModel: ObservableObject {
 
     func endFishing() {
         isFishing = false
+        isCastingArmed = false
+    }
+
+    /// Arms one cast attempt: until this is pressed, `RodMotionInterpreter` ignores a
+    /// cast-classified pose entirely (see its own doc comment), so idly holding or moving the
+    /// phone can never accidentally start charging a cast. Requires an actual fishing session and
+    /// an idle hook — mirrors `HookPhase.allowsCasting`, since arming while a cast couldn't
+    /// possibly be allowed to complete would just leave the button stuck "armed" for nothing.
+    func startCasting() {
+        guard isFishing, hookPhase == .idle, !isCastingArmed else { return }
+        isCastingArmed = true
     }
 
     func calibrateMotion() {
@@ -235,6 +263,9 @@ final class RodViewModel: ObservableObject {
             fishingHaptics.handle(event)
         case let .hookPhase(phase):
             hookPhase = phase
+            if phase != .idle {
+                isCastingArmed = false
+            }
             if phase != .hookInWater {
                 fishingHaptics.stopInterest()
             }
@@ -290,7 +321,7 @@ final class RodViewModel: ObservableObject {
         let previousAction = action
         motionAccelerationZ = motion.accelerationZ
         motionRotationRate = motion.rotationRateMagnitude
-        let interpretation = motionInterpreter.interpret(motionInput)
+        let interpretation = motionInterpreter.interpret(motionInput, isCastingArmed: isCastingArmed)
         debugRecorder.append(
             MotionDebugSample(
                 input: motionInput,
@@ -304,6 +335,8 @@ final class RodViewModel: ObservableObject {
         if let snapshot = interpretation.castSnapshot {
             let resolved = castResolver.resolve(snapshot)
             resolvedCastSolution = resolved.with(distance: castMeterConfig.distance(for: resolved.power))
+            // A real cast just fired — one "Start Casting" press only ever arms a single attempt.
+            isCastingArmed = false
         } else {
             resolvedCastSolution = rodState.castSolution
         }

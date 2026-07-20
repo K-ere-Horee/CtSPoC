@@ -138,10 +138,17 @@ public final class RodMotionInterpreter {
         backswingPeakDistance = 0
     }
 
-    public func interpret(_ input: RodMotionInput) -> RodMotionInterpretation {
+    /// - Parameter isCastingArmed: Gates whether a pose classified closest to `castPose` is
+    ///   actually treated as a cast attempt. When `false`, any such pose is treated exactly like
+    ///   `.idle` — no backswing tracking, no charging phase, no cast meter — so ordinary phone
+    ///   movement can never accidentally start a charge. The caller (Rod's "Start Casting" button)
+    ///   sets this only for the duration of one attempt; it's automatically consumed (the caller
+    ///   should disarm) once `RodMotionInterpretation.castSnapshot` comes back non-`nil`, meaning a
+    ///   real cast just fired.
+    public func interpret(_ input: RodMotionInput, isCastingArmed: Bool) -> RodMotionInterpretation {
         let current = MotionPose(pitch: input.pitch, roll: input.roll, yaw: input.yaw)
         let currentOrientation = RodOrientation.from(pitch: input.pitch, roll: input.roll, yaw: input.yaw)
-        
+
         guard hasIdleReference else {
             return result(pose: current, orientation: currentOrientation, phase: .invalid, action: .idle, reelSpeed: 0, castPower: 0, debug: emptyDebug)
         }
@@ -172,6 +179,14 @@ public final class RodMotionInterpreter {
         }
 
         switch classification {
+        case .cast where !isCastingArmed:
+            // Pose reads closest to `castPose`, but no "Start Casting" press has armed a cast
+            // attempt — treat exactly like `.idle` rather than silently tracking a backswing the
+            // player never asked for.
+            previousClassification = .idle
+            previousCastPhase = .idle
+            backswingPeakDistance = 0
+            return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .idle, action: .idle, reelSpeed: 0, castPower: 0, debug: debug)
         case .cast:
             let enteredCast = previousClassification != .cast
             if enteredCast {

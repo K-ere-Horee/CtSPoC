@@ -4931,3 +4931,252 @@ existing ADR-025 already documents the calibration formula this instruments.
 - Not run: any live session. This entry adds observability only; Issue 1 itself remains open,
   should be re-evaluated once "Reel Calibration Range" vs. live "Rotation Rate" can actually be
   compared during a played reel-in.
+
+## Device Pairing Allowlist Over CoreBluetooth (ADR-044)
+
+Date: 2026-07-20.
+
+Requested directly as the first of three jobs in one message: "list saved device, biar 1 hp ga
+konek ke mac lain (setup device pair di awal. pake bluetooth connected aja kali ya)." Recorded as
+ADR-044 in `ARCHITECTURE_DECISIONS.md`.
+
+### World: PairedDeviceStore + TransportHost
+
+- Added `World/World/Transport/PairedDeviceStore.swift`: persists the paired Rod's
+  `CBPeripheral.identifier`/`.name` to `UserDefaults` (same pattern as `FishRecordStore`).
+- `TransportHost.swift`: `startScanningIfPossible()` now tries `centralManager.retrievePeripherals
+  (withIdentifiers:)` for the saved identifier first, falling back to a normal scan.
+  `didDiscover` ignores any peripheral that doesn't match the saved identifier once one exists.
+  `didUpdateNotificationStateFor`'s `.ready` branch saves the pairing on the first full success if
+  none exists yet. Added `forgetPairedDevice()`: tears down the current connection, clears the
+  store, and immediately resumes scanning in first-run mode. Added `pairedDeviceName`/
+  `hasPairedDevice` read-only accessors.
+
+### Rod: PairedCentralStore + TransportClient
+
+- Added `Rod/Rod/Transport/PairedCentralStore.swift`: persists the paired central's
+  `CBCentral.identifier` (no name — `CBCentral` exposes none).
+- `TransportClient.swift`: `didSubscribeTo` ignores any central that doesn't match the saved
+  identifier once one exists, and saves the first subscriber as the pairing if none exists yet.
+  **Also fixed a real data-leak gap found while making this change**: `sendUnreliable`/
+  `drainReliableQueue` previously called `peripheralManager.updateValue(_:for:
+  onSubscribedCentrals: nil)` — `nil` targets *every* subscribed central, not just the one the app
+  considers "connected." An unpaired Mac that happened to subscribe would therefore have kept
+  receiving real `RodState`/event data over the air even though `subscribedCentral`/`isConnected`
+  never reflected it. Added a `sendTargets` computed property (`subscribedCentral.map { [$0] }`)
+  and pass it instead of `nil` at both call sites, so an unpaired central now receives nothing at
+  the BLE level, not just at the app's own bookkeeping level. Added `forgetPairedDevice()`
+  (mirrors World's) and `pairedDeviceShortID`/`hasPairedDevice` accessors.
+
+### UI
+
+- `World/World/Views/MainMenuView.swift`: gained `pairedDeviceName`/`hasPairedDevice`/
+  `onForgetDevice` parameters and a "Paired with `<name>`" line + "Forget Device" button, shown
+  regardless of `isRodReady` (device pairing is unrelated to the ADR-038 fishing-session boundary).
+  `World/World/ContentView.swift` updated the call site.
+- `Rod/Rod/ContentView.swift`: Developer Details' "Connection" group gained a "Paired Mac" row
+  (short ID) and a "Forget Paired Mac" button, conditional on `viewModel.hasPairedDevice`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-044.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the "CoreBluetooth Transport (ADR-035)" section
+  with a "Device pairing allowlist" paragraph.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `git diff` on every touched file confirmed additive-only changes, no interference with the
+  concurrently-landed ADR-043 (hook lift target) or the ADR-042-issue-1 diagnostic work in the same
+  files (`WorldViewModel.swift`, `RodViewModel.swift`, `Rod/ContentView.swift`).
+- Not run: any live session with two physical devices. In particular, unverified: whether
+  `retrievePeripherals(withIdentifiers:)` reliably returns the known Rod across a real app restart
+  on this hardware (CoreBluetooth's own caching behavior here is not something this environment can
+  observe), and the actual "second Mac/phone in range gets ignored" scenario this was built for.
+
+## Explicit "Start Casting" Arm Gate (ADR-045)
+
+Date: 2026-07-20.
+
+Requested directly as the second of three jobs in one message: "add button 'start casting' di rod,
+terus munculin 'cast meter'. nah, core motion nya, harus narik hp ke belakang (jadi semakin - nilai
+pitch maybe), maka ketika nge flick, akan makin jauh. so maybe detect dari original device, ukur
+seberapa jauh device bergerak, baru 'cast' nya itu ketika nge flick device. langsung disable tombol
+'start casting' kalo kondisi hook nya != idle." Recorded as ADR-045 in `ARCHITECTURE_DECISIONS.md`.
+
+Read `RodMotionInterpreter`/`CastResolver` before writing anything: the "measure how far back it
+moved, fire on the flick" mechanic the player described already exists end-to-end (ADR-032's
+`backswingPeakDistance` blend) — the actual gap was that casting was always "live" off pose
+proximity alone, with no explicit intent step.
+
+### Shared: RodMotionInterpreter
+
+- `interpret(_:)` gained a required `isCastingArmed: Bool` parameter. Added a `case .cast where
+  !isCastingArmed:` branch ahead of the existing `.cast` case: treats the pose exactly like `.idle`
+  (no backswing tracking, no charging phase, `castPower` 0) regardless of how close it reads to
+  `castPose`. The existing armed-path logic (backswing tracking, charging phase, release
+  detection, `CastSnapshot` production) is otherwise byte-for-byte unchanged.
+
+### Rod: RodViewModel
+
+- Added `@Published private(set) var isCastingArmed = false` and `startCasting()`, guarded to
+  `isFishing && hookPhase == .idle && !isCastingArmed`.
+- `updateAction()`'s single `motionInterpreter.interpret(...)` call site now passes
+  `isCastingArmed: isCastingArmed`; the moment `interpretation.castSnapshot` comes back non-`nil`
+  (a real cast just fired), `isCastingArmed` is cleared — one press only ever arms one attempt.
+- `handle(_:)`'s `.hookPhase` case clears `isCastingArmed` whenever the incoming phase isn't
+  `.idle`, for any reason. `endFishing()` clears it too.
+
+### Rod: ContentView
+
+- Added a "Start Casting" button, shown only while `viewModel.isFishing`, disabled whenever
+  `hookPhase != .idle` or already armed (label swaps to "Casting Armed…" while armed).
+
+### World: CastMeterView
+
+- No changes. Its visibility already follows `RodState.motionPhase` reaching a charging-related
+  phase (backswing/charging/forwardSwing/release/followThrough) — since those phases can now only
+  be reached once armed, pressing "Start Casting" makes the meter appear as a direct consequence of
+  existing wiring, confirmed by reading `CastMeterView.isVisible` rather than assumed.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-045.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Cast Resolver Pipeline" with the arm-gate
+  paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: Rod's "intended final controller interface" now lists "Start
+  Casting" as a fourth control (between Start Fishing and Calibrate), and the "Cast" section notes
+  the explicit arm step alongside the existing "casting is a natural motion" framing.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- Confirmed by direct `grep` that `motionInterpreter.interpret(` has exactly one call site
+  (`RodViewModel.updateAction()`), so no other caller needed updating for the new required
+  parameter.
+- Not run: any live session. Whether the arm/disarm lifecycle feels natural, whether the
+  backswing/flick mechanic itself (unchanged by this entry, but never confirmed live either) reads
+  as intended once gated behind an explicit press, and whether "Casting Armed…" is clear enough
+  feedback are all unverified until tried on a physical device.
+
+## Rod Rig Pass: Bend Smoothing, Placeholder Reel Spin, Line-Follow Fix (ADR-046)
+
+Date: 2026-07-20.
+
+Requested directly as the third of three jobs in one message: "benerin rod (rod diem or bend, reel
+muter, line ngikut)." Recorded as ADR-046 in `ARCHITECTURE_DECISIONS.md`.
+
+### Investigation before writing anything
+
+- Read `RodRigController.swift` and `WorldViewModel.updateRodPose()`/`tick(deltaTime:)` fully.
+  Found no obvious functional bug in the primary whole-rig rotation path.
+- Extracted `rod_main.usdz` (`unzip`, then `usdcat` to ASCII) and read it directly rather than
+  guessing whether a reel asset exists: confirmed the skeleton has exactly six joints (`Root`,
+  `Handle`, `Rod_01/02/03`, `Tip`) and the mesh data is one `Mesh` prim with two material
+  `GeomSubset`s (`rod06`, `RodThread`) — no reel/spool geometry or joint anywhere in the file.
+- Re-read the "Asset-Integration Environment, First-Person Camera, and Rod Motion Fixes" entry's
+  own "Known Remaining Issue" note — it already precisely describes the line-fork bug and proposes
+  the exact fix (counter-rotate for the parent's world orientation) implemented here.
+
+### World: RodRigController
+
+- Added `bendSmoothing = 0.25` and `smoothedBendPitch`/`smoothedBendRoll` stored fields.
+  `applyBend(pitch:roll:)` is now `mutating`, low-pass-filtering its inputs before computing
+  per-joint bend angles — read as the most likely explanation for "rod diem or bend" (raw per-sample
+  noise reading as alternating rigid/odd-flex frames), though this is an inference, not a confirmed
+  live diagnosis (no device available to observe the actual symptom).
+- Added a placeholder reel: `reelEntity` (`ModelEntity`, flattened `generateSphere`, dark
+  metallic `SimpleMaterial`) pinned to the `Handle` joint via the same `pins.set`/`attach(to:)`
+  mechanism `load()` already uses for the tip marker and line attachment. New
+  `applyReelSpin(reelSpeed:isReeling:deltaTime:)` rotates it around local Y proportional to
+  `reelSpeed` while `isReeling`; `spinRate` (6.0 rad/s at full speed) is hand-picked, not measured
+  against any real reel geometry (none exists).
+- `applyLineTension(_:)`: reads `tipEntity?.orientation(relativeTo: nil)` and rotates the sag axis
+  (previously a fixed local `[1, 0, 0]`) by that orientation's inverse before building each joint's
+  sag rotation. Approximates rather than fully simulates — counters against the tip's world
+  orientation specifically, not each line joint's own preceding rotation, which is reasonable given
+  each joint's contribution is small (bounded by the existing `maxLineSagAnglePerJoint`).
+
+### World: WorldViewModel
+
+- `tick(deltaTime:)` gained one line calling `rodRig?.applyReelSpin(reelSpeed: rodState.reelSpeed,
+  isReeling: rodState.action == .reeling, deltaTime: deltaTime)`, alongside the existing
+  `applyLineTension` call.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-046.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added a new "Rod Rig Visual Fixes (ADR-046)" section — this
+  is the rig's first dedicated SAD section; previously only `CHECKPOINT.md`'s asset-integration
+  entries covered it.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the already-rebuilt `Shared` macOS module, for the full
+  `World/World` file list — exit code 0, no errors. (Rod was unaffected by this entry — not
+  re-typechecked for this specific change, though the full-repo pass at the end of this session's
+  three jobs covers it.)
+- `git diff --check` clean on every touched file.
+- Not run: any live session. All three fixes are explicitly first-pass/approximated per their own
+  doc comments above — whether the bend-smoothing interpretation was even the right read of "rod
+  diem or bend," whether the placeholder reel's spin rate/position look reasonable, and whether the
+  line-follow fix actually reads as "following" now (vs. some other remaining artifact) are all
+  unverified until played. If "rod diem or bend" turns out to mean something else entirely once
+  seen live, that's the first thing to revisit.
+
+## Floating Bobber: Idle Bob and a Pre-Bite "Interest Dip" (ADR-047)
+
+Date: 2026-07-20.
+
+Reported directly after the previous three jobs: "bobber nya celap celup (just like in real life),
+karena yang sekarang langsung nge bite gitu ikannya, jadi kurang realistis. also, bobber movement
+masih terlalu static, seharusnya bobber itu dinamis naik turun kecil kaya pelampung in real life."
+Recorded as ADR-047 in `ARCHITECTURE_DECISIONS.md`.
+
+Read `WorldViewModel.tick(deltaTime:)`'s `.hookInWater` case first: confirmed `hookEntity.position.y`
+was never touched at all during search unless the player was reeling in an empty line — the hook sat
+perfectly still at `waterHeight` from splash to bite, and the bite itself
+(`FishFightController.updateSearching`'s `.bite` case) went straight to `.fishOnHook` with no visual
+lead-up. Also confirmed `FishFightController.isFishInterested` (ADR-029) already existed and had
+exactly the right timing (a 0.8-2.0s pre-bite window) but had never had a visual consumer on the
+hook itself — only a Rod haptic pulse and a World bubble-loop sound.
+
+### World: WorldViewModel
+
+- Added `idleBobAmplitude`/`idleBobFrequency` (0.02 m, 0.5 Hz) and `interestDipAmplitude`/
+  `interestDipFrequency` (0.06 m, 2.0 Hz) constants, plus `bobberBobPhase: Float` state.
+- Added `updateBobberFloat(deltaTime:)`: `hookEntity.position.y = waterHeight + idleBob +
+  interestDip`, where `idleBob` is always-present and `interestDip` (downward-only,
+  `-abs(sin(...))`) layers on top only while `fishFight.isFishInterested`.
+- `tick()`'s `.hookInWater` case now calls `updateBobberFloat(deltaTime:)` in the `else` branch of
+  the existing `rodState.action == .reeling` check — deliberately mutually exclusive with
+  `reelHook`, so the two never fight over `hookEntity.position.y` on the same tick. Does not run
+  during `.fishOnHook`/`.reeling` either (`driftHookAway`/the fight mechanics own the hook's
+  vertical position there for their own reasons).
+- `simulateFlyingHook(deltaTime:)`: added `bobberBobPhase = 0` alongside the existing
+  `fishFight.resetForNewCast(...)` reset at splash, so the bob pattern doesn't carry an arbitrary
+  phase across casts.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-047.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added a new "Floating Bobber (ADR-047)" section; updated the
+  "Fish Interest..." section's now-stale "`isFishInterested`... for a future World visual cue (not
+  built yet)" line to point at it instead.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the already-built `Shared` macOS module, for the full
+  `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session. All four constants (`idleBobAmplitude`/`idleBobFrequency`/
+  `interestDipAmplitude`/`interestDipFrequency`) are hand-picked, not measured against reference
+  footage or played — whether the idle bob reads as "alive" without being distracting, and whether
+  the interest dip is a clear enough pre-bite tell without looking glitchy, are both unverified
+  until watched running.

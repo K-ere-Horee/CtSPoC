@@ -11,6 +11,283 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-047 --- Floating Bobber: Idle Bob and a Pre-Bite "Interest Dip"
+
+## Decision
+
+`WorldViewModel` never touched `hookEntity.position.y` at all during `.hookInWater` (unless the
+player was reeling in an empty line) — the hook sat perfectly still at `waterHeight` from splash
+until whatever happened next (bite or reel-in), and the bite itself (`FishFightController
+.updateSearching`'s `.bite` case) transitioned straight to `.fishOnHook` with no visual lead-up.
+
+Added `updateBobberFloat(deltaTime:)`, called from `tick()`'s `.hookInWater` case whenever the
+player *isn't* reeling (so it never fights with `reelHook`/the fight mechanics for control of
+`hookEntity.position.y`):
+
+```text
+idleBob     = sin(bobberBobPhase * idleBobFrequency * 2π) * idleBobAmplitude        (0.02 m, 0.5 Hz)
+interestDip = fishFight.isFishInterested
+                ? -abs(sin(bobberBobPhase * interestDipFrequency * 2π)) * interestDipAmplitude
+                : 0                                                                  (0.06 m, 2.0 Hz)
+hookEntity.position.y = waterHeight + idleBob + interestDip
+```
+
+`idleBob` is a small, slow, always-present sine wave — ambient buoyancy realism, not a gameplay
+signal. `interestDip` layers on top only while `fishFight.isFishInterested` (the existing ADR-029
+pre-bite state) is true: sharper, faster, and downward-only (`-abs(sin(...))`), reading as a fish
+visibly nibbling and tugging the float toward the surface before the real bite fires, rather than
+the bite happening with zero visual warning. `bobberBobPhase` resets to `0` on every fresh splash
+(`simulateFlyingHook`) so the pattern doesn't carry an arbitrary phase across casts.
+
+## Rationale
+
+Requested directly: "bobber nya celap celup (just like in real life), karena yang sekarang langsung
+nge bite gitu ikannya, jadi kurang realistis. also, bobber movement masih terlalu static,
+seharusnya bobber itu dinamis naik turun kecil kaya pelampung in real life" (the bobber should dip
+in and out like in real life, because right now the fish bites immediately, which feels
+unrealistic; also, the bobber's movement is still too static — it should dip up and down slightly,
+dynamically, like a real floater).
+
+Reusing the existing `isFishInterested` state (rather than adding new fight-controller state) was a
+direct fit: ADR-029 already models a 0.8-2.0s pre-bite "interested" window specifically so a fish's
+presence can be telegraphed before the strike — it just never had a *visual* consumer on the hook
+itself before this entry, only a haptic pulse (Rod) and a bubble-loop sound (World). Layering the
+dip on top of, rather than replacing, the idle bob means the two complaints compose naturally: an
+idle float always looks alive, and a nibbling float looks *more* alive, in the same direction real
+bobber fishing actually reads (dips get more insistent as a fish investigates, then it goes under).
+
+`idleBobAmplitude`/`idleBobFrequency`/`interestDipAmplitude`/`interestDipFrequency` are all
+hand-picked, not measured against any reference footage or played — a first pass at the requested
+feel, expected to need retuning once actually watched running.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World`
+(macOS) target only (see the matching `CHECKPOINT.md` entry), not yet played.
+
+------------------------------------------------------------------------
+
+# ADR-046 --- Rod Rig Pass: Bend Smoothing, Placeholder Reel Spin, Line-Follow Fix
+
+## Decision
+
+Three related `RodRigController` (World) fixes, requested together as the third of three jobs in
+one message ("benerin rod (rod diem or bend, reel muter, line ngikut)" — fix the rod: stays still
+or bends [correctly], reel spins, line follows):
+
+**Bend smoothing.** `applyBend(pitch:roll:)` became `mutating` and now runs the raw `pitch`/`roll`
+it receives through a one-pole low-pass filter (`bendSmoothing = 0.25`) before computing the
+per-joint bend angles, stored as new `smoothedBendPitch`/`smoothedBendRoll` fields. This does not
+touch the primary whole-rig rotation (`WorldViewModel.updateRodPose()`'s `controllerEntity.orientation
+= RodState.orientation`, still exactly per ADR-016) — only the secondary flex visualization this
+function already owned. Raw per-sample sensor noise fed directly into a per-frame bend computation
+can read as the rod alternating between looking rigid and snapping into an odd flex frame-to-frame;
+this is the same class of visible jitter this project already diagnosed and fixed once for the
+whole-rig rotation itself (`CHECKPOINT.md`'s "Rod Tingling" entry, later superseded when the
+asset-integration merge moved smoothing off the primary orientation per ADR-016/019) — just not yet
+applied to this specific supplementary effect.
+
+**Placeholder reel spin.** Confirmed by extracting and directly inspecting `rod_main.usdz` (not
+assumed): its skeleton has exactly six joints (`Root`, `Handle`, `Rod_01/02/03`, `Tip`) and its mesh
+data is a single `Mesh` prim with two material `GeomSubset`s (`rod06`, `RodThread`) — no reel/spool
+geometry or joint exists anywhere in the asset. A real modeled reel is therefore a follow-up asset
+task in the sibling Blender repo (`AGENTS.md`'s "Asset source repo" convention), not fixable from
+this repo alone. Added a placeholder: a flattened-sphere `ModelEntity` (matching this project's own
+established precedent of primitive shapes standing in for missing assets — the hook and the
+pre-asset-integration rod "arrow" did the same) pinned near the `Handle` joint via the same
+skeletal-pin mechanism `load()` already uses for the tip marker and line attachment. New
+`applyReelSpin(reelSpeed:isReeling:deltaTime:)` rotates it around its local Y axis proportional to
+`RodState.reelSpeed` while `RodState.action == .reeling`, called every tick from
+`WorldViewModel.tick(deltaTime:)` alongside the existing `applyLineTension` call.
+
+**Line-follow fix (a previously known, unfixed issue).** `rod_line.usdz`'s root inherits the rod's
+Tip joint's full *world* orientation (attached via the pin `load()` sets up), so
+`applyLineTension`'s fixed local-X sag axis used to rotate along with whatever roll `applyBend` gave
+the tip — under combined pitch+roll the line visibly forked away from the rod's own bend plane
+instead of drooping toward true down. This is the exact issue flagged as a "Known Remaining Issue"
+in `CHECKPOINT.md`'s "Asset-Integration Environment, First-Person Camera, and Rod Motion Fixes"
+entry and never addressed since. Fixed by reading the tip's current world orientation
+(`tipEntity.orientation(relativeTo: nil)`) and rotating the sag axis by its inverse before building
+each joint's sag rotation, keeping the sag pointed at a stable world-frame direction instead of one
+that rotates along with the rod's own roll. Not a full physical simulation — each line joint
+counters against the *tip's* world orientation specifically, rather than fully compounding through
+the line's own preceding joints' rotations, which is a reasonable approximation given each joint's
+own contribution is small (bounded by the existing `maxLineSagAnglePerJoint`, ~20°).
+
+## Rationale
+
+The three sub-issues map onto three different kinds of problem, handled accordingly rather than
+uniformly:
+
+- "Rod diem or bend" was read as jitter/inconsistency in the secondary flex effect (alternating
+  between looking rigid and snapping into a flex), since nothing in `updateRodPose()`'s primary
+  rotation path showed an obvious functional bug on inspection — smoothing the bend inputs is a
+  low-risk, previously-proven fix for this class of complaint in this exact codebase. This
+  interpretation is flagged explicitly as an inference, not a confirmed diagnosis (no live device
+  was available to observe the actual symptom) — see the `CHECKPOINT.md` entry's own caveat.
+- "Reel muter" surfaced a genuine content gap (no reel geometry exists at all), not a code bug —
+  confirmed by extracting and reading the actual asset before writing anything, per this project's
+  own established discipline of checking the asset directly rather than guessing (the same
+  discipline behind, e.g., the sky-dome/terrain winding fixes). A placeholder was added rather than
+  leaving the ask entirely unaddressed, consistent with this codebase's own precedent of primitive
+  stand-ins for missing assets elsewhere.
+- "Line ngikut" was a rediscovery, not a new find — the project's own history had already root-caused
+  and precisely described this exact bug (down to "the line visually forks away from the rod's bend
+  plane under combined pitch+roll") but left it unfixed pending "the line's droop [needing] to
+  counter-rotate for the parent's current world orientation." This entry implements exactly that
+  previously-proposed fix.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World`
+(macOS) target only (see the matching `CHECKPOINT.md` entry), not yet played. All three fixes are
+first-pass and hand-tuned/approximated where noted above; none have been visually confirmed running.
+
+------------------------------------------------------------------------
+
+# ADR-045 --- Cast Attempts Require an Explicit "Start Casting" Arm
+
+## Decision
+
+`RodMotionInterpreter.interpret(_:)` previously classified a pose as `.cast` (starting backswing
+tracking and the charging phase) purely by proximity to the calibrated `castPose` — no explicit
+intent signal, so any phone movement that happened to read closest to that calibrated pose would
+silently start charging a cast, whether the player meant to or not.
+
+`interpret(_:)` gained a required `isCastingArmed: Bool` parameter. When a pose classifies as
+`.cast` but `isCastingArmed` is `false`, the interpreter now treats it exactly like `.idle` — no
+backswing tracking, no charging phase, no `castPower`, no cast meter — regardless of how close the
+pose actually is to `castPose`. The existing backswing-distance/flick blend (ADR-032) and cast
+resolution (ADR-017) are otherwise completely unchanged; arming only gates *whether* that machinery
+runs at all, not how it computes power once running.
+
+**`RodViewModel.isCastingArmed` (`@Published`)** is the source of truth for the flag, set by a new
+`startCasting()` method (guarded to `isFishing && hookPhase == .idle && !isCastingArmed` — mirrors
+`HookPhase.allowsCasting`, since arming while a cast couldn't possibly complete would just leave the
+button stuck "armed" for nothing) and passed into every `interpret(_:isCastingArmed:)` call in
+`updateAction()`. It clears automatically in three places, so a stale arm can never persist past one
+real attempt or outlive its own preconditions:
+
+- In `updateAction()`, the instant `interpretation.castSnapshot` comes back non-`nil` — a real cast
+  just fired, so the single-use arm is spent.
+- In `handle(_:)`'s `.hookPhase` case, whenever the phase leaves `.idle` for any reason.
+- In `endFishing()`, since arming without an active session makes no sense.
+
+**Rod UI**: a new "Start Casting" button (`Rod/Rod/ContentView.swift`), shown only while
+`isFishing`, disabled whenever `hookPhase != .idle` or already armed (label switches to "Casting
+Armed…"). Extends the V1 controller interface documented in `GAMEPLAY_ARCHITECTURE_V1.md`, updated
+alongside this change.
+
+**World's existing `CastMeterView`** needed no changes at all — its visibility is already driven
+purely by `RodState.motionPhase` being one of the charging-related phases (backswing/charging/
+forwardSwing/release/followThrough). Since those phases can now only ever be reached once armed,
+pressing "Start Casting" causes the meter to appear as a direct consequence of the same existing
+wiring, not a new, separate signal.
+
+## Rationale
+
+Requested directly, as the second of three jobs in one message: "add button 'start casting' di rod,
+terus munculin 'cast meter'. nah, core motion nya, harus narik hp ke belakang (jadi semakin - nilai
+pitch maybe), maka ketika nge flick, akan makin jauh. so maybe detect dari original device, ukur
+seberapa jauh device bergerak, baru 'cast' nya itu ketika nge flick device. langsung disable tombol
+'start casting' kalo kondisi hook nya != idle" (add a "Start Casting" button on Rod, which brings up
+the cast meter. The core motion: pull the phone back — pitch getting more negative, maybe — then
+when flicked, it goes further. So maybe detect from the original device position, measure how far
+the device moved, and the "cast" itself fires on the flick. Disable the "Start Casting" button
+whenever the hook state isn't idle).
+
+The "measure how far it moved from the original pose, then fire on the flick" mechanic itself
+already existed end-to-end (ADR-032's `backswingPeakDistance`/distance-power blend) — re-reading
+`RodMotionInterpreter` confirmed this directly rather than assuming it needed rebuilding from
+scratch, so this ADR adds the missing piece (an explicit arm gate) instead of re-implementing
+already-working motion math. What was genuinely missing was intent: casting was always "live," so
+the player's own framing (an explicit button before the motion counts) reads as a real, previously
+unaddressed usability gap — the calibrated `castPose` proximity check alone can't distinguish
+"about to cast" from "just moved the phone that way incidentally."
+
+Disarming automatically in three places (rather than requiring the player to somehow "cancel") was
+chosen so the flag can never get stuck in a confusing state: a fired cast obviously shouldn't stay
+"armed" for a hook that's now flying, a hook leaving `.idle` for *any* reason (bite/catch/escape
+cycle, or the player ending the session) means casting isn't possible again until back at `.idle`
+regardless of arm state, and ending the session outright shouldn't leave an arm dangling for the
+next one.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
+played. In particular, whether the arm/disarm lifecycle feels natural (vs. e.g. wanting a manual
+cancel, or the button needing to stay visible/disabled differently) is unverified until tried
+physically.
+
+------------------------------------------------------------------------
+
+# ADR-044 --- Device Pairing Allowlist Over CoreBluetooth
+
+## Decision
+
+`TransportHost` (World, BLE central) previously connected to whichever Rod peripheral it
+discovered first advertising the shared service UUID (ADR-035) — with multiple Rods/Worlds in
+Bluetooth range of each other in the same room, any phone could end up paired with any Mac.
+Symmetrically, `TransportClient` (Rod, BLE peripheral) treated whichever central subscribed to its
+`state` characteristic as "the" connection, with no check on which Mac that was.
+
+Added a **first-connection-pairs, then locked** allowlist on both sides, each persisted locally
+via `UserDefaults` (no new `Shared` model — `CBPeripheral`/`CBCentral` are CoreBluetooth types,
+and `Shared` must stay platform-independent per `AGENTS.md`):
+
+- **World**: new `World/World/Transport/PairedDeviceStore.swift` persists the paired Rod's
+  `CBPeripheral.identifier` (and `.name`, for display). `TransportHost.startScanningIfPossible()`
+  tries `centralManager.retrievePeripherals(withIdentifiers:)` for the saved identifier first
+  (CoreBluetooth can hand back a known peripheral without a fresh scan); `didDiscover` ignores any
+  peripheral whose identifier doesn't match once a pairing exists. The first full successful
+  connection (`.ready`, all characteristics subscribed) saves the pairing if none exists yet.
+  `TransportHost.forgetPairedDevice()` clears it and re-enters first-run behavior.
+- **Rod**: new `Rod/Rod/Transport/PairedCentralStore.swift` persists the paired central's
+  `CBCentral.identifier` (no display name — `CBCentral` exposes none). `didSubscribeTo` ignores
+  any central that isn't the saved one once a pairing exists, and the first subscriber is saved as
+  the pairing if none exists yet. Critically, every `updateValue(_:for:onSubscribedCentrals:)` call
+  (`sendUnreliable`, `drainReliableQueue`) now targets `[subscribedCentral]` specifically instead of
+  `nil` — passing `nil` sends to *every* subscribed central regardless of app-level pairing state,
+  so an unpaired Mac that happened to subscribe would otherwise still receive `RodState`/events over
+  the air even though the app never treats it as connected. `TransportClient.forgetPairedDevice()`
+  mirrors World's.
+
+**UI**: World's `MainMenuView` gained a "Paired with `<name>`" line and a "Forget Device" button
+(unrelated to the fishing session boundary that ADR-038 gives to Rod, so it isn't gated by
+`isRodReady`). Rod's Developer Details gained a "Paired Mac" row (short ID only) and a "Forget
+Paired Mac" button, following this project's existing precedent of putting admin/dev-facing
+controls behind Developer Details rather than the minimal V1 primary surface.
+
+Neither side's GATT layout, message framing, or reconnection behavior (ADR-035) changed — this is
+purely an additional identity check layered on top of the existing scan/advertise/connect flow.
+
+## Rationale
+
+Requested directly: "list saved device, biar 1 hp ga konek ke mac lain (setup device pair di awal.
+pake bluetooth connected aja kali ya)" (a list of saved devices, so one phone doesn't connect to a
+different Mac — set up device pairing at the start, maybe just use Bluetooth's own "connected"
+info). "First-connection-pairs" (rather than a dedicated pairing UI/flow with device pickers) was
+chosen as the simplest mechanism satisfying "set up pairing at the start": the very first
+successful connection *is* the setup step, with no extra screen needed, and "Forget Device" is the
+escape hatch if a different phone/Mac needs to pair later.
+
+The fix had to be symmetric, not just on World's side: World is the side that actively *chooses*
+who to connect to (central), but Rod (peripheral) cannot refuse an incoming BLE connection at the
+protocol level, and CoreBluetooth has no "reject a subscription" API — so without Rod's own check,
+a second Mac's `TransportHost` could still discover and subscribe to Rod even after World-side
+filtering was added, and (per the `onSubscribedCentrals: nil` finding above) would have kept
+*receiving real data* from Rod even while Rod's own app state never called it "connected." Fixing
+only the app-level `subscribedCentral` bookkeeping without also restricting the actual
+`updateValue` target list would have been a state-only fix that didn't change what was actually
+transmitted over the air.
+
+A single paired-device slot per app (not a genuine multi-device list with a picker) is a
+deliberate, minimal reading of "list saved device" — matching "setup di awal" (set up once, at the
+start) rather than ongoing multi-device management. If real multi-device support (e.g. a Rod
+choosing between several known Worlds) is wanted later, that's a bigger UX than what was asked for
+here and should be a separate task.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
+played with two physical devices.
+
+------------------------------------------------------------------------
+
 # ADR-043 --- Hook Lift Motion Targets a Dedicated Point, Not the Rod's Render Anchor
 
 ## Decision

@@ -286,6 +286,19 @@ and `minimum`/`maximumBackswingDistance`, remains the single
 authoritative calculation that becomes the transmitted `CastSolution.
 power`.
 
+**A cast attempt must be explicitly armed first (ADR-045).**
+`RodMotionInterpreter.interpret(_:isCastingArmed:)` treats a cast-classified
+pose exactly like `.idle` — no backswing tracking, no charging phase, no cast
+meter — unless `isCastingArmed` is `true`. Rod's new "Start Casting" button
+(`RodViewModel.startCasting()`) is the only way to set it, guarded to
+`isFishing && hookPhase == .idle`; it clears automatically once a cast
+actually fires, once `hookPhase` leaves `.idle` for any reason, or on
+`endFishing()`. This adds intent on top of the existing motion math above —
+it does not change how power/direction are computed once a real attempt is
+armed and running. World's `CastMeterView` needed no changes: its visibility
+already follows `RodState.motionPhase` reaching a charging-related phase,
+which now only happens once armed.
+
 Definition of Done for each sprint:
 
 -   Builds successfully.
@@ -389,6 +402,31 @@ the whole cast-and-fight arc by ADR-039 ("biar proses reel nya jadi
 lebih dramatis"). Does not affect the launch-heading clamp above, since
 that's computed once at launch before the hook (and camera) start
 moving.
+
+------------------------------------------------------------------------
+
+## Rod Rig Visual Fixes (ADR-046)
+
+`World/World/Reality/RodRigController.swift` drives `rod_main.usdz`/`rod_line.usdz`'s live bone
+pose each frame (both ship as rest-pose-only skeletons — see the "Asset-Integration Environment"
+`CHECKPOINT.md` entry for the original rig setup). Three fixes:
+
+- **Bend smoothing.** `applyBend(pitch:roll:)` (now `mutating`) low-pass-filters the raw
+  `pitch`/`roll` it receives (`bendSmoothing = 0.25`) before computing per-joint bend angles — the
+  primary whole-rig rotation (`updateRodPose()`'s `RodState.orientation`, per ADR-016) is untouched;
+  this only smooths the secondary flex effect layered on top of it.
+- **Placeholder reel spin.** `rod_main.usdz` has no reel geometry or joint at all (confirmed by
+  extracting and reading the asset directly — its mesh data is the rod blank plus two material
+  subsets, nothing else). A flattened-sphere placeholder is pinned near the `Handle` joint and spun
+  via the new `applyReelSpin(reelSpeed:isReeling:deltaTime:)`, called from
+  `WorldViewModel.tick(deltaTime:)` alongside `applyLineTension`. A real modeled reel remains a
+  follow-up asset-repo task.
+- **Line-follow fix.** `applyLineTension(_:)` previously rotated the line's sag around a fixed
+  local-X axis, but the line's root inherits the rod Tip joint's full world orientation — under
+  combined pitch+roll the sag axis rotated along with the tip's own roll, forking the line away from
+  the rod's bend plane (a previously known, unfixed issue). Now reads `tipEntity`'s current world
+  orientation and rotates the sag axis by its inverse first, keeping the sag pointed at a stable
+  world-frame direction regardless of the rod's own roll.
 
 ------------------------------------------------------------------------
 
@@ -671,9 +709,10 @@ presentation-only state layered on the existing search phase.
 `FishFightController.updateSearching(deltaTime:)` returns
 `SearchEvent? { .interested, .bite }`, driven by two sequential timers
 (`interestTimer` then `biteTimer`, each `0.8...2.0s`) instead of one
-`1.5...4.0s` timer. `isFishInterested: Bool` is `@Published` for a future
-World visual cue (not built yet — fish still have no visual
-representation). `FishingEvent.fishInterested` fires once when interest
+`1.5...4.0s` timer. `isFishInterested: Bool` is `@Published`; its World visual
+consumer is the floating bobber's dip animation (see "Floating Bobber" below,
+ADR-047) — fish still have no visual representation of their own, but the
+hook now visibly reacts to their presence. `FishingEvent.fishInterested` fires once when interest
 starts; Rod's `FishingHaptics.interestPulse(now:)` throttles a repeating
 soft haptic (`HapticManager.fishInterested()`) while an internal flag is
 set, cleared by any other `FishingEvent` or by
@@ -729,6 +768,27 @@ capturing. Rod's `calibrationInstruction` text (unchanged by this sprint)
 still lives on Rod — pre-existing, and tracked under the still-open World
 Tutorial/Calibration-instructions gap (Main Menu itself is no longer part
 of this gap — see ADR-036).
+
+## Floating Bobber (ADR-047)
+
+`WorldViewModel.updateBobberFloat(deltaTime:)`, called from `tick()`'s `.hookInWater` case whenever
+the player isn't reeling, gives the hook two layered vertical motions on top of `waterHeight`:
+
+```text
+idleBob     = sin(bobberBobPhase * idleBobFrequency * 2π) * idleBobAmplitude        (0.02 m, 0.5 Hz)
+interestDip = fishFight.isFishInterested
+                ? -abs(sin(bobberBobPhase * interestDipFrequency * 2π)) * interestDipAmplitude
+                : 0                                                                  (0.06 m, 2.0 Hz)
+```
+
+`idleBob` is always present — small, slow, ambient buoyancy realism so the bobber never reads as
+frozen in place. `interestDip` layers on top only while `fishFight.isFishInterested` (ADR-029) is
+true, and is downward-only (`-abs(sin(...))`) and sharper/faster than the idle bob — a fish
+visibly nibbling and tugging the float toward the surface before the actual bite fires, giving the
+transition into `.fishOnHook` a visual lead-up instead of no warning at all. Deliberately does not
+run while reeling (`reelHook`) or while a fish is hooked (`driftHookAway`/the fight mechanics) —
+those already own `hookEntity.position.y` for their own reasons and would otherwise fight this
+function for control of it on the same tick. `bobberBobPhase` resets on every fresh splash.
 
 ## Dynamic Reel Speed
 
@@ -798,6 +858,19 @@ running continuously once `connect()` was called, rather than requiring the call
 
 Full rationale, the message-flow inventory used to design the GATT layout, and the platform
 entitlement changes (`Info.plist`, `ENABLE_RESOURCE_ACCESS_BLUETOOTH`) are in ADR-035.
+
+**Device pairing allowlist (ADR-044).** The scan-and-connect-to-first-match behavior above only
+holds true until a pairing exists. `PairedDeviceStore` (World) and `PairedCentralStore` (Rod) each
+persist the other side's CoreBluetooth identifier (`CBPeripheral.identifier`/`CBCentral.identifier`)
+via `UserDefaults` after the first full successful connection, and both `didDiscover`/
+`didSubscribeTo` ignore any device that isn't the saved one from then on — `retrievePeripherals
+(withIdentifiers:)` lets World reconnect to a known Rod without a fresh scan when possible. Rod's
+side also restricts `updateValue(_:for:onSubscribedCentrals:)`'s target list to the paired central
+specifically (not `nil`, which would send to every subscriber regardless of pairing), since an
+unpaired Mac subscribing is otherwise still a real BLE subscriber that would receive live data.
+`TransportHost.forgetPairedDevice()`/`TransportClient.forgetPairedDevice()` clear the saved
+identifier to re-enter first-run pairing. Surfaced in World's Main Menu ("Paired with `<name>`" +
+"Forget Device") and Rod's Developer Details ("Paired Mac" + "Forget Paired Mac").
 
 ------------------------------------------------------------------------
 

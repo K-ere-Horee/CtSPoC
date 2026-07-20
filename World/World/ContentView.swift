@@ -24,7 +24,12 @@ struct ContentView: View {
             content
 
             if viewModel.screen == .mainMenu {
-                MainMenuView(connectionState: viewModel.connectionState)
+                MainMenuView(
+                    connectionState: viewModel.connectionState,
+                    pairedDeviceName: viewModel.pairedDeviceName,
+                    hasPairedDevice: viewModel.hasPairedDevice,
+                    onForgetDevice: viewModel.forgetPairedDevice
+                )
             }
 
             if viewModel.screen == .playing, viewModel.hookPhase == .result, let result = fishFight.lastCatchResult {

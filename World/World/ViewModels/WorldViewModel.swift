@@ -156,6 +156,21 @@ final class WorldViewModel: ObservableObject {
     /// X/Y match `dockAnchorPosition`; only the point of closest approach in Z changes.
     private let hookLiftTargetPosition: SIMD3<Float> = [0.22, 1.95, -4.7]
 
+    /// Amplitude/frequency of the gentle idle bob applied to a floating hook (`updateBobberFloat`)
+    /// while `.hookInWater` and not being reeled in — a real bobber never sits perfectly still on
+    /// the water, it rides small waves. Deliberately small/slow: this is ambient realism, not a
+    /// gameplay signal (that's `interestDipAmplitude`/`interestDipFrequency` below).
+    private let idleBobAmplitude: Float = 0.02
+    private let idleBobFrequency: Float = 0.5
+    /// Sharper, faster downward-only dip layered on top of the idle bob while
+    /// `fishFight.isFishInterested` — a fish nibbling visibly tugs the float toward (and briefly
+    /// under) the surface before the real bite, instead of the bite happening with zero visual
+    /// warning ("celap celup," matching real bobber fishing). `-abs(sin(...))` keeps every dip
+    /// downward, never lifting the float unrealistically high.
+    private let interestDipAmplitude: Float = 0.06
+    private let interestDipFrequency: Float = 2.0
+    private var bobberBobPhase: Float = 0
+
     private var rodRig: RodRigController?
     private var controllerEntity: Entity?
     private var hookEntity: ModelEntity?
@@ -232,6 +247,17 @@ final class WorldViewModel: ObservableObject {
         transport.disconnect()
         hasStarted = false
         sounds.stopAll()
+    }
+
+    /// The Rod this session is paired with (see `PairedDeviceStore`), for display on the Main
+    /// Menu — `nil` until the first successful connection ever completes.
+    var pairedDeviceName: String? { transport.pairedDeviceName }
+    var hasPairedDevice: Bool { transport.hasPairedDevice }
+
+    /// Clears the saved pairing so the next Rod discovered becomes the new paired device — the
+    /// player's way to re-pair with a different phone without reinstalling or clearing app data.
+    func forgetPairedDevice() {
+        transport.forgetPairedDevice()
     }
 
     /// Called once from `ContentView`'s `RealityView` `make` closure. Subscribes to the scene's
@@ -396,6 +422,7 @@ final class WorldViewModel: ObservableObject {
         updateRodPose()
         updateCameraFollow()
         rodRig?.applyLineTension(lineTension(for: hookPhase))
+        rodRig?.applyReelSpin(reelSpeed: rodState.reelSpeed, isReeling: rodState.action == .reeling, deltaTime: deltaTime)
 
         switch hookPhase {
         case .idle:
@@ -420,6 +447,8 @@ final class WorldViewModel: ObservableObject {
             }
             if rodState.action == .reeling {
                 reelHook(deltaTime: deltaTime)
+            } else {
+                updateBobberFloat(deltaTime: deltaTime)
             }
         case .result:
             break
@@ -494,6 +523,23 @@ final class WorldViewModel: ObservableObject {
     /// flips true then false before SwiftUI ever renders a frame and the
     /// tension meter never visibly appears. Pushes the hook back out to
     /// `fishFight.minimumFightDistance` so a real fight always happens.
+    /// Floats the hook while it's searching (see the doc comments on `idleBobAmplitude`/
+    /// `interestDipAmplitude` for what each layer represents). Only runs while `.hookInWater` and
+    /// not being actively reeled in — `reelHook` and the fight mechanics own the hook's vertical
+    /// position the instant either of those takes over, and this would otherwise fight with them
+    /// over `hookEntity.position.y` on the same tick.
+    private func updateBobberFloat(deltaTime: Float) {
+        guard let hookEntity else { return }
+        bobberBobPhase += deltaTime
+
+        let idleBob = sin(bobberBobPhase * idleBobFrequency * 2 * .pi) * idleBobAmplitude
+        let interestDip = fishFight.isFishInterested
+            ? -abs(sin(bobberBobPhase * interestDipFrequency * 2 * .pi)) * interestDipAmplitude
+            : 0
+
+        hookEntity.position.y = waterHeight + idleBob + interestDip
+    }
+
     private func ensureFightDistance() {
         guard let controllerEntity, let hookEntity else { return }
 
@@ -661,6 +707,7 @@ final class WorldViewModel: ObservableObject {
         debugPlayerFacingCoordinate = launchPoint + SIMD3<Float>(0, 0, -1) * castDistance
 
         fishFight.resetForNewCast(castDistance: castDistance)
+        bobberBobPhase = 0
         setHookPhase(.hookInWater)
         emit(.hookSplash)
     }
