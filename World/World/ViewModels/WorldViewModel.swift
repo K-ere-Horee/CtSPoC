@@ -131,15 +131,30 @@ final class WorldViewModel: ObservableObject {
     /// receives cast trajectory and moves through the scene.
     private let dockAnchorPosition: SIMD3<Float> = [0.22, 1.95, -2.1]
 
-    /// Horizontal (X/Z) distance from the rod at which a reeled-in hook starts rising out of the
-    /// water toward the rod's actual, elevated position. `reelHook`/`driftHookAway` treat this as
-    /// two zones: farther than this, the hook stays pinned at `waterHeight` and only moves
-    /// horizontally, so reeling in reads as the bobber sliding across the water toward the dock;
-    /// within this distance, movement switches to full 3D so the hook rises the rest of the way up
-    /// to meet the rod. Without this split, reeling moved the hook in a straight 3D line toward the
-    /// rod's elevated `dockAnchorPosition` from the moment reeling began, so the bobber visibly lifted
-    /// out of the water and climbed diagonally right away instead of only at the very end.
+    /// Horizontal (X/Z) distance from `hookLiftTargetPosition` at which a reeled-in hook starts
+    /// rising out of the water toward it. `reelHook`/`driftHookAway` treat this as two zones:
+    /// farther than this, the hook stays pinned at `waterHeight` and only moves horizontally, so
+    /// reeling in reads as the bobber sliding across the water toward the dock; within this
+    /// distance, movement switches to full 3D so the hook rises the rest of the way up. Without
+    /// this split, reeling moved the hook in a straight 3D line from the moment reeling began, so
+    /// the bobber visibly lifted out of the water and climbed diagonally right away instead of only
+    /// at the very end.
     private let hookLiftDistance: Float = 1.0
+
+    /// Where `reelHook`/`driftHookAway`'s near-zone (within `hookLiftDistance`) motion and the
+    /// catch/empty-retrieve resolution distance converge to — deliberately a *different* point than
+    /// `dockAnchorPosition` (ADR-043). `dockAnchorPosition` is a rendering-only anchor (ADR-019: the
+    /// rod root's fixed camera-relative offset) that happens to sit at `[0.22, 1.95, -2.1]`, well
+    /// inside `dock_main.usdz`'s own measured footprint (X in [-2.04, 2.04], Z in [-4.5, 4.5], loaded
+    /// and inspected directly via `Entity(contentsOf:).visualBounds`, not eyeballed) — using it as the
+    /// hook's lift destination meant the last meter of reel-in rose straight up through the solid deck
+    /// geometry at that XZ, reading as the bobber clipping through the pier (ADR-043's reported bug).
+    /// `hookLiftTargetPosition` keeps the same X (0.22, still a straight pull under the rod's own
+    /// centerline) and Y (1.95, still finishing at hand height) but moves Z to -4.7 — just past the
+    /// mesh's measured -4.5 water-facing extreme — so the rise happens in open space in front of the
+    /// dock's edge instead of inside it. Movement still visually continues toward the held rod because
+    /// X/Y match `dockAnchorPosition`; only the point of closest approach in Z changes.
+    private let hookLiftTargetPosition: SIMD3<Float> = [0.22, 1.95, -4.7]
 
     private var rodRig: RodRigController?
     private var controllerEntity: Entity?
@@ -491,24 +506,25 @@ final class WorldViewModel: ObservableObject {
     }
 
     private func driftHookAway(deltaTime: Float) {
-        guard let controllerEntity, let hookEntity else { return }
+        guard let hookEntity else { return }
 
         let step = fishFight.fishPullSpeed * deltaTime
         let horizontalOffset = SIMD3<Float>(
-            controllerEntity.position.x - hookEntity.position.x,
+            hookLiftTargetPosition.x - hookEntity.position.x,
             0,
-            controllerEntity.position.z - hookEntity.position.z
+            hookLiftTargetPosition.z - hookEntity.position.z
         )
         let horizontalDistance = simd_length(horizontalOffset)
 
-        // Below `hookLiftDistance` the hook may already be lifted partway toward the rod (see
-        // `reelHook`) — let it drift away in full 3D so an escaping fish pulls it back down toward
-        // the water as it retreats. Otherwise stay pinned at `waterHeight` and drift horizontally
-        // only, so an ignored fish drags the hook further out across the water, not underneath it.
+        // Below `hookLiftDistance` the hook may already be lifted partway toward
+        // `hookLiftTargetPosition` (see `reelHook`) — let it drift away in full 3D so an escaping
+        // fish pulls it back down toward the water as it retreats. Otherwise stay pinned at
+        // `waterHeight` and drift horizontally only, so an ignored fish drags the hook further out
+        // across the water, not underneath it.
         if horizontalDistance <= hookLiftDistance {
-            let directionToRod = controllerEntity.position - hookEntity.position
-            guard simd_length(directionToRod) > 0.0001 else { return }
-            hookEntity.position -= simd_normalize(directionToRod) * step
+            let directionToTarget = hookLiftTargetPosition - hookEntity.position
+            guard simd_length(directionToTarget) > 0.0001 else { return }
+            hookEntity.position -= simd_normalize(directionToTarget) * step
         } else {
             guard horizontalDistance > 0.0001 else { return }
             hookEntity.position -= simd_normalize(horizontalOffset) * step
@@ -650,17 +666,17 @@ final class WorldViewModel: ObservableObject {
     }
 
     private func reelHook(deltaTime: Float) {
-        guard let controllerEntity, let hookEntity else { return }
+        guard let hookEntity else { return }
 
-        // Catch/empty-retrieve resolves on horizontal closeness to the rod, not full 3D distance —
-        // otherwise the hook would need to climb the ~2m up to the rod's elevated
-        // `dockAnchorPosition` before resolving, reading as the bobber having to reach the rod's
-        // exact hand-height position rather than simply arriving at the water's edge in front of
-        // the pier.
+        // Catch/empty-retrieve resolves on horizontal closeness to `hookLiftTargetPosition`, not
+        // full 3D distance to the rod — otherwise the hook would need to climb the ~2m up to the
+        // rod's elevated hand-height position before resolving, reading as the bobber having to
+        // reach the rod's exact position rather than simply arriving at the water's edge in front
+        // of the pier.
         let horizontalOffset = SIMD3<Float>(
-            controllerEntity.position.x - hookEntity.position.x,
+            hookLiftTargetPosition.x - hookEntity.position.x,
             0,
-            controllerEntity.position.z - hookEntity.position.z
+            hookLiftTargetPosition.z - hookEntity.position.z
         )
         let horizontalDistance = simd_length(horizontalOffset)
         guard horizontalDistance > 0.12 else {
@@ -686,17 +702,17 @@ final class WorldViewModel: ObservableObject {
         let netSpeed = playerSpeed - fishFight.fishPullSpeed
         let step = netSpeed * deltaTime
 
-        // Below `hookLiftDistance`, move in full 3D so the hook rises the rest of the way up to the
-        // rod. Farther out, stay pinned at `waterHeight` and move horizontally only, so reeling in
-        // reads as the bobber sliding along the water toward the dock, not lifting into the air the
-        // instant reeling starts.
+        // Below `hookLiftDistance`, move in full 3D so the hook rises the rest of the way up toward
+        // `hookLiftTargetPosition`. Farther out, stay pinned at `waterHeight` and move horizontally
+        // only, so reeling in reads as the bobber sliding along the water toward the dock, not
+        // lifting into the air the instant reeling starts.
         if horizontalDistance <= hookLiftDistance {
-            let directionToRod = controllerEntity.position - hookEntity.position
-            let distance3D = simd_length(directionToRod)
+            let directionToTarget = hookLiftTargetPosition - hookEntity.position
+            let distance3D = simd_length(directionToTarget)
             if step >= 0 {
-                hookEntity.position += simd_normalize(directionToRod) * min(distance3D, step)
+                hookEntity.position += simd_normalize(directionToTarget) * min(distance3D, step)
             } else {
-                hookEntity.position -= simd_normalize(directionToRod) * min(distance3D, -step)
+                hookEntity.position -= simd_normalize(directionToTarget) * min(distance3D, -step)
             }
         } else {
             let horizontalDirection = simd_normalize(horizontalOffset)

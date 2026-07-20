@@ -11,6 +11,61 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-043 --- Hook Lift Motion Targets a Dedicated Point, Not the Rod's Render Anchor
+
+## Decision
+
+`reelHook(deltaTime:)` and `driftHookAway(deltaTime:)` (ADR-042) moved the hook's near-zone
+(within `hookLiftDistance`) lift phase, and `reelHook`'s catch/empty-retrieve resolution distance,
+toward `controllerEntity.position` — i.e. `dockAnchorPosition`, `[0.22, 1.95, -2.1]`, the rod's
+fixed camera-relative render anchor (ADR-019). Loading `dock_main.usdz` directly via
+`Entity(contentsOf:).visualBounds(relativeTo: nil)` (not eyeballed) measured its real footprint as
+X in `[-2.04, 2.04]`, Z in `[-4.5, 4.5]` — `dockAnchorPosition`'s XZ, `(0.22, -2.1)`, sits well
+inside that footprint, not at an edge. Since the lift phase rises the hook from `waterHeight` (`0`)
+up to `1.95` while its XZ converges on that interior point, the rise happened directly underneath
+the dock's solid deck geometry, reading as the bobber clipping through the pier on lift.
+
+Added `hookLiftTargetPosition: SIMD3<Float> = [0.22, 1.95, -4.7]` — same X/Y as
+`dockAnchorPosition` (so the pull still reads as heading toward the held rod, and still finishes at
+hand height), but Z pushed to `-4.7`, just past the dock mesh's own measured `-4.5` water-facing
+extreme. `reelHook`/`driftHookAway` now compute horizontal distance, the lift-phase 3D direction,
+and (in `reelHook`) the catch/empty-retrieve resolution threshold all against
+`hookLiftTargetPosition` instead of `controllerEntity.position`. `dockAnchorPosition` and
+`controllerEntity` are otherwise untouched — `updateRodPose()`'s rendering and `ensureFightDistance()`
+(ADR-031's same-tick-instant-catch guard, left alone per ADR-042's own precedent) still use the rod's
+real render position.
+
+## Rationale
+
+Reported directly after playtesting ADR-042's fix: "waktu ngangkat, kayanya masih overlap sama pier
+(maybe kurang ke depan dikit?)" (when it lifts, it seems to still overlap with the pier — maybe it
+needs to be a little more forward?). Recorded as a TODO in the matching `CHECKPOINT.md` entry rather
+than fixed blind at the time, pending a look at the dock's actual geometry per this project's own
+established pattern of checking the asset directly instead of guessing (see e.g. the tree-orientation
+and shoreline-density fixes in `EnvironmentSceneBuilder.swift`).
+
+Reusing `dockAnchorPosition` conflated two different concerns that ADR-019 already treats as
+separate elsewhere (rod-root render position vs. hook gameplay motion): a point chosen for where the
+rod visually sits in the player's hand is not the same as the point gameplay motion should converge
+on, and here they need to differ specifically because the render anchor happens to sit inside the
+dock's own solid geometry. `hookLiftTargetPosition` keeps that separation explicit — a second,
+motion-only anchor, matching the player's own diagnosis (needs to be further forward, i.e. further
+out over open water) and the measured mesh bounds (which independently confirm `dockAnchorPosition`'s
+Z is well short of the dock's actual water-facing edge).
+
+Both `hookLiftDistance` (1.0 m, unchanged) and the new `-4.7` Z value are still hand-picked relative
+to the *measured* mesh extreme (`-4.5` plus a 0.2 m clearance margin), not validated against a live
+session — the mesh only yielded one undifferentiated bounding box (`dock_main.usdz` has no separate
+deck/railing submeshes to bound individually), so `-4.7` is the most defensible value obtainable
+without an interactive Blender pass, not a claim that it's exactly where the pier's walkable edge
+ends.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`World` (macOS) and `Rod` (iOS simulator) targets only (see the matching `CHECKPOINT.md` entry), not
+yet played.
+
+------------------------------------------------------------------------
+
 # ADR-042 --- Reel-In Motion Stays at Water Height Until Near the Dock
 
 ## Decision

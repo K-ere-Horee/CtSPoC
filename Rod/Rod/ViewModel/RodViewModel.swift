@@ -39,6 +39,14 @@ final class RodViewModel: ObservableObject {
     /// interpreted as gameplay intent; "End Fishing" clears it again.
     @Published private(set) var isFishing = false
 
+    /// Debug-only: the calibrated `reelSpeed` ramp's min/max rotation rate (`calibrateMotion()`'s
+    /// `.reel` step), surfaced so a narrow calibrated range — the leading suspect for the
+    /// "reel speed feels constant" report, see `CHECKPOINT.md`'s ADR-042 follow-up TODO — can be
+    /// confirmed or ruled out from a live device during the next playtest instead of guessed at.
+    var reelCalibrationRange: (min: Double, max: Double) {
+        (motionInterpreter.profile.reelRotationRate, motionInterpreter.profile.reelFullRotationRate)
+    }
+
     private let motionManager: MotionManager
     private let motionInterpreter: RodMotionInterpreter
     private let spatialManager: NearbyInteractionManager

@@ -127,6 +127,10 @@ struct ContentView: View {
                 Text("Rod State").font(.caption.bold()).foregroundStyle(.secondary)
                 valueRow("Action", value: viewModel.action.rawValue)
                 valueRow("Reel Speed", value: format(viewModel.reelSpeed))
+                valueRow(
+                    "Reel Calibration Range",
+                    value: "\(format(viewModel.reelCalibrationRange.min)) - \(format(viewModel.reelCalibrationRange.max)) rad/s"
+                )
                 valueRow("Distance", value: format(viewModel.rodState.distance, suffix: " m"))
                 valueRow("Direction", value: formatDirection(viewModel.rodState))
                 valueRow("Pitch", value: format(viewModel.rodState.pitch))

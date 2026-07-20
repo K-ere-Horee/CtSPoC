@@ -4802,3 +4802,132 @@ same conclusion. Worth checking, in rough priority order:
 ### Verification
 
 Not applicable — no code changed in this entry, TODO only.
+
+## Fix: Hook Lift Motion Overlapping the Pier (ADR-043)
+
+Date: 2026-07-20.
+
+Continuation of the TODO entry above, Issue 2 ("hook appears to overlap the pier when lifted near
+the end of a reel-in"). Rather than guess a new constant, loaded `dock_main.usdz` directly with a
+small standalone RealityKit script (`Entity(contentsOf:).visualBounds(relativeTo: nil)`) to get the
+mesh's real footprint before touching any code, per this project's own established pattern (see
+`EnvironmentSceneBuilder.swift`'s tree-orientation/shoreline-density history) of checking assets
+directly instead of eyeballing.
+
+### Measurement
+
+- `dock_main.usdz` bounds: X in `[-2.0439, 2.0439]`, Y in `[-0.6741, 2.1880]`, Z in `[-4.5, 4.5]`
+  (single unnamed mesh, no separate deck/railing submeshes to bound individually).
+- `water_surface.usdz` bounds confirm the lake plane is enormous (`X` in `[-40, 40]`, `Z` in
+  `[-30, 30]`) relative to the dock, so it doesn't independently mark a shoreline.
+- `WorldViewModel.launchHook`'s own debug facing vector (`SIMD3<Float>(0, 0, -1) * castDistance`)
+  confirms casts fly toward `-Z` — i.e. the dock's `-4.5` extreme is the water-facing tip, `+4.5`
+  the shore end.
+- `dockAnchorPosition` (`[0.22, 1.95, -2.1]`, the rod's fixed camera-relative render anchor per
+  ADR-019) sits at Z `-2.1` — well inside the dock's `[-4.5, 4.5]` footprint, nowhere near its
+  water-facing edge. ADR-042's lift phase moved the hook's XZ toward exactly this point while
+  raising its Y from `0` to `1.95`, so the rise happened directly underneath the solid deck mesh —
+  root cause of the reported clipping, and confirming the player's own guess ("kurang ke depan
+  dikit," needs to be a bit more forward).
+
+### World: WorldViewModel
+
+- Added `hookLiftTargetPosition: SIMD3<Float> = [0.22, 1.95, -4.7]` — same X/Y as
+  `dockAnchorPosition`, Z pushed 0.2 m past the mesh's measured `-4.5` extreme.
+- `reelHook(deltaTime:)`/`driftHookAway(deltaTime:)`: every use of `controllerEntity.position` for
+  horizontal-distance zone checks, the near-zone full-3D lift direction, and (in `reelHook`) the
+  catch/empty-retrieve resolution threshold now targets `hookLiftTargetPosition` instead. Neither
+  function still needs `controllerEntity` at all, so its `guard let controllerEntity` binding was
+  dropped from both (`hookEntity` remains guarded).
+- `dockAnchorPosition`/`controllerEntity` themselves are untouched — `updateRodPose()`'s rendering
+  and `ensureFightDistance()` (ADR-031, left alone per ADR-042's own precedent — it only fires in a
+  rare edge case unaffected by this change) still use the rod's real render position.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-043.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the ADR-042 paragraph in "Fish Species and Fight
+  Simulation" with the new target-point split.
+- `CLAUDE.md`: fixed the "Verification" section's Shared file list — it still referenced pre-reorg
+  paths (`Sources/Shared/Models/RodAction.swift` etc.) that no longer exist; those files now live
+  under `Models/Rod/`, `Models/Spatial/`, `Models/Gameplay/` subfolders. Discovered because running
+  the documented command verbatim during this pass's own verification failed with "no such file."
+  Re-ran the corrected command to confirm it now actually compiles before committing the doc fix.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx14.0` module directly from `find Sources/Shared -name
+  "*.swift"` — no errors.
+- `xcrun swiftc -typecheck` against that module for the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0` (required — `RodRigController`'s `attach(_:to:)` needs 26.0, matching
+  ADR-042's own precedent) — exit code 0, no errors.
+- `xcrun swiftc -typecheck` against a second `Shared` module built for
+  `arm64-apple-ios17.0-simulator` for the full `Rod/Rod` Swift file list — exit code 0, no errors.
+  This project's own verification script only ever covered `Shared` + `World`; extended to `Rod`
+  here since this pass also touched `RodViewModel.swift`/`ContentView.swift` (see the next entry).
+- `git diff --check` clean on every touched file.
+- Not run: any live session. `hookLiftTargetPosition`'s Z (`-4.7`) is a measured-bounds-plus-margin
+  estimate, not confirmed against how the lift actually looks in front of the dock once played.
+
+## Diagnostic: Reel Calibration Range Exposed in Rod's Debug View (ADR-042 TODO Issue 1, Not Resolved)
+
+Date: 2026-07-20.
+
+Issue 1 from the TODO entry above ("reel-in speed feels constant") was investigated as far as
+possible without a live device/playtest, then deliberately left unfixed rather than guess-tuned.
+
+### Investigation
+
+- Confirmed ADR-025's fix (the reel-speed calibration ramp) is still in place, not regressed:
+  `RodMotionInterpreter.swift`'s `.reel` case still computes `speed` as a `(rotationRateMagnitude -
+  minRate) / (maxRate - minRate)` ramp between `profile.reelRotationRate` and
+  `profile.reelFullRotationRate`, exactly as ADR-025 describes.
+- Read `RodViewModel.calibrateMotion()`'s `.reel` step directly: `reelFullRotationRate = max(
+  reelRotationRate + 0.3, peakRate)`, where `peakRate` is the max rotation rate sampled during the
+  player's one demonstration reel gesture. The `+ 0.3` is a floor, not just an edge-case guard — a
+  real physical reeling motion is often fairly steady-state through its demonstration window (low
+  variance around the average), so `peakRate` frequently lands close to `averageRate` rather than
+  well above it, meaning the *floor* — a fixed 0.3 rad/s calibrated range — is plausibly the
+  *common* case, not a rare one. A 0.3 rad/s range is narrow enough that normal variation in real
+  reeling speed during actual gameplay would saturate the ramp to `1.0` almost immediately, which
+  would read exactly as "constant" — this is a strong candidate root cause, but not confirmed: it
+  depends on what a real calibration's `averageRate`/`peakRate` actually look like on-device, which
+  isn't observable from source alone.
+- Checked the other TODO candidates by reading the code, not guessing:
+  - The `0.35` floor in `WorldViewModel.reelHook`'s `playerSpeed = max(0.35, rodState.reelSpeed *
+    reelSpeed)` (`reelSpeed` the `3.0` constant) gives a `0.35`-to-`3.0` range (~8.6x) for an empty
+    retrieve — not obviously floor-dominated on its face, though still unverified live.
+  - `FishFightController.fishPullSpeed` (`basePullSpeed(0.7) * (1 + resistance *
+    pullSpeedResistanceMultiplier(1.8))`) ranges roughly `0.7`–`1.96` when a fish is hooked — a real
+    but not obviously dominant subtraction against `playerSpeed`'s `0.35`–`3.0` range; whether it
+    flattens the *felt* range during an actual fight specifically (vs. an empty retrieve) still
+    needs a live A/B, per the original TODO's own suggestion.
+- Did not change any of `RodMotionInterpreter`, `calibrateMotion()`, or `reelHook`'s speed math —
+  tuning any of these (the `+0.3` floor, the `0.35` floor, `basePullSpeed`) without on-device data
+  on what real calibration/reeling values look like risks trading one unverified guess for another,
+  the same failure mode ADR-025 itself was written to fix.
+
+### Rod: RodViewModel / ContentView
+
+Instead, added a debug-only diagnostic so the next live playtest can observe the actual calibrated
+range directly rather than needing another guess-and-report cycle:
+
+- `RodViewModel` gained `reelCalibrationRange: (min: Double, max: Double)`, reading
+  `motionInterpreter.profile.reelRotationRate`/`reelFullRotationRate` directly (both already public
+  on `MotionProfile`).
+- `ContentView`'s "Rod State" debug group gained a "Reel Calibration Range" row displaying it in
+  rad/s, next to the existing live "Rotation Rate" row — so a played session can directly compare
+  the live rotation rate against the calibrated range's width and confirm or rule out the
+  floor-dominance theory above.
+
+### Documentation
+
+None beyond this entry — no ADR needed for a debug-only, non-behavior-changing addition; the
+existing ADR-025 already documents the calibration formula this instruments.
+
+### Verification
+
+- Covered by the same `Rod/Rod` typecheck pass as the entry above — exit code 0, no errors.
+- Not run: any live session. This entry adds observability only; Issue 1 itself remains open,
+  should be re-evaluated once "Reel Calibration Range" vs. live "Rotation Rate" can actually be
+  compared during a played reel-in.
