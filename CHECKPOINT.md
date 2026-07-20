@@ -4932,13 +4932,295 @@ existing ADR-025 already documents the calibration formula this instruments.
   should be re-evaluated once "Reel Calibration Range" vs. live "Rotation Rate" can actually be
   compared during a played reel-in.
 
-## Device Pairing Allowlist Over CoreBluetooth (ADR-044)
+## Fix: Dock-Approach Lift Guaranteed Speed, Not Tug-of-War (ADR-044)
+
+Date: 2026-07-20.
+
+Reported directly during playtesting: "ketika bomber nya sudah mulai mengenai dock nya, bomber
+kuning nya masih 'melayang', sehingga ada kesan tidak natural karena harusnya ketika sudah menyentuh
+dock, harusnya ikan mulai makin bergerak cepat pun atau langsung naik ke doc ketimbang melayang"
+(once the hook/fish starts reaching the dock, it still visibly floats instead of speeding up or
+climbing straight onto the dock). Traced rather than guessed: `reelHook`'s tug-of-war net speed
+(ADR-039, `playerSpeed - fishFight.fishPullSpeed`) can be small or negative even while the player is
+actively reeling — intentional for the open-water fight, but left unchanged inside the near-dock lift
+zone (ADR-042's `hookLiftDistance`) it let the hook stall in place or sink back toward the water right
+at the dock's edge, which is exactly the reported floating feel.
+
+### World: WorldViewModel
+
+- Added `dockLiftSpeed: Float = 3.5` (m/s) — a fixed speed, faster than the player's own max reel
+  speed (`reelSpeed`, `3.0`), that `reelHook(deltaTime:)` now uses unconditionally once inside
+  `hookLiftDistance` of `hookLiftTargetPosition`, replacing the tug-of-war net speed for that zone
+  only. `fishFight.fishPullSpeed` is no longer subtracted in the lift zone — a fish this close can no
+  longer meaningfully resist, so the final approach always advances toward the target.
+- `reelHook`'s catch/empty-retrieve resolution switched from a horizontal-only distance check
+  (`> 0.12` m against `hookLiftTargetPosition`) to a full 3D distance check (`> 0.15` m). ADR-043's
+  original rationale for horizontal-only (not making resolution wait on the ~2 m vertical climb to
+  hand height) no longer applies now that the climb is fast and guaranteed rather than
+  tug-of-war-gated — resolving on full 3D closeness means the hook visibly finishes arriving instead
+  of vanishing mid-climb, the second half of the reported issue.
+- `driftHookAway(deltaTime:)` (ADR-042, fires only while the player isn't actively reeling) is
+  unchanged — still uses `fishFight.fishPullSpeed` in both zones, so an escaping fish can still pull
+  the hook back down out of the lift zone.
+- Doc comments on `hookLiftDistance` and the new `dockLiftSpeed` cross-reference ADR-044 and explain
+  why the tug-of-war can't be allowed to reach into the lift zone.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-044, including a forward-looking note that `reelHook`'s
+  `distance3D > 0.15` guard is now a single well-defined "fish has arrived at the dock" moment —
+  relevant groundwork since `hookEntity` is still a placeholder sphere and literally *is* the fish's
+  rendered position (`FishFightController` holds no RealityKit/entity state at all); a future fish
+  mesh/animation swap has a clear hook point to trigger a "landed on the dock" animation from.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the ADR-042/043 paragraphs in "Fish Species and Fight
+  Simulation" with ADR-044's guaranteed-speed lift zone and the updated catch-resolution threshold.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from `find Sources/Shared -name
+  "*.swift"` — no errors.
+- `xcrun swiftc -typecheck` against that module for the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, using the actual `xcrun --sdk macosx --show-sdk-path` SDK — exit code 0,
+  no errors.
+- Rebuilt `Shared` a second time as an `arm64-apple-ios17.0-simulator` module (via
+  `xcrun --sdk iphonesimulator --show-sdk-path`) to confirm the `Rod` target's dependency still
+  builds, since no `Rod` files changed this pass a full `Rod/Rod` typecheck wasn't re-run.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. `dockLiftSpeed = 3.5` and the `0.15` m resolution threshold are
+  hand-picked (faster than the player's own max reel speed; a small margin past the old `0.12` m
+  horizontal-only value), not tuned against how the climb actually reads in a played reel-in.
+
+## Feature: Catch Cutscene Before the Result Screen (ADR-045)
+
+Date: 2026-07-20.
+
+Requested directly, drawing an explicit comparison to casting's own already-distinct moment: "kita
+harus bikin 'cut scene' seperti game-game pun atau seperti animasi bomber ketika dicasting ... ketika
+bomber nya sudah mendekati dock, dan user melakukan final reel input, akan dimunculkan 'scene' ikan
+dan bomber dimana mereka melompat ke atas dan akan muncul title 'CATCH' ... nantinya, 'scene' ini akan
+disambungkan dengan blender animasi asset" (build a cutscene like other games have, similar to the
+existing cast animation — when the fish/bobber nears the dock and the player's final reel input lands
+it, show a scene where the fish and bobber jump up and a "CATCH" title appears; this scene will later
+connect to a Blender animation asset). Continuation of the same reel-in-to-dock work as ADR-044.
+
+### Design choice: World-only presentation state, not a new `HookPhase`
+
+Considered adding a new `HookPhase` case for the cutscene, rejected: `HookPhase` is a `Shared`
+contract consumed by both `Rod` (haptics, `allowsCasting`/`allowsReeling`) and `World`
+(rendering/HUD), and this project's own architecture contracts state Rod owns no gameplay
+presentation. The cutscene needs no input-locking or haptic behavior beyond what `HookPhase.result`
+already provides (`allowsCasting == false`, `allowsReeling == false`), so it's implemented entirely
+as `WorldViewModel` presentation state — no `Shared` or `Rod` files touched.
+
+### World: WorldViewModel
+
+- Added `@Published private(set) var isShowingCatchCutscene: Bool = false`.
+- Added a private `CatchCutscene { origin: SIMD3<Float>, elapsed: Float }` struct and
+  `catchCutscene: CatchCutscene?` storage, plus `catchCutsceneDuration: Float = 1.3` (s) and
+  `catchCutsceneJumpHeight: Float = 0.6` (m) constants.
+- `reelHook(deltaTime:)`'s catch guard (the `distance3D > 0.15` check from ADR-044): on a real catch
+  (`hasFishOnHook`), now calls `fishFight.resolveCatch()` then `beginCatchCutscene(from:
+  hookEntity.position)` and `emit(.catchFish)`, instead of disabling the hook immediately.
+  `setHookPhase(.result)` still fires in the same tick as before. Empty retrieves are unchanged —
+  `hookEntity.isEnabled = false` fires immediately, no cutscene.
+- Added `beginCatchCutscene(from:)` — seeds `catchCutscene` and sets `isShowingCatchCutscene = true`.
+- Added `updateCatchCutscene(deltaTime:)` — a placeholder jump: `hookEntity` arcs vertically from
+  `cutscene.origin` using `sin(t * .pi) * catchCutsceneJumpHeight` (`t` = elapsed/duration, clamped to
+  1), then disables the hook and flips `isShowingCatchCutscene` back to `false` once
+  `catchCutsceneDuration` elapses. Explicitly documented as a stand-in — `hookEntity` is still the
+  same placeholder sphere referenced throughout ADR-042 through ADR-044; there is no separate fish
+  mesh anywhere in this codebase (`FishFightController` holds no RealityKit/entity state at all).
+- `tick(deltaTime:)`'s `.result` case, previously `break`, now calls `updateCatchCutscene(deltaTime:)`
+  whenever `catchCutscene != nil`.
+- `returnToMenu()` gained `catchCutscene = nil` / `isShowingCatchCutscene = false` alongside its
+  existing hook/fight resets — without this, ending a session mid-cutscene (Rod's "End Fishing" at any
+  point, ADR-038) would leave the flag stuck `true` and could incorrectly show the cutscene overlay on
+  a later session with nothing actually caught.
+
+### World: ContentView / new CatchCutsceneView
+
+- Added `World/World/Views/CatchCutsceneView.swift` — a non-interactive, undismissable "CATCH!" title
+  overlay (spring scale/opacity-in on appear), shown while `isShowingCatchCutscene` is true. Picked up
+  automatically by Xcode's file-system-synchronized group (`World.xcodeproj` already uses
+  `PBXFileSystemSynchronizedRootGroup`), no manual `project.pbxproj` edit needed.
+- `ContentView`'s body gained the `CatchCutsceneView` overlay gated on `isShowingCatchCutscene`, and
+  the existing `ResultView` condition gained `!viewModel.isShowingCatchCutscene` so the two can never
+  show at the same time.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-045.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" — updated the
+  `FishFightController`/`WorldViewModel` interaction diagram and added an ADR-045 paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: added "Catch Cutscene" between "Fish Fight" and "Catch Result and
+  Continue," and inserted it into the gameplay loop diagram.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list (including the new
+  `CatchCutsceneView.swift`), target `arm64-apple-macosx26.0`, real SDK via
+  `xcrun --sdk macosx --show-sdk-path` — exit code 0, no errors.
+- No `Shared` or `Rod` files changed this pass, so neither module was rebuilt/re-typechecked.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift` and
+  `World/World/ContentView.swift`.
+- Not run: any live session. The jump arc, `catchCutsceneDuration`/`catchCutsceneJumpHeight` values,
+  and "CATCH!" title styling are first-pass placeholders — expected to change once real fish
+  assets/animation are integrated, per the request's own stated next step.
+
+## Feature: Catch Cutscene Cuts the Camera to the Hook (ADR-046)
+
+Date: 2026-07-20.
+
+Requested directly, immediately after the ADR-045 cutscene landed: "butuh cameranya langsung ke
+bomber dan ikan yang ketangkep, biar beneran kaya cut scene" (the camera needs to cut directly to the
+bobber and the caught fish, so it actually feels like a cutscene). Root cause: `updateCameraFollow()`
+only followed the hook for `.flying`/`.fishOnHook`/`.reeling`; `.result` — which the cutscene runs
+inside of (ADR-045) — was explicitly excluded, so the whole jump played off-camera from the player's
+fixed POV.
+
+### World: WorldViewModel
+
+- Added `catchCutsceneCameraOffset: SIMD3<Float> = [0, 0.9, 1.6]` — closer/lower than the existing
+  mid-fight `followOffset` (`[0, 1.5, 3.0]`, local to `updateCameraFollow()`), so the cutscene reads
+  as a distinct, tighter shot rather than reusing the ongoing-fight trailing framing.
+- `updateCameraFollow()` gained a first branch: while `isShowingCatchCutscene` is true, look at
+  `hookEntity` from `hookEntity.position + catchCutsceneCameraOffset` and return immediately, before
+  the existing `hookPhase`-based `followsHook` check. Once the cutscene ends (still inside `.result`,
+  waiting on `ResultView`'s "Continue Fishing"), the function falls through unchanged — `.result` was
+  never in `followsHook`'s list, so the camera still resets to the player pose exactly as before this
+  change.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-046.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with an ADR-046
+  paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now mentions the camera cutting in close.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. `catchCutsceneCameraOffset` is a hand-picked value, not confirmed
+  against how the shot actually frames the ADR-045 jump arc live.
+
+## Feature: Catch Cutscene Freezes at the Jump's Peak (ADR-047)
+
+Date: 2026-07-20.
+
+Requested directly, immediately after the ADR-046 camera cut landed: "ikan dan bomber nya harus
+'freeze' di cut scene agar kesan cut scene nya tidak terlalu singkat" (the fish and bobber need to
+freeze during the cutscene so it doesn't feel too brief). The prior `sin(t * .pi)` single-arc motion
+(ADR-045) only ever touches its peak height for one instant no matter how long the total duration
+was set to — the hook was always either rising or falling, never actually still, which is why even a
+1.3 s cutscene still read as a quick blip rather than a held moment.
+
+### World: WorldViewModel
+
+- Replaced the single `catchCutsceneDuration` constant with three phase durations:
+  `catchCutsceneRiseDuration` (0.35 s), `catchCutsceneFreezeDuration` (0.9 s),
+  `catchCutsceneSettleDuration` (0.35 s) — total cutscene runtime is now their sum, 1.6 s (up from
+  1.3 s).
+- Rewrote `updateCatchCutscene(deltaTime:)` to compute height in three branches instead of one
+  continuous arc: `sin(t * .pi / 2) * catchCutsceneJumpHeight` while rising (`t` = elapsed/rise
+  duration), a flat `catchCutsceneJumpHeight` while frozen, then `cos(t * .pi / 2) *
+  catchCutsceneJumpHeight` while settling (`t` = elapsed-since-freeze-end/settle duration). Both
+  eases meet the freeze's held value exactly at their phase boundaries, so there's no positional snap
+  between rise/freeze/settle.
+- No other function changed — `beginCatchCutscene(from:)`, the `reelHook` trigger, `ContentView`'s
+  overlay wiring, and ADR-046's camera-cut branch in `updateCameraFollow()` are all untouched; only
+  the motion curve inside `updateCatchCutscene` and its backing constants changed.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-047.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the ADR-045 paragraph's timing description to the new
+  three-phase breakdown.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now describes the hold/freeze at the top of the
+  leap.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. All three phase durations (and the resulting 1.6 s total) are
+  hand-picked, not tuned against how the hold actually reads in a played session.
+
+## Feature: Catch Cutscene Made More Dramatic (ADR-048)
+
+Date: 2026-07-20.
+
+Requested directly, immediately after ADR-047's freeze landed: "dan bikin lebih 'dramatis'" (and make
+it more dramatic). Diagnosed rather than guessed at randomly: ADR-045 through ADR-047 got the
+trigger, camera cut, and timing right, but stacked together the cutscene was still a static camera
+holding on a placeholder sphere with a title fading in over an otherwise-unchanged gameplay HUD —
+correct, but visually flat. Four presentation-only additions, each targeting a specific flatness:
+
+### World: WorldViewModel — camera push-in
+
+- Renamed the ADR-046 `catchCutsceneCameraOffset` constant to `catchCutsceneCameraEndOffset` and
+  added `catchCutsceneCameraStartOffset` (`[0, 1.2, 2.4]`, wider/further than the end offset).
+- Added `catchCutsceneTotalDuration` (computed: sum of the three ADR-047 phase durations) as the
+  single source both the camera dolly and `updateCatchCutscene`'s own phase math read from.
+- `updateCameraFollow()`'s cutscene branch now eases (`smoothstep`, `t*t*(3-2*t)`) from the start
+  offset to the end offset over `catchCutsceneTotalDuration`, instead of holding one static offset —
+  the camera now has its own slow push-in motion independent of the hook's rise/freeze/settle.
+
+### World: CatchCutsceneView — letterboxing, glow, title flourish
+
+- Added top/bottom black letterbox bars that slide in on appear (0 to 64pt over 0.25s).
+- Added a background vignette (`RadialGradient`, clear center to `black.opacity(0.5)` at the edges)
+  and a soft yellow radial glow behind the title.
+- Changed the title's entrance spring from `dampingFraction: 0.55` (no real overshoot) to `0.45` (a
+  visible overshoot/settle "pop") and grew the font 64 -> 72.
+
+### World: ContentView — HUD hides during the cutscene
+
+- Wrapped the stat block (`LineTensionView`, the caught-count/level `GroupBox`, the commented
+  `CastMeterView` slot, the error `Text`) in a `Group` with
+  `.opacity(viewModel.isShowingCatchCutscene ? 0 : 1)` and a matching `.animation(...)`, so the
+  routine gameplay HUD doesn't visually compete with the cutscene. `RealityView` and its
+  fps/connection-state overlay are unaffected.
+
+### Investigated, no change needed
+
+- Considered adding a dedicated "catch" sound cue — found one already exists and already fires at
+  the right moment: `reelHook`'s `emit(.catchFish)` (predates all of this cutscene work) plays
+  `catch_splash.wav` via `FishingSounds.handle(.catchFish)` the instant the cutscene begins. No audio
+  changes made.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-048.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with an ADR-048
+  paragraph; trimmed the now-renamed constant out of the ADR-046 paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now describes the push-in, letterboxing, glow, and
+  HUD fade.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`,
+  `World/World/ContentView.swift`, and `World/World/Views/CatchCutsceneView.swift`.
+- Not run: any live session. The push-in offsets, letterbox height, spring damping, and glow/vignette
+  opacities are all hand-picked, not tuned against how they actually read on-device.
+
+## Device Pairing Allowlist Over CoreBluetooth (ADR-049)
 
 Date: 2026-07-20.
 
 Requested directly as the first of three jobs in one message: "list saved device, biar 1 hp ga
 konek ke mac lain (setup device pair di awal. pake bluetooth connected aja kali ya)." Recorded as
-ADR-044 in `ARCHITECTURE_DECISIONS.md`.
+ADR-049 in `ARCHITECTURE_DECISIONS.md`.
 
 ### World: PairedDeviceStore + TransportHost
 
@@ -4979,7 +5261,7 @@ ADR-044 in `ARCHITECTURE_DECISIONS.md`.
 
 ### Documentation
 
-- `ARCHITECTURE_DECISIONS.md`: added ADR-044.
+- `ARCHITECTURE_DECISIONS.md`: added ADR-049.
 - `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the "CoreBluetooth Transport (ADR-035)" section
   with a "Device pairing allowlist" paragraph.
 
@@ -4997,7 +5279,7 @@ ADR-044 in `ARCHITECTURE_DECISIONS.md`.
   on this hardware (CoreBluetooth's own caching behavior here is not something this environment can
   observe), and the actual "second Mac/phone in range gets ignored" scenario this was built for.
 
-## Explicit "Start Casting" Arm Gate (ADR-045)
+## Explicit "Start Casting" Arm Gate (ADR-050)
 
 Date: 2026-07-20.
 
@@ -5005,7 +5287,7 @@ Requested directly as the second of three jobs in one message: "add button 'star
 terus munculin 'cast meter'. nah, core motion nya, harus narik hp ke belakang (jadi semakin - nilai
 pitch maybe), maka ketika nge flick, akan makin jauh. so maybe detect dari original device, ukur
 seberapa jauh device bergerak, baru 'cast' nya itu ketika nge flick device. langsung disable tombol
-'start casting' kalo kondisi hook nya != idle." Recorded as ADR-045 in `ARCHITECTURE_DECISIONS.md`.
+'start casting' kalo kondisi hook nya != idle." Recorded as ADR-050 in `ARCHITECTURE_DECISIONS.md`.
 
 Read `RodMotionInterpreter`/`CastResolver` before writing anything: the "measure how far back it
 moved, fire on the flick" mechanic the player described already exists end-to-end (ADR-032's
@@ -5044,7 +5326,7 @@ proximity alone, with no explicit intent step.
 
 ### Documentation
 
-- `ARCHITECTURE_DECISIONS.md`: added ADR-045.
+- `ARCHITECTURE_DECISIONS.md`: added ADR-050.
 - `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Cast Resolver Pipeline" with the arm-gate
   paragraph.
 - `GAMEPLAY_ARCHITECTURE_V1.md`: Rod's "intended final controller interface" now lists "Start
@@ -5065,12 +5347,12 @@ proximity alone, with no explicit intent step.
   as intended once gated behind an explicit press, and whether "Casting Armed…" is clear enough
   feedback are all unverified until tried on a physical device.
 
-## Rod Rig Pass: Bend Smoothing, Placeholder Reel Spin, Line-Follow Fix (ADR-046)
+## Rod Rig Pass: Bend Smoothing, Placeholder Reel Spin, Line-Follow Fix (ADR-051)
 
 Date: 2026-07-20.
 
 Requested directly as the third of three jobs in one message: "benerin rod (rod diem or bend, reel
-muter, line ngikut)." Recorded as ADR-046 in `ARCHITECTURE_DECISIONS.md`.
+muter, line ngikut)." Recorded as ADR-051 in `ARCHITECTURE_DECISIONS.md`.
 
 ### Investigation before writing anything
 
@@ -5111,8 +5393,8 @@ muter, line ngikut)." Recorded as ADR-046 in `ARCHITECTURE_DECISIONS.md`.
 
 ### Documentation
 
-- `ARCHITECTURE_DECISIONS.md`: added ADR-046.
-- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added a new "Rod Rig Visual Fixes (ADR-046)" section — this
+- `ARCHITECTURE_DECISIONS.md`: added ADR-051.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added a new "Rod Rig Visual Fixes (ADR-051)" section — this
   is the rig's first dedicated SAD section; previously only `CHECKPOINT.md`'s asset-integration
   entries covered it.
 
@@ -5130,14 +5412,14 @@ muter, line ngikut)." Recorded as ADR-046 in `ARCHITECTURE_DECISIONS.md`.
   unverified until played. If "rod diem or bend" turns out to mean something else entirely once
   seen live, that's the first thing to revisit.
 
-## Floating Bobber: Idle Bob and a Pre-Bite "Interest Dip" (ADR-047)
+## Floating Bobber: Idle Bob and a Pre-Bite "Interest Dip" (ADR-052)
 
 Date: 2026-07-20.
 
 Reported directly after the previous three jobs: "bobber nya celap celup (just like in real life),
 karena yang sekarang langsung nge bite gitu ikannya, jadi kurang realistis. also, bobber movement
 masih terlalu static, seharusnya bobber itu dinamis naik turun kecil kaya pelampung in real life."
-Recorded as ADR-047 in `ARCHITECTURE_DECISIONS.md`.
+Recorded as ADR-052 in `ARCHITECTURE_DECISIONS.md`.
 
 Read `WorldViewModel.tick(deltaTime:)`'s `.hookInWater` case first: confirmed `hookEntity.position.y`
 was never touched at all during search unless the player was reeling in an empty line — the hook sat
@@ -5165,8 +5447,8 @@ hook itself — only a Rod haptic pulse and a World bubble-loop sound.
 
 ### Documentation
 
-- `ARCHITECTURE_DECISIONS.md`: added ADR-047.
-- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added a new "Floating Bobber (ADR-047)" section; updated the
+- `ARCHITECTURE_DECISIONS.md`: added ADR-052.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added a new "Floating Bobber (ADR-052)" section; updated the
   "Fish Interest..." section's now-stale "`isFishInterested`... for a future World visual cue (not
   built yet)" line to point at it instead.
 

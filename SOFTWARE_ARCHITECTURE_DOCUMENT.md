@@ -286,7 +286,7 @@ and `minimum`/`maximumBackswingDistance`, remains the single
 authoritative calculation that becomes the transmitted `CastSolution.
 power`.
 
-**A cast attempt must be explicitly armed first (ADR-045).**
+**A cast attempt must be explicitly armed first (ADR-050).**
 `RodMotionInterpreter.interpret(_:isCastingArmed:)` treats a cast-classified
 pose exactly like `.idle` — no backswing tracking, no charging phase, no cast
 meter — unless `isCastingArmed` is `true`. Rod's new "Start Casting" button
@@ -405,7 +405,7 @@ moving.
 
 ------------------------------------------------------------------------
 
-## Rod Rig Visual Fixes (ADR-046)
+## Rod Rig Visual Fixes (ADR-051)
 
 `World/World/Reality/RodRigController.swift` drives `rod_main.usdz`/`rod_line.usdz`'s live bone
 pose each frame (both ship as rest-pose-only skeletons — see the "Asset-Integration Environment"
@@ -485,8 +485,9 @@ state directly and drives the controller from `tick(deltaTime:)`:
   (merged switch case)       -> fishFight.updateFight(deltaTime:, isReeling:, reelSpeed:, hookDistance:)
   -> returns .escaped          -> hook disabled, HookPhase .idle, send .fishEscaped (ADR-039)
   -> returns .lineBreak        -> hook disabled, HookPhase .idle, send .lineBreak
-reelHook() reaches rod       -> fishFight.resolveCatch(), send .catchFish
-  (hasFishOnHook)
+reelHook() reaches rod       -> fishFight.resolveCatch(), send .catchFish,
+  (hasFishOnHook)               beginCatchCutscene(), HookPhase .result (ADR-045)
+catch cutscene ends           -> hook disabled, isShowingCatchCutscene = false, ResultView shown
 new splash                    -> fishFight.resetForNewCast()
 ```
 
@@ -555,10 +556,26 @@ Both `reelHook`/`driftHookAway` branch on horizontal (X/Z) distance to a target
 point: beyond `hookLiftDistance` (1.0 m) the hook is pinned to `waterHeight` and
 moves horizontally only, so it reads as sliding across the water's surface;
 within that distance, movement switches to full 3D so the hook rises the rest
-of the way up. `reelHook`'s catch/empty-retrieve resolution also checks
-horizontal distance rather than full 3D distance, so it resolves once the hook
-is close to the dock's edge rather than needing to also close the ~2 m
-vertical gap up to the rod's held height.
+of the way up.
+
+**Inside the lift zone, the climb is a guaranteed fixed speed, not tug-of-war
+(ADR-044).** Outside `hookLiftDistance`, `reelHook` still uses ADR-039's
+tug-of-war (`rodState.reelSpeed * reelSpeed` net `fishFight.fishPullSpeed`),
+which can stall or go negative against a strong fish — intentional for the
+open-water fight. Carried into the lift zone, though, that let the hook stall
+or sink back toward the water right at the dock's edge, reading as the fish
+"floating" instead of being landed. Inside the zone, `reelHook` instead always
+advances at a fixed `dockLiftSpeed` (3.5 m/s, faster than the player's own max
+reel speed), ignoring `fishFight.fishPullSpeed` entirely — a fish this close
+can no longer meaningfully resist. `driftHookAway` (used only while the player
+isn't actively reeling) is unchanged and still lets an escaping fish pull the
+hook back down out of the lift zone via `fishFight.fishPullSpeed`.
+
+`reelHook`'s catch/empty-retrieve resolution now checks full 3D distance to
+`hookLiftTargetPosition` (0.15 m) rather than horizontal distance (previously
+0.12 m, ADR-043) — since the climb above is fast and guaranteed rather than
+tug-of-war-gated, resolution can afford to wait for the hook to actually finish
+arriving instead of firing while it's still mid-climb.
 
 **That target is `hookLiftTargetPosition`, not the rod's render anchor (ADR-043).**
 `hookLiftTargetPosition` (`[0.22, 1.95, -4.7]`) shares `dockAnchorPosition`'s X/Y
@@ -572,6 +589,63 @@ happens in open space in front of the dock instead of inside it.
 rod (`updateRodPose()`) and for `ensureFightDistance()` (ADR-031) — only the
 reel/drift motion and catch-distance math in `reelHook`/`driftHookAway` target
 the new point.
+
+**Catch resolution plays a cutscene before `ResultView`, as `WorldViewModel`
+presentation state, not a new `HookPhase` (ADR-045).** On a real catch (not an
+empty retrieve), `reelHook`'s `distance3D > 0.15` guard now calls
+`fishFight.resolveCatch()` and `beginCatchCutscene(from:)` instead of disabling
+`hookEntity` outright, while still setting `HookPhase` to `.result`
+immediately — casting/reeling stay locked for the whole cutscene exactly as
+before, since `.result` already disallows both. `isShowingCatchCutscene`
+(`@Published`, `WorldViewModel`) and a private `CatchCutscene { origin,
+elapsed }` struct drive `hookEntity` through a placeholder three-phase
+vertical motion inside `tick(deltaTime:)`'s `.result` case — ease up to
+`catchCutsceneJumpHeight` (0.6 m) over `catchCutsceneRiseDuration` (0.35 s),
+hold motionless there for `catchCutsceneFreezeDuration` (0.9 s, ADR-047 — so
+the moment reads as a deliberate pause, not a quick blip through the peak),
+then ease back down over `catchCutsceneSettleDuration` (0.35 s) — then disable
+the hook and flip the flag back to `false`. `ContentView` shows a new `CatchCutsceneView`
+("CATCH!" title) while the flag is set, and `ResultView`'s condition gained
+`!isShowingCatchCutscene` so the two never overlap. `HookPhase`
+(`Shared`) is unchanged — the cutscene is pure `World` presentation with no
+distinct input-locking or haptic behavior beyond what `.result` already
+provides, so it needed no `Shared`/`Rod` changes, consistent with "Rod owns no
+gameplay presentation." The jump itself is an explicit placeholder — `hookEntity`
+is still the same sphere referenced throughout ADR-042 through ADR-044, and
+there is no separate fish mesh anywhere in this codebase — `updateCatchCutscene
+(deltaTime:)` is the intended single replacement point once a real fish
+mesh/animation lands.
+
+**The catch cutscene cuts the camera to the hook (ADR-046).**
+`updateCameraFollow()` gained a first branch: while `isShowingCatchCutscene` is
+true, the camera looks at `hookEntity` from a dedicated, tighter offset
+instead of the mid-fight trailing `followOffset` (`[0, 1.5, 3.0]`, ADR-039) —
+a deliberate "cut to the catch" shot, not the same framing the fight itself
+already uses. Before this, `.result` was excluded from `followsHook`'s phase
+list, so the jump played entirely off-camera from the fixed player POV. Once
+the cutscene ends, the function falls through to its prior behavior
+unchanged — the camera resets to the player pose for the rest of `.result`
+(the stat-card wait), exactly as before ADR-046.
+
+**The cutscene gained a camera push-in, letterboxing, HUD hide, and a title
+flourish for more drama (ADR-048).** The single static camera offset from
+ADR-046 (now `catchCutsceneCameraEndOffset`) is the *end* of an eased
+(`smoothstep`) dolly from a new, wider `catchCutsceneCameraStartOffset`
+(`[0, 1.2, 2.4]`) over `catchCutsceneTotalDuration` — a computed property
+summing the three ADR-047 phase durations, so camera and hook motion can't
+disagree on the cutscene's length. `CatchCutsceneView` gained top/bottom
+letterbox bars that slide in on appear, a background vignette, a radial glow
+behind the title, and a lower-damping spring on the title's entrance so it
+visibly overshoots before settling (a "pop" instead of a flat fade-in).
+`ContentView`'s stat HUD (`LineTensionView`, the caught-count/level
+`GroupBox`) now fades out while `isShowingCatchCutscene` is true, so it
+doesn't visually compete with the cutscene — `RealityView` and its
+fps/connection overlay are unaffected. All four are presentation-only
+additions layered on top of ADR-045/046/047's existing trigger/phase/camera
+structure, which is otherwise unchanged. A catch sound cue was already in
+place before any of this cutscene work — `reelHook`'s `emit(.catchFish)`
+plays `catch_splash.wav` at the exact moment the cutscene begins — so no
+audio changes were needed.
 
 `resistance`'s contribution to `effectiveFishPullRate`/`fishPullSpeed`/
 the escape allowance is scaled by its own multiplier per formula
@@ -711,7 +785,7 @@ presentation-only state layered on the existing search phase.
 (`interestTimer` then `biteTimer`, each `0.8...2.0s`) instead of one
 `1.5...4.0s` timer. `isFishInterested: Bool` is `@Published`; its World visual
 consumer is the floating bobber's dip animation (see "Floating Bobber" below,
-ADR-047) — fish still have no visual representation of their own, but the
+ADR-052) — fish still have no visual representation of their own, but the
 hook now visibly reacts to their presence. `FishingEvent.fishInterested` fires once when interest
 starts; Rod's `FishingHaptics.interestPulse(now:)` throttles a repeating
 soft haptic (`HapticManager.fishInterested()`) while an internal flag is
@@ -769,7 +843,7 @@ still lives on Rod — pre-existing, and tracked under the still-open World
 Tutorial/Calibration-instructions gap (Main Menu itself is no longer part
 of this gap — see ADR-036).
 
-## Floating Bobber (ADR-047)
+## Floating Bobber (ADR-052)
 
 `WorldViewModel.updateBobberFloat(deltaTime:)`, called from `tick()`'s `.hookInWater` case whenever
 the player isn't reeling, gives the hook two layered vertical motions on top of `waterHeight`:
@@ -859,7 +933,7 @@ running continuously once `connect()` was called, rather than requiring the call
 Full rationale, the message-flow inventory used to design the GATT layout, and the platform
 entitlement changes (`Info.plist`, `ENABLE_RESOURCE_ACCESS_BLUETOOTH`) are in ADR-035.
 
-**Device pairing allowlist (ADR-044).** The scan-and-connect-to-first-match behavior above only
+**Device pairing allowlist (ADR-049).** The scan-and-connect-to-first-match behavior above only
 holds true until a pairing exists. `PairedDeviceStore` (World) and `PairedCentralStore` (Rod) each
 persist the other side's CoreBluetooth identifier (`CBPeripheral.identifier`/`CBCentral.identifier`)
 via `UserDefaults` after the first full successful connection, and both `didDiscover`/

@@ -11,7 +11,7 @@ to revise them.
 
 ------------------------------------------------------------------------
 
-# ADR-047 --- Floating Bobber: Idle Bob and a Pre-Bite "Interest Dip"
+# ADR-052 --- Floating Bobber: Idle Bob and a Pre-Bite "Interest Dip"
 
 ## Decision
 
@@ -65,7 +65,7 @@ Status: Accepted, pending live confirmation — verified via `swiftc -typecheck`
 
 ------------------------------------------------------------------------
 
-# ADR-046 --- Rod Rig Pass: Bend Smoothing, Placeholder Reel Spin, Line-Follow Fix
+# ADR-051 --- Rod Rig Pass: Bend Smoothing, Placeholder Reel Spin, Line-Follow Fix
 
 ## Decision
 
@@ -141,7 +141,7 @@ first-pass and hand-tuned/approximated where noted above; none have been visuall
 
 ------------------------------------------------------------------------
 
-# ADR-045 --- Cast Attempts Require an Explicit "Start Casting" Arm
+# ADR-050 --- Cast Attempts Require an Explicit "Start Casting" Arm
 
 ## Decision
 
@@ -216,7 +216,7 @@ physically.
 
 ------------------------------------------------------------------------
 
-# ADR-044 --- Device Pairing Allowlist Over CoreBluetooth
+# ADR-049 --- Device Pairing Allowlist Over CoreBluetooth
 
 ## Decision
 
@@ -285,6 +285,288 @@ here and should be a separate task.
 Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
 `World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
 played with two physical devices.
+
+
+------------------------------------------------------------------------
+
+# ADR-048 --- Catch Cutscene Gains Letterboxing, a Camera Push-In, and a Title Flourish
+
+## Decision
+
+Three presentation-only additions, all scoped to the existing catch cutscene (ADR-045/046/047), none
+touching `Shared` or `Rod`:
+
+1. **Camera push-in.** `updateCameraFollow()`'s cutscene branch (ADR-046) no longer holds a single
+   static offset from `hookEntity`. It now eases from a new `catchCutsceneCameraStartOffset`
+   (`[0, 1.2, 2.4]`) to the existing tight `catchCutsceneCameraEndOffset` (`[0, 0.9, 1.6]`, formerly
+   just `catchCutsceneCameraOffset`) over the cutscene's full run — a `smoothstep`
+   (`t*t*(3-2*t)`) of `catchCutscene.elapsed / catchCutsceneTotalDuration`, a new computed property
+   summing the three ADR-047 phase durations so the camera and hook motion can't disagree on when the
+   cutscene ends.
+2. **Letterbox bars and a radial glow.** `CatchCutsceneView` gained top/bottom black bars that slide
+   in on appear (0 to 64pt over 0.25s) and a soft yellow radial glow behind the title, plus a
+   background vignette (`RadialGradient`, clear center to `black.opacity(0.5)` at the edges) — all
+   purely `SwiftUI`, no RealityKit changes.
+3. **Title flourish.** The "CATCH!" title's entrance changed from a simple `spring(response: 0.4,
+   dampingFraction: 0.55)` (critically-damped-ish, no overshoot) to `spring(response: 0.45,
+   dampingFraction: 0.45)` — low enough damping to visibly overshoot past full scale before settling,
+   read as a punchier "pop." Font size grew 64 -> 72.
+4. **HUD hides during the cutscene.** `ContentView`'s stat block (`LineTensionView`, the
+   caught-count/level `GroupBox`, `CastMeterView`'s commented slot, the error `Text`) is now wrapped
+   in a `Group` with `.opacity(viewModel.isShowingCatchCutscene ? 0 : 1)` and a matching
+   `.animation(...)`. The `RealityView` and its fps/connection-state overlay are unaffected.
+
+## Rationale
+
+Requested directly, immediately after ADR-047's freeze landed: "dan bikin lebih 'dramatis'" (and make
+it more "dramatic"). None of ADR-045 through ADR-047 individually were wrong, but stacked together
+they still amounted to a static camera holding on a placeholder sphere with a single title label
+fading in over an unchanged gameplay HUD — correct timing and framing, but visually flat, which reads
+as the opposite of "dramatic" regardless of how good the underlying rise/freeze/settle timing is.
+
+Each addition targets a specific flatness the others don't fix: a locked-off camera shot (even a
+well-framed one, ADR-046) doesn't read as "cinematic" the way a moving shot does, hence the push-in;
+a floating title over an otherwise-unchanged HUD doesn't isolate the moment, hence the HUD fade and
+the letterboxing (an immediately-recognizable "cutscene mode" signal borrowed from film/games
+generally); and a title that just fades in at fixed scale reads as flat compared to one with a bit of
+punch, hence the overshoot spring and added glow. All four are presentation-only and layer on top of
+the existing trigger/phase/camera-branch structure from ADR-045/046/047 without changing any of it —
+`beginCatchCutscene(from:)`, `updateCatchCutscene(deltaTime:)`'s phase math, and the `reelHook` trigger
+are all untouched.
+
+An actual "catch" sound cue was considered but turned out to already exist: `reelHook`'s
+`emit(.catchFish)` (present since before ADR-045, unchanged by any of this cutscene work) already
+plays `catch_splash.wav` via `FishingSounds.handle(.catchFish)` at the exact moment the cutscene
+begins, so no audio changes were needed here.
+
+## Status
+
+Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World` target
+only (see the matching `CHECKPOINT.md` entry). The push-in offsets, letterbox bar height, spring
+parameters, and vignette/glow opacities are all hand-picked, not tuned against how they actually read
+on-device — first-pass placeholders same as the rest of this cutscene work, expected to change again
+once real fish/camera assets are integrated.
+
+------------------------------------------------------------------------
+
+# ADR-047 --- Catch Cutscene Holds the Fish at the Jump's Peak Instead of a Single Continuous Arc
+
+## Decision
+
+`updateCatchCutscene(deltaTime:)`'s single `sin`-eased up-and-down arc (ADR-045, one continuous
+motion across `catchCutsceneDuration`) is replaced with three explicit phases:
+
+1. **Rise** (`catchCutsceneRiseDuration`, 0.35 s) — ease from the origin up to
+   `catchCutsceneJumpHeight` (`sin(t * .pi / 2)`, `t` = elapsed/rise duration).
+2. **Freeze** (`catchCutsceneFreezeDuration`, 0.9 s) — `hookEntity` holds exactly at
+   `catchCutsceneJumpHeight`, motionless.
+3. **Settle** (`catchCutsceneSettleDuration`, 0.35 s) — ease back down to the origin
+   (`cos(t * .pi / 2)`, `t` = elapsed-since-freeze-end/settle duration).
+
+Both eases are continuous at the phase boundaries (rise ends at exactly `catchCutsceneJumpHeight`,
+matching the freeze's held value; settle starts at exactly `catchCutsceneJumpHeight`, matching where
+freeze left off), so there is no positional snap between phases. The old single `catchCutsceneDuration`
+constant is removed; total cutscene play time is now the sum of the three phase durations (1.6 s, up
+from the old 1.3 s). `beginCatchCutscene(from:)`, the catch trigger in `reelHook`, `ContentView`'s
+overlay wiring, and ADR-046's camera-cut branch are all unchanged — only `updateCatchCutscene`'s
+internal motion curve and its three new constants changed.
+
+## Rationale
+
+Requested directly, immediately after ADR-046's camera cut landed: "ikan dan bomber nya harus
+'freeze' di cut scene agar kesan cut scene nya tidak terlalu singkat" (the fish and bobber need to
+freeze during the cutscene so it doesn't feel too brief). A single continuous `sin(t * .pi)` arc
+spends almost all of its time in motion and only touches its peak height for a single instant — even
+at the full 1.3 s duration, the hook is only ever "at the top" for one frame, so the moment reads as
+a quick blip passing through rather than a deliberate pause on the catch. An explicit held phase,
+with the hook motionless at the peak for nearly a second, is what actually reads as "the cutscene
+lingers on the catch," which continuous easing alone could not produce no matter how long
+`catchCutsceneDuration` was set to.
+
+Split into three phases rather than, e.g., biasing a single easing curve to spend more time near its
+peak (a harder-to-read, less explicit approach) — three named, independently tunable durations make
+the "how long does it hang in the air" question a single obvious constant
+(`catchCutsceneFreezeDuration`) to adjust once this is played live, consistent with this pass's own
+placeholder-pending-live-confirmation status.
+
+## Status
+
+Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World` target
+only (see the matching `CHECKPOINT.md` entry). All three phase durations and the total 1.6 s runtime
+are hand-picked, not tuned against how the hold actually reads in a played session.
+
+------------------------------------------------------------------------
+
+# ADR-046 --- Catch Cutscene Cuts the Camera to the Hook, Reusing the Existing Follow-Cam Path
+
+## Decision
+
+`updateCameraFollow()` gained a new first branch: whenever `isShowingCatchCutscene` (ADR-045) is
+true, the camera looks at `hookEntity` from `hookEntity.position + catchCutsceneCameraOffset`
+(`[0, 0.9, 1.6]`) and returns immediately, before the existing `hookPhase`-based `followsHook` check
+runs. `catchCutsceneCameraOffset` is deliberately closer and lower than the mid-fight trailing
+`followOffset` (`[0, 1.5, 3.0]`, ADR-039) — a tighter, more deliberate shot rather than reusing the
+same trailing framing the fight itself already uses. Once the cutscene ends (`isShowingCatchCutscene`
+flips back to `false`, still inside `.result` while `ResultView` waits for "Continue Fishing"), the
+function falls through to its existing behavior — `.result` was never in `followsHook`'s phase list,
+so the camera resets to the player pose exactly as it did before this change.
+
+## Rationale
+
+Requested directly, immediately after the ADR-045 cutscene landed: "butuh cameranya langsung ke
+bomber dan ikan yang ketangkep, biar beneran kaya cut scene" (the camera needs to cut directly to the
+bobber and the caught fish, so it actually feels like a cutscene). Before this change,
+`updateCameraFollow()`'s `followsHook` list was `.flying`/`.fishOnHook`/`.reeling` only — `.result`
+was explicitly excluded (see its own prior doc comment, "Snaps back to the player pose for every
+other phase — including `.result`"), so the ADR-045 cutscene played entirely off-camera from the
+player's fixed POV, at `hookLiftTargetPosition` which is a further, more head-on angle than a
+deliberate "hero shot." The jump was technically running but not actually visible as a cut.
+
+Reused `updateCameraFollow()`'s existing look-at/offset mechanism rather than building a second
+camera system — the function already exists precisely to point the camera at `hookEntity` from a
+fixed relative offset, which is exactly what a "cut to the catch" needs; the only meaningful design
+question was the offset itself, since a cutscene shot should read as distinct from the ongoing-fight
+trailing shot, not identical to it. Gated on `isShowingCatchCutscene` rather than `hookPhase ==
+.result`, since `.result` also covers the post-cutscene stat-card wait, where the camera should
+already be back home per the pre-existing behavior — only the cutscene's own duration should pull the
+camera in.
+
+## Status
+
+Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World` target
+only (see the matching `CHECKPOINT.md` entry). `catchCutsceneCameraOffset` is a hand-picked value
+(closer than the existing mid-fight offset), not confirmed against how the shot actually frames
+`hookEntity`'s jump arc (ADR-045) in a live session.
+
+------------------------------------------------------------------------
+
+# ADR-045 --- Catch Resolution Plays a Cutscene Before the Result Screen, as a World Presentation State (Not a New HookPhase)
+
+## Decision
+
+`reelHook(deltaTime:)`'s catch guard (ADR-044's `distance3D > 0.15` check) no longer disables
+`hookEntity` and shows `ResultView` in the same tick a catch resolves. On a real catch it now calls
+`fishFight.resolveCatch()` and `beginCatchCutscene(from:)` instead, then still sets `HookPhase` to
+`.result` immediately (unchanged) — casting/reeling stay locked for the whole cutscene exactly as
+before, since `.result` already had `allowsCasting == false` and `allowsReeling == false`. Empty
+retrieves (no fish on hook) are untouched: `hookEntity.isEnabled = false` and `HookPhase.idle` fire
+immediately, no cutscene.
+
+The cutscene itself is a new `@Published private(set) var isShowingCatchCutscene: Bool` on
+`WorldViewModel`, driven from a private `CatchCutscene { origin, elapsed }` struct ticked inside
+`tick(deltaTime:)`'s existing `.result` case (previously `break`). `updateCatchCutscene(deltaTime:)`
+arcs `hookEntity` upward from where it landed (`sin` easing, peak `catchCutsceneJumpHeight`, 0.6 m)
+over `catchCutsceneDuration` (1.3 s), then disables it and flips `isShowingCatchCutscene` back to
+`false`. `ContentView` gates a new `CatchCutsceneView` (a non-dismissable "CATCH!" title overlay) on
+`isShowingCatchCutscene`, and `ResultView`'s existing condition gained `!isShowingCatchCutscene` so
+the two never show at once.
+
+`HookPhase` itself (`Shared/Sources/Shared/Models/Gameplay/HookPhase.swift`) was **not** changed —
+no new case was added. `returnToMenu()` gained `catchCutscene = nil` /
+`isShowingCatchCutscene = false` alongside its existing hook/fight resets, so ending a session
+mid-cutscene (Rod's "End Fishing" at any point, per ADR-038) can't leave the flag stuck `true` for a
+future session.
+
+## Rationale
+
+Requested directly, drawing an explicit comparison to casting's own already-distinct moment (Hook
+Flying/Splash): "kita harus bikin 'cut scene' seperti game-game pun ... ketika bomber nya sudah
+mendekati dock, dan user melakukan final reel input, akan dimunculkan 'scene' ikan dan bomber dimana
+mereka melompat ke atas dan akan muncul title 'CATCH'" (build a cutscene, like other games have —
+when the bobber/fish nears the dock and the player's final reel input lands it, show a scene where
+the fish and bobber jump up and a "CATCH" title appears) — "nantinya, 'scene' ini akan disambungkan
+dengan blender animasi asset" (this scene will later be connected to a Blender animation asset).
+
+A new `HookPhase` case was considered and rejected: `HookPhase` is a `Shared` contract consumed by
+both `Rod` (haptics, `allowsCasting`/`allowsReeling`) and `World` (rendering/HUD), per this project's
+own Rod/Shared/World dependency rule (`Rod -> Shared <- World`, never Rod <-> World directly) and its
+explicit statement that "Rod owns no gameplay presentation." The cutscene is pure presentation with
+no distinct input-locking or haptic behavior beyond what `.result` already provides — reusing
+`.result` and adding a World-only `Bool` avoids touching `Shared` or `Rod` at all for a change that is,
+by its own nature, entirely a `World` rendering/HUD concern.
+
+`hookEntity`'s jump is explicitly a placeholder — still the same `ModelEntity` sphere referenced
+throughout ADR-042 through ADR-044 (there is no separate fish mesh anywhere in this codebase; see
+those ADRs and `FishFightController`'s own doc comment that it "has no knowledge of transport, hook
+entities, or RealityKit"). The goal of this pass is the cutscene's *timing, trigger, and state
+machine* — a scripted `sin`-eased vertical arc is enough to prove and review that shape now,
+independent of the later Blender asset work the request itself flags as still pending. When a real
+fish mesh/animation lands, `updateCatchCutscene(deltaTime:)` is the single, well-defined place to
+replace the placeholder arc with a driven animation, and `beginCatchCutscene(from:)`/the
+`distance3D > 0.15` guard in `reelHook` remain the single, well-defined trigger moment — deliberately
+not spread across multiple call sites.
+
+`catchCutsceneDuration` (1.3 s) and `catchCutsceneJumpHeight` (0.6 m) are hand-picked, matching this
+project's own established pattern of flagging unverified constants explicitly (see ADR-043/044)
+rather than presenting them as tuned.
+
+## Status
+
+Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World` target
+(macOS) only, since this change touches no `Shared` or `Rod` files (see the matching `CHECKPOINT.md`
+entry). Not yet played; the jump arc, cutscene duration, and title styling are all first-pass
+placeholders expected to change once real fish assets/animation are integrated.
+
+------------------------------------------------------------------------
+
+# ADR-044 --- Dock-Approach Lift Uses a Guaranteed Fixed Speed, Not Tug-of-War
+
+## Decision
+
+Inside `hookLiftDistance` (1.0 m) of `hookLiftTargetPosition`, `reelHook(deltaTime:)` no longer
+moves at `rodState.reelSpeed * reelSpeed` net `fishFight.fishPullSpeed` (ADR-039's tug-of-war). It
+now always advances toward `hookLiftTargetPosition` at a new fixed constant,
+`dockLiftSpeed = 3.5` m/s — faster than the player's own max reel speed (`reelSpeed`, `3.0`) — with
+no subtraction for the fish's pull. Outside that zone (the open-water reel-in), the tug-of-war stays
+exactly as ADR-039 left it.
+
+`reelHook`'s catch/empty-retrieve resolution also changed from a horizontal-only distance check
+(`> 0.12` m) to a full 3D distance check against `hookLiftTargetPosition` (`> 0.15` m), so resolution
+now waits for the guaranteed climb above to actually finish rather than firing horizontally while the
+hook may still be partway through its vertical rise.
+
+`driftHookAway(deltaTime:)` (ADR-042), used when a hooked fish pulls line out while the player isn't
+actively reeling, is unchanged — it still uses `fishFight.fishPullSpeed` in both zones, since a fish
+escaping toward open water should still be able to pull the hook back down out of the lift zone.
+
+## Rationale
+
+Reported directly during playtesting: "ketika bomber nya sudah mulai mengenai dock nya, bomber
+kuning nya masih 'melayang' ... harusnya ketika sudah menyentuh dock, harusnya ikan mulai makin
+bergerak cepat pun atau langsung naik ke dock ketimbang melayang" (once the hook/fish starts reaching
+the dock, it still visibly "floats" instead of speeding up or climbing straight onto the dock).
+
+Tracing `reelHook`'s math: the tug-of-war net speed (`playerSpeed - fishFight.fishPullSpeed`) can be
+small or negative even while the player is actively reeling — a documented, intentional design
+(ADR-039) for the open-water fight, where a strong fish should be able to contest the player. Left
+unchanged inside the lift zone, though, the same math let the hook stall in place or even sink back
+toward the water right at the dock's edge, which is exactly the reported "floating" feel — a fish
+this close to being landed visually has no business still winning a tug-of-war.
+
+The catch/empty-retrieve resolution threshold was originally horizontal-only specifically so
+resolution wouldn't have to wait for the hook to climb the full ~2 m up to the rod's hand height
+(ADR-043's own rationale). That tradeoff no longer applies now that the climb is fast and guaranteed
+rather than tug-of-war-gated — switching the check to full 3D distance means the hook visibly
+finishes arriving before it disappears, instead of vanishing mid-climb, which is the second half of
+the reported issue (the hook/fish should be seen reaching the dock, not just getting close to it
+horizontally and cutting away).
+
+**Forward-looking note for fish-asset integration:** `hookEntity` is still a placeholder sphere and
+literally *is* the fish's rendered position (`FishFightController` holds no RealityKit/entity state
+at all — see `GAMEPLAY_ARCHITECTURE_V1.md` and the "Fish Species and Fight Simulation" section of
+`SOFTWARE_ARCHITECTURE_DOCUMENT.md`). When a real fish mesh/animation replaces it, this guaranteed
+dock-approach climb is the natural hook point for a "landed on the dock" animation trigger — `reelHook`
+already has a single, well-defined moment (the `distance3D > 0.15` guard failing) where the fish is
+considered to have arrived, rather than that being inferred indirectly from tension or distance
+elsewhere.
+
+## Status
+
+Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World` target
+(macOS) and via a `Shared`-only build against the `Rod` (iOS simulator) target's module (see the
+matching `CHECKPOINT.md` entry), not yet played. `dockLiftSpeed = 3.5` is a hand-picked value (faster
+than the player's own max reel speed, `3.0`) rather than one tuned against a live session.
+
 
 ------------------------------------------------------------------------
 
