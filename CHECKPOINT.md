@@ -4690,3 +4690,53 @@ instead correct the documentation that had drifted from this reality.
   that actually exists in `ARCHITECTURE_DECISIONS.md`.
 - `git diff --check` passes on every touched file.
 - No Swift/Xcode/asset changes, so no build/typecheck verification applies.
+
+## Fix: Reel-In Motion Diagonal to Rod Instead of Sliding Along Water (ADR-042)
+
+Date: 2026-07-20.
+
+Reported directly: "kalo reel, arah si bobber nya masih diagonal langsung ke arah rod. seharusnya,
+bobber ngikut di dasar air aja sampai akhir deket rod, baru keangkat (jadi ikan sukses ditangkep
+bukan pas bobber hit base coordinate alias tempat rod, tapi begitu di depan pier dikit)." Recorded
+as ADR-042 in `ARCHITECTURE_DECISIONS.md`.
+
+### World: WorldViewModel
+
+- Added `hookLiftDistance: Float = 1.0` (meters, horizontal) near `dockAnchorPosition`.
+- `reelHook(deltaTime:)`: root-caused to using the raw 3D `controllerEntity.position -
+  hookEntity.position` vector for every reel step — since the hook sits at `waterHeight` (0) and
+  `dockAnchorPosition` sits at `y = 1.95`, that vector always had a large vertical component from
+  the first tick, so the bobber visibly climbed diagonally toward the rod immediately instead of
+  sliding across the water. Now branches on horizontal (X/Z) distance: beyond `hookLiftDistance`,
+  moves horizontally only and pins `hookEntity.position.y` to `waterHeight`; within it, moves in
+  full 3D as before so the hook rises the rest of the way up to the rod.
+- Same function's terminal `guard` (catch/empty-retrieve resolution) switched from full 3D distance
+  to horizontal distance against the same `0.12` m threshold — the 3D version required the hook to
+  also close the ~2 m vertical gap up to the rod's held height before resolving; horizontal-only
+  means it resolves once the hook reaches the dock's edge, matching "begitu di depan pier dikit"
+  rather than requiring it to reach the rod's exact position.
+- `driftHookAway(deltaTime:)` got the same horizontal/full-3D split for consistency — without it,
+  a resisting fish would have dragged the hook down and away in 3D too (since "away from the
+  elevated rod" has a downward component), pulling the hook visibly below the water plane while the
+  player wasn't reeling. Not reported by the player, but the same underlying bug in the sibling
+  function; fixed alongside rather than left to surface later as a separate report.
+- `ensureFightDistance()` (ADR-031's same-tick-instant-catch guard) left untouched — it only fires
+  in a rare edge case unaffected by this change.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-042.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the "Fish Species and Fight Simulation" section
+  with the horizontal/full-3D split and the catch-threshold basis change.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from `find Sources/Shared -name
+  "*.swift"` — no errors.
+- `xcrun swiftc -typecheck` against that module for the full `World/World` Swift file list — exit
+  code 0, no errors, no warnings.
+- `git diff --check` clean on `WorldViewModel.swift`.
+- Not run: any live session. `hookLiftDistance` (1.0 m) is a hand-picked first pass, not measured
+  against the dock/water asset geometry or played — whether the lift point looks natural, and
+  whether the reworked catch threshold now feels like "right at the pier" rather than too early or
+  too late, are both unverified until played.
