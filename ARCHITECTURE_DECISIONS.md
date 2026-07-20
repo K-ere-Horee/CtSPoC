@@ -11,6 +11,71 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-042 --- Reel-In Motion Stays at Water Height Until Near the Dock
+
+## Decision
+
+`WorldViewModel.reelHook(deltaTime:)` and `driftHookAway(deltaTime:)` previously moved the hook
+in a straight 3D line toward/away from `controllerEntity.position` (`dockAnchorPosition`,
+`[0.22, 1.95, -2.1]`) every tick. Since the hook sits at `waterHeight` (`0`) after a splash and the
+rod is held at `y = 1.95`, that 3D vector always had a large vertical component from the very first
+reeling tick — the bobber visibly rose and climbed diagonally toward the rod immediately, instead of
+staying at the water's surface until close to shore.
+
+Added `hookLiftDistance: Float = 1.0` (meters, horizontal). Both functions now branch on the
+*horizontal* (X/Z) distance from the hook to the rod:
+
+```text
+horizontalDistance > hookLiftDistance  -> move/drift horizontally only; pin hookEntity.position.y
+                                            to waterHeight every tick
+horizontalDistance <= hookLiftDistance -> move/drift in full 3D (the original behavior), so the
+                                            hook rises the rest of the way up to the rod
+```
+
+**Catch/empty-retrieve resolution also switched basis.** `reelHook`'s terminal `guard` — previously
+`distance > 0.12` on the full 3D distance — now checks the same `horizontalDistance > 0.12`. The
+full-3D version required the hook to also close the ~2 m vertical gap up to `dockAnchorPosition`'s
+height before resolving, i.e. effectively requiring it to reach the rod's exact held position: doing
+this diagonally, then only just barely still counting once it got close (a hook still ~1.9 m below the
+rod but 12cm out).  Using horizontal distance means the catch/retrieve resolves once the hook is close
+to the dock's edge horizontally, matching how the motion itself now reads — arriving at the water's
+edge in front of the pier, not climbing all the way up to hand height.
+
+`ensureFightDistance()` (the ADR-031 same-tick-instant-catch guard) was left untouched — it already
+only ever fires in a rare edge case (a bite landing while the hook is already extremely close to the
+rod in full 3D, effectively requiring the hook to already be in the near/lift zone), and its behavior
+is unaffected either way by this change.
+
+## Rationale
+
+Reported directly: "kalo reel, arah si bobber nya masih diagonal langsung ke arah rod. seharusnya,
+bobber ngikut di dasar air aja sampai akhir deket rod, baru keangkat (jadi ikan sukses ditangkep
+bukan pas bobber hit base coordinate alias tempat rod, tapi begitu di depan pier dikit)" (when
+reeling, the bobber's direction still goes diagonally straight toward the rod. It should instead
+follow along the water's surface until it's near the rod at the end, then finally get lifted — so
+the fish counts as caught not when the bobber hits the base coordinate, i.e. the rod's position, but
+as soon as it's a bit in front of the pier).
+
+Root cause confirmed by reading `reelHook`/`driftHookAway` directly: both used the raw
+`controllerEntity.position - hookEntity.position` vector for every step, with no distinction between
+the horizontal (across-the-water) component and the vertical (out-of-the-water) component. Splitting
+movement into a horizontal-only phase (most of the reel-in) and a full-3D phase (only the last
+`hookLiftDistance` meters) matches how a real fishing retrieve reads — the line and bobber travel
+across the water's surface, and only come up out of the water right at the end, near the angler.
+`driftHookAway` got the same fix for consistency: without it, a resisting fish would have dragged the
+hook down and away in 3D too, which — since "away from the elevated rod" has a downward component —
+would have pulled the hook visibly *below* the water plane while the player wasn't reeling, an
+unrelated but symmetric instance of the same underlying bug.
+
+`hookLiftDistance` (1.0 m) and the reused `0.12` m catch-threshold constant are both hand-picked, not
+measured against the dock/water asset geometry — this is a first pass at the reported motion issue,
+not a claim that 1.0 m is the exact right distance for the lift to look natural once played.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` only (see the
+matching `CHECKPOINT.md` entry), not yet played.
+
+------------------------------------------------------------------------
+
 # ADR-041 --- Nearby Interaction Is Present but Not Load-Bearing for V1 Gameplay
 
 ## Decision

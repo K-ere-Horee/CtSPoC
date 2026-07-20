@@ -512,6 +512,16 @@ position move together: ignoring a hooked fish drains tension *and* lets
 it swim away; over-reeling snaps the line; under-reeling loses the
 tug-of-war.
 
+**Reel-in and drift-away stay at water height until near the dock (ADR-042).**
+Both `reelHook`/`driftHookAway` branch on horizontal (X/Z) distance to the rod:
+beyond `hookLiftDistance` (1.0 m) the hook is pinned to `waterHeight` and moves
+horizontally only, so it reads as sliding across the water's surface; within
+that distance, movement switches to full 3D so the hook rises the rest of the
+way up to the rod. `reelHook`'s catch/empty-retrieve resolution also checks
+horizontal distance rather than full 3D distance, so it resolves once the hook
+is close to the dock's edge rather than needing to also close the ~2 m
+vertical gap up to the rod's held height.
+
 `resistance`'s contribution to `effectiveFishPullRate`/`fishPullSpeed`/
 the escape allowance is scaled by its own multiplier per formula
 (`pullRateResistanceMultiplier`/`pullSpeedResistanceMultiplier`/
