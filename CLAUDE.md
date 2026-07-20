@@ -133,10 +133,10 @@ structure.
 cd Shared
 swiftc -parse-as-library -target arm64-apple-macosx14.0 \
   -emit-module -module-name SharedMotion \
-  Sources/Shared/Models/RodAction.swift \
-  Sources/Shared/Models/SpatialState.swift \
-  Sources/Shared/Models/HookPhase.swift \
-  Sources/Shared/Models/RodState.swift \
+  Sources/Shared/Models/Rod/RodAction.swift \
+  Sources/Shared/Models/Spatial/SpatialState.swift \
+  Sources/Shared/Models/Gameplay/HookPhase.swift \
+  Sources/Shared/Models/Rod/RodState.swift \
   Sources/Shared/Debug/MotionDebugDecision.swift \
   Sources/Shared/Gameplay/MotionProfile.swift \
   Sources/Shared/Gameplay/CastResolver.swift \

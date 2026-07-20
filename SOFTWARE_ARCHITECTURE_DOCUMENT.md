@@ -513,14 +513,27 @@ it swim away; over-reeling snaps the line; under-reeling loses the
 tug-of-war.
 
 **Reel-in and drift-away stay at water height until near the dock (ADR-042).**
-Both `reelHook`/`driftHookAway` branch on horizontal (X/Z) distance to the rod:
-beyond `hookLiftDistance` (1.0 m) the hook is pinned to `waterHeight` and moves
-horizontally only, so it reads as sliding across the water's surface; within
-that distance, movement switches to full 3D so the hook rises the rest of the
-way up to the rod. `reelHook`'s catch/empty-retrieve resolution also checks
+Both `reelHook`/`driftHookAway` branch on horizontal (X/Z) distance to a target
+point: beyond `hookLiftDistance` (1.0 m) the hook is pinned to `waterHeight` and
+moves horizontally only, so it reads as sliding across the water's surface;
+within that distance, movement switches to full 3D so the hook rises the rest
+of the way up. `reelHook`'s catch/empty-retrieve resolution also checks
 horizontal distance rather than full 3D distance, so it resolves once the hook
 is close to the dock's edge rather than needing to also close the ~2 m
 vertical gap up to the rod's held height.
+
+**That target is `hookLiftTargetPosition`, not the rod's render anchor (ADR-043).**
+`hookLiftTargetPosition` (`[0.22, 1.95, -4.7]`) shares `dockAnchorPosition`'s X/Y
+but not its Z — loading `dock_main.usdz` directly and measuring its
+`visualBounds` put `dockAnchorPosition`'s XZ well inside the dock's own solid
+footprint (X in `[-2.04, 2.04]`, Z in `[-4.5, 4.5]`), so lifting toward it rose
+the hook straight up through the deck geometry. `hookLiftTargetPosition` moves
+Z to `-4.7`, just past the mesh's measured water-facing edge, so the rise
+happens in open space in front of the dock instead of inside it.
+`dockAnchorPosition`/`controllerEntity` remain the rendering anchor for the held
+rod (`updateRodPose()`) and for `ensureFightDistance()` (ADR-031) — only the
+reel/drift motion and catch-distance math in `reelHook`/`driftHookAway` target
+the new point.
 
 `resistance`'s contribution to `effectiveFishPullRate`/`fishPullSpeed`/
 the escape allowance is scaled by its own multiplier per formula
