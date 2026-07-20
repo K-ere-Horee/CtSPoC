@@ -207,120 +207,11 @@ Always attempt reconnection.
 
 # Implementation Plan
 
-## Sprint 0 - Project Foundation
-
--   Verify Workspace builds.
--   Verify Shared imports into both apps.
--   Remove template code.
-
-Deliverable: Clean project.
-
-------------------------------------------------------------------------
-
-## Sprint 1 - Shared Package
-
-Implement:
-
--   RodState
--   MotionPacket
--   SpatialState
--   TransportProtocol
--   Constants
-
-Deliverable: Shared compiles independently.
-
-------------------------------------------------------------------------
-
-## Sprint 2 - Nearby Interaction
-
-Implement:
-
--   NearbyInteractionManager (World)
--   NearbyInteractionManager (Rod)
--   Session lifecycle
--   Discovery exchange abstraction
-
-Deliverable: Session established.
-
-------------------------------------------------------------------------
-
-## Sprint 3 - Motion
-
-Implement:
-
--   MotionManager
--   Pitch
--   Roll
--   Yaw
-
-Display locally.
-
-Deliverable: Stable motion values.
-
-------------------------------------------------------------------------
-
-## Sprint 4 - Controller State
-
-Merge:
-
--   Motion
--   Spatial
-
-into RodState.
-
-Deliverable: Single source of truth.
-
-------------------------------------------------------------------------
-
-## Sprint 5 - Synchronization
-
-Stream RodState to World.
-
-Display:
-
--   Distance
--   Direction
--   Pitch
--   Roll
--   Yaw
-
-Deliverable: Both devices show synchronized values.
-
-------------------------------------------------------------------------
-
-## Sprint 6 - RealityKit
-
-Create:
-
--   RealityScene
--   Debug cube
-
-Cube reacts to RodState.
-
-Deliverable: Visible motion synchronization.
-
-------------------------------------------------------------------------
-
-## Sprint 7 - Gesture Engine
-
-Detect:
-
--   Idle
--   Cast
--   Reel
-
-Deliverable: Discrete controller events.
-
-------------------------------------------------------------------------
-
-## Sprint 8 - Fishing Prototype
-
-Implement:
-
--   Hook
--   Fish
--   Catch
--   Haptics
+The original Sprint 0-8 roadmap (project foundation through fishing
+prototype) shipped long ago and has been moved to
+`Archive/COMPLETED_SPRINT_ROADMAP.md` for historical reference. The project
+is now in ongoing Gameplay V1 refinement; see `CHECKPOINT.md` and
+`ARCHITECTURE_DECISIONS.md` for current state.
 
 ------------------------------------------------------------------------
 
@@ -424,6 +315,19 @@ and move only the hook entity for cast motion.
 `WorldViewModel.updateRodPose()` is controller-only. It applies a fixed
 camera-relative `controllerOffset` and the corrected `RodState.orientation`.
 It does not inspect cast direction, cast distance, or hook phase.
+
+**Nearby Interaction's spatial distance/direction are not read here, or
+anywhere else in gameplay (ADR-041).** Rod still owns and runs the NI session
+(ADR-014) and `RodState.directionX/Y/Z`/`distance` still transmit every
+sample, but a full code audit found zero gameplay, rendering, or
+connection-gating consumer of those fields — `updateRodPose()`'s fixed offset
+above is the rod's actual, sole position source, not live NI ranging. This
+was accurate up through ADR-018, but ADR-019 deliberately decoupled the rod
+root from live spatial data (to fix the rod visibly moving during a cast),
+and nothing since has restored NI to a load-bearing role. The plumbing is
+intact for a future feature that needs real physical proximity; V1 fishing
+gameplay never ended up needing it — CoreBluetooth transport alone carries
+everything the current gameplay loop uses.
 
 Hook launch and simulation own all gameplay translation. The hook starts from
 the rod tip, receives velocity from `CastSolution`, falls under gravity, and
