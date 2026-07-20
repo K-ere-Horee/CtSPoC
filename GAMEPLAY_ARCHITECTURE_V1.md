@@ -110,6 +110,7 @@ Launch
   -> Bite
   -> Fight
   -> Catch or Escape
+  -> Catch Cutscene (catch only)
   -> Result
   -> Continue
   -> Cast Again
@@ -198,9 +199,30 @@ output. Rod does not decide fish state.
 
 ------------------------------------------------------------------------
 
+## Catch Cutscene
+
+The final reel input that lands the fish does not cut straight to the result
+screen. World plays a brief cutscene first: the camera cuts in close to the
+fish and bobber, the fish leaps up out of the water/onto the dock, holds/freezes
+at the top of the leap for a beat, then settles — echoing the same sense of a
+distinct, designed moment that casting already has (Hook Flying/Splash) —
+while a "CATCH!" title appears. The hold at the peak is deliberate: a jump
+that immediately came back down read as too quick to register as a real
+cutscene moment. The cutscene ends on its own after a short, fixed duration —
+no player input dismisses it. The current hook visual is a placeholder; the
+cutscene is built so a real fish mesh/leap animation can drop in later
+without changing when, why, or how the camera frames it.
+
+The camera itself pushes in slowly over the cutscene rather than holding a
+single static shot, letterbox bars slide in from top and bottom, a soft glow
+frames the title, and the routine gameplay HUD (catch count, level, line
+tension) fades out for the duration — all deliberate choices to make the
+moment read as a real cutscene rather than a label popping up over an
+otherwise-unchanged screen.
+
 ## Catch Result and Continue
 
-After a successful catch, World displays:
+After the catch cutscene, World displays:
 
 - Fish name
 - Weight
