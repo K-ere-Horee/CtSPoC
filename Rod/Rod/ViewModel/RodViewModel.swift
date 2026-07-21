@@ -42,7 +42,8 @@ final class RodViewModel: ObservableObject {
     /// Set by the "Start Casting" button, not automatic — otherwise ordinary phone movement that
     /// happens to read closest to the calibrated `castPose` would silently start charging. Cleared
     /// automatically once a cast actually fires (`updateAction()`), whenever `hookPhase` leaves
-    /// `.idle`, or on `endFishing()` — a stale arm can never survive past one cast attempt.
+    /// `.idle`/`.result` (ADR-061 — arming is also allowed from `.result`, see `startCasting()`),
+    /// or on `endFishing()` — a stale arm can never survive past one cast attempt.
     @Published private(set) var isCastingArmed = false
 
     /// Debug-only: the calibrated `reelSpeed` ramp's min/max rotation rate (`calibrateMotion()`'s
@@ -192,10 +193,14 @@ final class RodViewModel: ObservableObject {
     /// Arms one cast attempt: until this is pressed, `RodMotionInterpreter` ignores a
     /// cast-classified pose entirely (see its own doc comment), so idly holding or moving the
     /// phone can never accidentally start charging a cast. Requires an actual fishing session and
-    /// an idle hook — mirrors `HookPhase.allowsCasting`, since arming while a cast couldn't
-    /// possibly be allowed to complete would just leave the button stuck "armed" for nothing.
+    /// either an idle hook or a still-showing result screen (ADR-061) — the latter lets "Start
+    /// Casting" double as World's old "Continue Fishing" tap, since `WorldViewModel.handle(_:)`
+    /// dismisses `.result` back to `.idle` the instant it sees `RodState.isCastingArmed` true.
+    /// `HookPhase.allowsCasting` itself is untouched (still only `.idle`), so a physical flick
+    /// still can't actually fire a cast until World's dismissal round-trip completes — this only
+    /// relaxes when the button may be *armed*, not when a cast may complete.
     func startCasting() {
-        guard isFishing, hookPhase == .idle, !isCastingArmed else { return }
+        guard isFishing, hookPhase == .idle || hookPhase == .result, !isCastingArmed else { return }
         isCastingArmed = true
     }
 
@@ -260,7 +265,11 @@ final class RodViewModel: ObservableObject {
             fishingHaptics.handle(event)
         case let .hookPhase(phase):
             hookPhase = phase
-            if phase != .idle {
+            // `.result` is deliberately excluded here (ADR-061): World auto-dismisses `.result`
+            // back to `.idle` the instant it sees an armed cast, so a stale arm surviving the
+            // brief `.result` window is exactly the point, not a bug — clearing it here would
+            // race the very message that's supposed to carry it through.
+            if phase != .idle, phase != .result {
                 isCastingArmed = false
             }
             if phase != .hookInWater {
@@ -279,7 +288,8 @@ final class RodViewModel: ObservableObject {
                     action: action,
                     reelSpeed: reelSpeed,
                     castSolution: nil,
-                    isFishing: isFishing
+                    isFishing: isFishing,
+                    isCastingArmed: isCastingArmed
                 )
                 publishState()
             }
@@ -301,7 +311,8 @@ final class RodViewModel: ObservableObject {
             motionPhase: rodState.motionPhase,
             castPower: rodState.castPower,
             castHoldDuration: rodState.castHoldDuration,
-            isFishing: isFishing
+            isFishing: isFishing,
+            isCastingArmed: isCastingArmed
         )
         guard connectionState == .ready || connectionState == .streaming else { return }
         connectionState = .streaming
@@ -361,7 +372,8 @@ final class RodViewModel: ObservableObject {
             motionPhase: motionPhase,
             castPower: interpretation.castPower,
             castHoldDuration: interpretation.castHoldDuration,
-            isFishing: isFishing
+            isFishing: isFishing,
+            isCastingArmed: isCastingArmed
         )
 
         if action == .casting, previousAction != .casting {

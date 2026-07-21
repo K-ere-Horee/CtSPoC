@@ -161,12 +161,26 @@ final class TransportClient: NSObject, TransportProtocol {
     /// rather than risking a desynced multi-chunk stream on a channel with no delivery
     /// guarantee — see `SessionConfiguration.bleStateCharacteristicUUID`'s doc comment. A fresher
     /// sample is always ~33 ms away, so silently dropping one oversized sample is the same
-    /// semantics `NetworkMessage.requiresReliableDelivery` already documents for this path.
+    /// semantics `NetworkMessage.requiresReliableDelivery` already documents for this path. This
+    /// used to fail with zero signal (ADR-063: `RodState.CodingKeys` exists specifically to keep
+    /// a populated-`castSolution` payload safely under one chunk) — logged now so a future field
+    /// addition that creeps back over budget shows up immediately instead of silently dropping
+    /// every affected message.
     private func sendUnreliable(_ data: Data) {
         guard let stateCharacteristic else { return }
         let framed = BLEFraming.chunks(for: data, maxChunkSize: chunkBudget())
-        guard framed.count == 1 else { return }
-        _ = peripheralManager.updateValue(framed[0], for: stateCharacteristic, onSubscribedCentrals: sendTargets)
+        guard framed.count == 1 else {
+            #if DEBUG
+            print("[CLIENT] .state dropped: \(data.count) bytes exceeds one-chunk budget of \(chunkBudget())")
+            #endif
+            return
+        }
+        let sent = peripheralManager.updateValue(framed[0], for: stateCharacteristic, onSubscribedCentrals: sendTargets)
+        #if DEBUG
+        if !sent {
+            print("[CLIENT] .state updateValue returned false (send queue full), \(data.count) bytes")
+        }
+        #endif
     }
 
     /// Fragments if needed and queues behind any send already in flight, so overlapping calls
@@ -303,8 +317,17 @@ extension TransportClient: @preconcurrency CBPeripheralManagerDelegate {
             guard request.characteristic.uuid == commandUUID, let value = request.value else { continue }
             let messages = inboundReassembler.feed(value)
             for messageData in messages {
-                guard let message = try? decoder.decode(NetworkMessage.self, from: messageData) else { continue }
-                onMessage?(message)
+                do {
+                    let message = try decoder.decode(NetworkMessage.self, from: messageData)
+                    onMessage?(message)
+                } catch {
+                    // Was a silent `try?` — a schema mismatch (e.g. only one of Rod/World rebuilt
+                    // after a `RodState`/`NetworkMessage` field change) previously dropped every
+                    // message with zero signal, reading as "connected but nothing ever happens."
+                    #if DEBUG
+                    print("[CLIENT] Failed to decode incoming message (\(messageData.count) bytes): \(error)")
+                    #endif
+                }
             }
             peripheral.respond(to: request, withResult: .success)
         }

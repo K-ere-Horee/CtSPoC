@@ -137,15 +137,13 @@ final class WorldViewModel: ObservableObject {
     /// receives cast trajectory and moves through the scene.
     private let dockAnchorPosition: SIMD3<Float> = [0.22, 1.95, -2.1]
 
-    /// Horizontal (X/Z) distance from `hookLiftTargetPosition` at which a reeled-in hook starts
-    /// rising out of the water toward it. `reelHook`/`driftHookAway` treat this as two zones:
-    /// farther than this, the hook stays pinned at `waterHeight` and only moves horizontally, so
-    /// reeling in reads as the bobber sliding across the water toward the dock; within this
-    /// distance, movement switches to full 3D so the hook rises the rest of the way up. Without
-    /// this split, reeling moved the hook in a straight 3D line from the moment reeling began, so
-    /// the bobber visibly lifted out of the water and climbed diagonally right away instead of only
-    /// at the very end. Since ADR-044, `reelHook`'s near-zone climb also switches off the tug-of-war
-    /// reel math in favor of `dockLiftSpeed`, a fixed guaranteed speed — see its doc comment.
+    /// Horizontal (X/Z) distance from `hookLiftTargetPosition` at which a reeled-in hook lands
+    /// immediately (ADR-061) — the catch/empty-retrieve resolves in the same tick the hook crosses
+    /// inside this radius, rather than climbing toward the target first. `driftHookAway` still
+    /// treats this as a zone boundary for its own escaping-fish visual (full 3D drift back down
+    /// toward the water once inside it, horizontal-only outside it). Outside this distance,
+    /// `reelHook` stays pinned at `waterHeight` and only moves horizontally, so reeling in reads as
+    /// the bobber sliding across the water toward the dock until the final, instant landing.
     private let hookLiftDistance: Float = 1.0
 
     /// Where `reelHook`/`driftHookAway`'s near-zone (within `hookLiftDistance`) motion and the
@@ -187,16 +185,6 @@ final class WorldViewModel: ObservableObject {
     /// Cap (meters, either side of the rod's own X) on how far the juking drift can push the hook,
     /// so a long juking phase can't walk it arbitrarily far sideways.
     private let fightDirectionMaxLateralOffset: Float = 1.0
-
-    /// Fixed speed (m/s), overriding the tug-of-war reel math, that `reelHook` climbs at once inside
-    /// `hookLiftDistance` of `hookLiftTargetPosition` (ADR-044). Outside that zone, hook movement is
-    /// `rodState.reelSpeed * reelSpeed` net `fishFight.fishPullSpeed` (ADR-039's tug-of-war), which can
-    /// go slack or even negative against a strong fish — fine mid-fight, but carried into the lift zone
-    /// it let the hook stall or sink back toward the water right at the dock's edge, reading as the
-    /// fish "floating" instead of being landed. A fish this close to the dock can no longer meaningfully
-    /// resist, so the final approach always advances, at a speed above the player's own max
-    /// (`reelSpeed`, `3.0`) so the last stretch visibly reads as being hauled up rather than drifting in.
-    private let dockLiftSpeed: Float = 3.5
 
     /// Catch cutscene (ADR-045/047) timing, split into three phases so the hook visibly holds in the
     /// air instead of just arcing up and immediately back down — a single continuous arc read as too
@@ -308,6 +296,25 @@ final class WorldViewModel: ObservableObject {
         transport.disconnect()
         hasStarted = false
         sounds.stopAll()
+    }
+
+    /// Player-facing recovery action on World's Main Menu (ADR-061): the Rod<->World BLE link has
+    /// been reported to wedge itself into a state that never reconnects on its own, previously
+    /// only recoverable by force-quitting and relaunching World. Tears down whatever
+    /// connection/scan state `transport` currently holds and starts fresh — the same
+    /// disconnect-then-connect sequence `stop()`/`start()` would run across a full relaunch, just
+    /// without losing `screen`/`fishFight`/progression state along with it. Safe to call from any
+    /// `connectionState`, including mid-scan or mid-connect.
+    func retryConnection() {
+        transport.disconnect()
+        Task {
+            do {
+                try await transport.connect()
+            } catch {
+                lastError = error.localizedDescription
+                connectionState = .failed
+            }
+        }
     }
 
     /// The Rod this session is paired with (see `PairedDeviceStore`), for display on the Main
@@ -474,8 +481,10 @@ final class WorldViewModel: ObservableObject {
         )
     }
 
-    /// Called by World's result screen when the player dismisses it after a
-    /// catch, allowing the next cast.
+    /// Dismisses a showing result screen, allowing the next cast. Called from `handle(_:)` the
+    /// instant Rod reports an armed cast (ADR-061) — World's `ResultView` no longer has its own
+    /// dismiss button, since pressing "Start Casting" on Rod is now the single action that both
+    /// dismisses the result and starts the next attempt.
     func continueFishing() {
         guard hookPhase == .result else { return }
         setHookPhase(.idle)
@@ -724,6 +733,12 @@ final class WorldViewModel: ObservableObject {
             let hookEntity,
             let tipEntity = rodRig?.tipEntity
         else {
+            // A valid cast reaching this point with the scene not fully set up would otherwise
+            // fail with zero signal — mirrors the decode-failure/dropped-message logging
+            // philosophy elsewhere in the transport layer (ADR-062/063).
+            #if DEBUG
+            print("[CAST] launchHook rejected: scene not ready (controllerEntity=\(self.controllerEntity != nil) hookEntity=\(self.hookEntity != nil) tipEntity=\(self.rodRig?.tipEntity != nil))")
+            #endif
             return
         }
 
@@ -830,44 +845,37 @@ final class WorldViewModel: ObservableObject {
         )
         let horizontalDistance = simd_length(horizontalOffset)
 
-        // Below `hookLiftDistance`, move in full 3D so the hook rises the rest of the way up toward
-        // `hookLiftTargetPosition`. Farther out, stay pinned at `waterHeight` and move horizontally
-        // only, so reeling in reads as the bobber sliding along the water toward the dock, not
-        // lifting into the air the instant reeling starts.
+        // Within `hookLiftDistance`, land the catch/empty-retrieve immediately (ADR-061) instead of
+        // continuing a slow scripted climb toward `hookLiftTargetPosition` first — that climb (at
+        // `dockLiftSpeed`, gated behind a further `distance3D > 0.15` closeness check) left the hook
+        // visibly hanging/drifting in the air for a beat before landing, reading as the hook
+        // "floating" rather than being decisively hauled in. Snapping straight to the lift target is
+        // an instant, deliberate "yanked up" pop — the catch cutscene's own jump animation (ADR-045/
+        // 047) still sells the "lift" for a caught fish; an empty line simply disappears at the same
+        // instant. Farther out, stay pinned at `waterHeight` and move horizontally only, so reeling
+        // in still reads as the bobber sliding along the water toward the dock before this point.
         if horizontalDistance <= hookLiftDistance {
-            let directionToTarget = hookLiftTargetPosition - hookEntity.position
-            let distance3D = simd_length(directionToTarget)
-
-            // Catch/empty-retrieve resolution (ADR-044) checks full 3D closeness now, not just
-            // horizontal — the near-zone climb below is a guaranteed, fixed-speed rise (no more
-            // tug-of-war stalling in this zone), so waiting for it to actually finish reads as the
-            // hook/fish being landed at the dock rather than vanishing mid-climb.
-            guard distance3D > 0.15 else {
-                let caughtFish = fishFight.hasFishOnHook
-                if caughtFish {
-                    // ADR-045: keep the hook enabled and start the catch cutscene instead of
-                    // disabling it outright — `beginCatchCutscene` takes over its position from here.
-                    fishFight.resolveCatch()
-                    beginCatchCutscene(from: hookEntity.position)
-                    emit(.catchFish)
-                } else {
-                    hookEntity.isEnabled = false
-                }
-                setHookPhase(caughtFish ? .result : .idle)
-                return
+            hookEntity.position = hookLiftTargetPosition
+            let caughtFish = fishFight.hasFishOnHook
+            if caughtFish {
+                // ADR-045: keep the hook enabled and start the catch cutscene instead of
+                // disabling it outright — `beginCatchCutscene` takes over its position from here.
+                fishFight.resolveCatch()
+                beginCatchCutscene(from: hookEntity.position)
+                emit(.catchFish)
+            } else {
+                hookEntity.isEnabled = false
             }
-
-            // ADR-044: fixed `dockLiftSpeed`, not the tug-of-war net speed below — see its doc
-            // comment for why a fish this close can't be allowed to stall or reverse the climb.
-            let step = dockLiftSpeed * deltaTime
-            hookEntity.position += simd_normalize(directionToTarget) * min(distance3D, step)
+            setHookPhase(caughtFish ? .result : .idle)
+            return
         } else {
             // Tug-of-war (ADR-039): the hooked fish's pull speed is subtracted from the player's reel
             // speed, so a strong fish gains line even while the player is actively (but weakly)
             // reeling — net-negative speed moves the hook AWAY. Combined with the distance-escape
             // check in `updateFight`, weak reeling against a strong fish is now a losing strategy
             // rather than a slow guaranteed win. Empty retrieves (`fishPullSpeed` is 0 with no fish)
-            // behave exactly as before. Only applies outside the lift zone — see `dockLiftSpeed`.
+            // behave exactly as before. Only applies outside the lift zone — inside it, the catch
+            // resolves immediately instead of continuing this tug-of-war math (see above).
             let playerSpeed = max(0.35, rodState.reelSpeed * reelSpeed)
             let netSpeed = playerSpeed - fishFight.fishPullSpeed
             let step = netSpeed * deltaTime
@@ -944,6 +952,13 @@ final class WorldViewModel: ObservableObject {
         rodState = state
         if let solution = state.castSolution, state.action == .casting {
             pendingCastSolution = solution
+        }
+        // ADR-061: an armed cast (the player pressed "Start Casting" on Rod) dismisses a showing
+        // result screen on its own, standing in for the removed World-side "Continue Fishing"
+        // button — `continueFishing()`'s own `hookPhase == .result` guard makes this a no-op once
+        // already dismissed, so no extra bookkeeping is needed to fire this only once.
+        if state.isCastingArmed {
+            continueFishing()
         }
         connectionState = .streaming
 

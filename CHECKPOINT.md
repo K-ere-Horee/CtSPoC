@@ -5923,3 +5923,301 @@ Two independent ADR-030s and two independent ADR-031s existed in `ARCHITECTURE_D
 
 - `git diff --check` clean.
 - Pure documentation — no Swift, Xcode project, or asset changes; nothing to typecheck.
+
+## Feature: Rod Haptics Maxed to CoreHaptics' Intensity Ceiling (ADR-060)
+
+Date: 2026-07-21.
+
+Requested directly: "Increase haptics feedback yang diberikan ke Rod di semua bagian. Multiply it
+to the largest number the phone supports." Recorded as ADR-060 in `ARCHITECTURE_DECISIONS.md`.
+
+### Rod: HapticManager
+
+- `Rod/Rod/Haptics/HapticManager.swift`: every `hapticIntensity` value raised to `1.0` —
+  `cast()` 0.75 -> 1.0, `splash()` 0.45 -> 1.0, `reelTick()` 0.4 -> 1.0, `fishBite()`'s four pulses
+  0.85/0.75/0.75/0.85 -> 1.0 each, `catchFish()`'s second pulse 0.6 -> 1.0 (first was already
+  1.0), `fishEscaped()`'s three pulses 0.7/0.55/0.35 -> 1.0 each, `fishInterested()` 0.35 -> 1.0.
+  `lineBreak()` was already 1.0, untouched. `sharpness` values left exactly as they were at every
+  call site.
+
+### Shared: FishFightConfig
+
+- `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: `lowBandIntensity`/
+  `mediumBandIntensity`/`highBandIntensity` defaults raised from ADR-054's 0.50/0.70/0.95 to
+  1.0/1.0/1.0 — these are the only haptic-intensity values that live outside `HapticManager`
+  itself, feeding `FishingHaptics.fightPulse(now:)`'s continuous tension-band rhythm. Grepped
+  `Rod/Rod` for any other `intensity:`/`hapticIntensity` call site before finishing — found none,
+  so this and `HapticManager.swift` are the complete set.
+
+`sharpness` was deliberately left untouched everywhere — it's a separate CoreHaptics parameter
+controlling timbre (crisp vs. dull), not felt strength, and it's still what differentiates the
+three fight-tension bands now that their intensity is identical.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-060.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "Tension-band haptics (ADR-039)" paragraph's
+  stated band-intensity numbers (0.50/0.70/0.95 -> 1.0/1.0/1.0) and noted the ADR-060 ceiling pass
+  alongside the ADR-054 history it already described.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx14.0` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors.
+- Built `Shared` again as an `arm64-apple-ios17.0-simulator` module (`-emit-library`, since a
+  bare `-emit-module` with multiple inputs needs one of `-emit-library`/`-c` alongside it), then
+  `xcrun swiftc -typecheck` against it for the full `Rod/Rod` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session on a physical device. Whether a uniformly maxed intensity across all
+  three fight-tension bands still reads as escalating pressure (previously partly conveyed by
+  intensity, now conveyed by interval/sharpness alone) is unverified until tried physically —
+  same standing caveat as every other haptic/feel change in this project's history.
+
+## Fix: Five Playtest Notes (ADR-061)
+
+Date: 2026-07-21.
+
+Requested directly as five numbered playtest notes in one message ("note some stuff"). Recorded as
+ADR-061 in `ARCHITECTURE_DECISIONS.md` (one ADR covering all five, matching this project's own
+precedent of bundling one request's related sub-fixes — e.g. ADR-029, ADR-039).
+
+### 1. Cast meter delay on "Start Casting"
+
+- `Shared/Sources/Shared/Gameplay/RodMotionInterpreter.swift`: the charging/oscillation logic
+  (hold-duration tracking, the oscillation formula, backswing/forward-motion phase detection,
+  release) moved out of the pose-classification `switch`'s `case .cast:` branch into its own
+  `if isCastingArmed { ... }` block that runs before the switch, unconditionally once armed. The
+  switch (now `case .cast:`/`.reel`/`.idle` with no `where` clause) only still runs while *not*
+  armed. `previousClassification` is set to `.cast` explicitly inside the new block (previously
+  implicit via the switch's own `case .cast` match) so `isFreshCastEntry` bookkeeping across
+  frames is unaffected.
+
+### 2. Hook floating near the pier before landing
+
+- `World/World/ViewModels/WorldViewModel.swift`'s `reelHook(deltaTime:)`: replaced the
+  `dockLiftSpeed`-driven climb + `distance3D > 0.15` catch guard with an immediate snap-and-resolve
+  the instant `horizontalDistance <= hookLiftDistance` (1.0m) — `hookEntity.position =
+  hookLiftTargetPosition` followed by the same catch/empty-retrieve branch that used to sit behind
+  the climb. Removed the now-fully-dead `dockLiftSpeed` constant and its doc comment; updated
+  `hookLiftDistance`'s and the tug-of-war `else` branch's doc comments to stop referencing it.
+
+### 3. Cast distance -> fish size, discrete zones instead of a continuous ceiling
+
+- `World/World/Gameplay/FishFightController.swift`: added a private `CastZone` enum
+  (green/yellow/red) and `castZone` computed property (thirds of `currentCastDistance /
+  maxExpectedCastDistance`, matching `CastMeterView`'s three equal power-bar segments). Added
+  `sizeRollWindow` (floor/ceiling ratio pair per zone: green `[0, 0.375)`, yellow `[0.375,
+  0.875)`, red `[0.625, 1.0]` — derived by inverting `stars(forWeight:in:)`'s `1 + round(4 *
+  ratio)` at each star boundary). Replaced `sizeCeilingRatio`/`biasedRoll(in:ceilingRatio:)` with
+  `sizeRollWindow`/`biasedRoll(in:floorRatio:ceilingRatio:)`; `updateSearching(deltaTime:)`'s bite
+  branch now rolls weight/length through the new floor+ceiling window.
+
+### 4. Result screen dismissal
+
+- `Shared/Sources/Shared/Models/Rod/RodState.swift`: added `isCastingArmed: Bool = false`,
+  transmitted every `.state` message (same pattern as `isFishing`).
+- `Rod/Rod/ViewModel/RodViewModel.swift`: `startCasting()`'s guard now accepts `hookPhase == .idle
+  || hookPhase == .result`. The `.hookPhase` message handler's `isCastingArmed = false` reset now
+  only fires when the new phase is neither `.idle` nor `.result` (previously just `!= .idle`) —
+  otherwise World's own echoed `.result` phase would immediately clear the arm the player just set,
+  before World's dismissal round-trip ever completes. All three `RodState(...)` construction sites
+  now pass `isCastingArmed: isCastingArmed`.
+- `Rod/Rod/ContentView.swift`: `startCastingButton`'s `.disabled(...)` updated to match the relaxed
+  guard (`hookPhase` neither `.idle` nor `.result`, or already armed).
+- `World/World/ViewModels/WorldViewModel.swift`: `handle(_:)` calls `continueFishing()` whenever an
+  incoming `state.isCastingArmed` is true — idempotent via `continueFishing()`'s own existing
+  `hookPhase == .result` guard, so no extra "already consumed" bookkeeping was needed.
+- `World/World/Views/ResultView.swift`: removed the `onContinue` closure and "Continue Fishing"
+  button; added `Text("Press \u{201C}Start Casting\u{201D} on Rod to fish again")` in its place.
+- `World/World/ContentView.swift`: `ResultView(result:)` call site updated (no closure argument);
+  dropped the `sounds.uiClick()` call that used to fire on the button tap, since dismissal is no
+  longer a World-side tap.
+- `HookPhase.allowsCasting` itself (`Shared/Sources/Shared/Models/Gameplay/HookPhase.swift`) was
+  **not** touched — still only `.idle` — so a physical flick still cannot fire an actual cast until
+  World's round-trip completes; only the button's *arming* guard moved earlier.
+
+### 5. Retry Connection button
+
+- `World/World/ViewModels/WorldViewModel.swift`: added `retryConnection()` —
+  `transport.disconnect()` followed by `transport.connect()` in a `Task`, mirroring `start()`'s own
+  connect error handling.
+- `World/World/Views/MainMenuView.swift`: added an `onRetryConnection: () -> Void` parameter and a
+  "Retry Connection" button, shown only while `!isRodReady`.
+- `World/World/ContentView.swift`: `MainMenuView(...)` call site passes
+  `onRetryConnection: viewModel.retryConnection`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-061 (all five fixes, one entry).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the ADR-050 cast-arming paragraph (guard condition,
+  `.result` exception) and added a new ADR-061 paragraph on the meter-start fix; replaced the
+  ADR-044 guaranteed-climb paragraph with the ADR-061 instant-landing description; replaced the
+  ADR-031 continuous-ceiling paragraph with the ADR-061 discrete-zone description (also fixed a
+  pre-existing stale value, `maxExpectedCastDistance` documented as `10.0` vs. the code's actual
+  `20.0`); updated the Result Screen (ADR-029) paragraph and the Main Menu (ADR-036) flow
+  diagram/button list; added a "Manual retry (ADR-061)" paragraph after the existing automatic-
+  reconnection description.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module (RealityKit needs macOS 15+, not the
+  14.0 target used for a plain Shared-only typecheck) and an `arm64-apple-ios17.0-simulator`
+  module, each via `-emit-module -emit-library` directly from `find Sources/Shared -name
+  "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS 26) and
+  the full `Rod/Rod` file list (iOS 17 simulator) — both exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session on physical devices. In particular unverified: whether the cast-zone
+  star tiers (item 3) feel right as a hard window rather than a soft ceiling, and whether
+  `retryConnection()` (item 5) actually recovers from the specific wedged CoreBluetooth states that
+  prompted the report — not something this environment can observe or reproduce directly.
+
+## Fix: Stuck at Main Menu — Rod's Stale Pairing Had No Recovery Path (ADR-062)
+
+Date: 2026-07-21.
+
+Reported directly after ADR-061 landed: World stayed stuck on "Press \u{201C}Start Fishing\u{201D}
+on Rod to play" (`connectionState` reading `.ready`/`.streaming`, so BLE looked fully connected)
+even though Rod's own UI confirmed `isFishing` had flipped true (button relabeled "End Fishing").
+Diagnosed in two passes.
+
+### Pass 1: ruled out a schema mismatch
+
+- Hypothesized that adding `RodState.isCastingArmed` (ADR-061) could cause a decode failure if only
+  one of Rod/World was rebuilt from the latest source — `NetworkMessage` decode used `try? ... else
+  { continue }` on both transports, silently dropping any failure with zero signal.
+- `World/World/Transport/TransportHost.swift` and `Rod/Rod/Transport/TransportClient.swift`: both
+  decode sites changed from `try?`/`continue` to `do`/`catch` with a `#if DEBUG print(...)` on
+  failure, so a real schema mismatch would now be visible in the console.
+- User rebuilt clean and reproduced with **no decode errors logged** — ruled out. Kept the logging
+  anyway; it's a real diagnostic improvement independent of this specific report, and was itself
+  what proved pass 1 wrong quickly instead of guessing further.
+
+### Pass 2: found the real root cause by reading `didSubscribeTo`
+
+- User's own follow-up report was the key clue: using World's "Forget Device" as a troubleshooting
+  step left Rod completely unable to connect afterward, surviving a full Rod app relaunch.
+  `PairedDeviceStore`/`PairedCentralStore` (ADR-049) are independently persisted per side —
+  World's "Forget Device" only ever clears World's own saved identifier, never Rod's.
+- Read `TransportClient.swift`'s `didSubscribeTo` (`peripheralManager(_:central:didSubscribeTo:)`)
+  and found its own comment already explains the mechanism: CoreBluetooth gives a peripheral no API
+  to reject a subscription, so a central whose identifier doesn't match `pairedCentralStore.
+  identifier` still subscribes successfully at the protocol level — the far side (World) correctly
+  reads `.ready`/`.streaming` — but Rod's app layer never assigns `subscribedCentral` to it, so
+  `sendTargets` (`subscribedCentral.map { [$0] }`) stays empty and Rod never actually transmits
+  anything, including the very first `.state` message carrying `isFishing`. Exactly reproduces
+  "looks connected, nothing ever happens, no error anywhere."
+- `RodViewModel.forgetPairedDevice()` -> `TransportClient.forgetPairedDevice()` already existed and
+  already worked correctly — it just had no reachable UI caller. Rod's original "Forget Paired Mac"
+  button lives inside the Developer Details `DisclosureGroup` in `Rod/Rod/ContentView.swift`, which
+  is commented out and predates this session (flagged as likely someone else's in-progress work in
+  `WINDOW_2.md`'s own known-issues section, left alone across multiple prior windows).
+
+### Fix
+
+- `Rod/Rod/ContentView.swift`: added a standalone `pairedDeviceRow` (shown only while
+  `viewModel.hasPairedDevice`) directly in the primary view — deliberately *not* by uncommenting
+  the Developer Details block, matching this project's precedent of not touching what looks like
+  someone else's in-progress work. Mirrors `World/World/Views/MainMenuView.swift`'s own
+  `pairedDeviceRow` for the same recovery action: "Paired with `<short ID>`" text + a destructive
+  "Forget Paired Mac" button calling `viewModel.forgetPairedDevice()`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-062 (both the decode-logging change and the pairing-
+  recovery fix, found together in one diagnosis).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the ADR-049 device-pairing paragraph (Rod's button
+  was documented as living in Developer Details, which was never actually true in practice since
+  that section is commented out — fixed to describe the new standalone row) and added a new
+  paragraph explaining the silent-subscription-mismatch mechanism and the decode-logging addition.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the iOS 17 simulator `Shared` module: the full `Rod/Rod` file
+  list — exit code 0, no errors. Also re-typechecked `World/World` after the `TransportHost.swift`
+  logging change — exit code 0.
+- `git diff --check` clean.
+- Not run: an actual live two-device session confirming the new "Forget Paired Mac" row restores a
+  working connection in the reporter's specific stuck state — this diagnosis was code-reading plus
+  process of elimination (ruling out pass 1 via the new logging), not a reproduction in this
+  environment, which cannot drive real CoreBluetooth hardware.
+
+## Fix: Cast Meter Charges Fine, Hook Never Launches — Every Cast Silently Dropped Over BLE (ADR-063)
+
+Date: 2026-07-21.
+
+Reported directly right after ADR-062's pairing fix confirmed working: the cast meter charged and
+released correctly on Rod, but the hook never launched in World. Diagnosed live, over several
+rounds, by adding targeted temporary logging and reading it back from the reporter's own device
+console each round.
+
+### Diagnosis, in order
+
+1. Added `#if DEBUG` logging in `RodMotionInterpreter`'s caller (`updateAction()`) showing
+   `phase`/`power`/`hold`/`hookPhase` on every armed frame, plus a dedicated line on the exact
+   frame a release fires. Console showed the meter oscillating correctly (hold climbing 0 -> 1+
+   seconds, power following the expected curve) and a clean release with `hookPhase=idle`,
+   `allowsCasting=true`, `isFishing=true` — ruled out every hypothesis about Rod's own
+   arm/charge/release logic or `HookPhase` gating being wrong.
+2. Added logging in `WorldViewModel.handle(_:)` (does a `.state` with `action == .casting` ever
+   arrive?) and `launchHook(solution:)` (does the scene-entity guard ever reject it?). Reporter's
+   World console showed **zero** `[CAST]` lines at all during a full, connection-stable test —
+   meaning the message carrying the cast never arrived, not that it arrived and got rejected.
+3. Considered and ruled out a connection-stability explanation first (the reporter's very first
+   paste of World's console showed a connect/scan/disconnect/reconnect sequence) — reporter
+   confirmed that was just start-up noise and the connection stayed fully stable (`.ready`/
+   `.streaming`) through the entire test, with no further disconnects.
+4. Added logging directly in `TransportClient.sendUnreliable(_:)` (Rod's actual BLE send call for
+   `.state`) — confirmed on the next round: every single `.state` message carrying a populated
+   `castSolution` logged `.state DROPPED (too big for one chunk): ~531-542 bytes, budget=512,
+   chunks=2`, repeating for the entire `followThrough` window (dozens of consecutive frames in the
+   capture). Root cause found: `sendUnreliable(_:)` never fragments — a message over budget is
+   dropped outright, with (until this diagnosis) zero logging anywhere in that path.
+
+### Fix
+
+- `Shared/Sources/Shared/Models/Rod/RodState.swift`: added explicit `CodingKeys` mapping every
+  property to a short wire name (`timestamp`->`"ts"`, `castSolution`->`"cs"`,
+  `castHoldDuration`->`"chd"`, `isCastingArmed`->`"ca"`, full mapping in the source). No property,
+  type, or call-site changes anywhere — purely a wire-format shrink.
+- Verified via a standalone encode test (compiled directly against the built `Shared` module, not
+  part of the app targets) using a representative populated-`castSolution` `RodState`: **540 bytes
+  under default keys -> 419 bytes under the new `CodingKeys`**, comfortably under the 512-byte
+  budget with ~93 bytes of margin, without touching `CastSolution`'s or `RodOrientation`'s own
+  keys at all.
+- `Rod/Rod/Transport/TransportClient.swift`: `sendUnreliable(_:)` now logs (under `#if DEBUG`) both
+  the over-budget-drop case and an `updateValue` returning `false` (send queue full) case — so a
+  future field addition that creeps back over budget is immediately visible instead of silently
+  failing the same way again.
+
+### Diagnostic scaffolding removed
+
+The following temporary `#if DEBUG` logging, added purely for this live diagnosis, was removed
+once the root cause was found and fixed — kept only what has lasting diagnostic value (the
+`sendUnreliable(_:)` logging above, and ADR-062's decode-failure logging):
+- `RodViewModel.updateAction()`'s per-armed-frame `[CAST] armed=...` line and the `[CAST] RELEASE
+  FIRED ...` line.
+- `RodViewModel.startCasting()`'s `[CAST] startCasting() REJECTED ...` line (guard-failure case).
+- `WorldViewModel.handle(_:)`'s `[CAST] handle(_:) set pendingCastSolution ...` line.
+- `WorldViewModel.launchHook(solution:)`'s success-path `[CAST] launchHook FIRING ...` line — the
+  guard-failure line was kept (renamed/reworded, not removed), since a silently-unready scene at
+  cast time is exactly the class of silent failure worth a permanent log, matching ADR-062's own
+  reasoning.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-063.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-ios17.0-simulator` and an `arm64-apple-macosx26.0`
+  module (`-emit-module -emit-library`) directly from `find Sources/Shared -name "*.swift"` — no
+  errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `Rod/Rod` file list (iOS 17 simulator)
+  and the full `World/World` file list (macOS 26) — both exit code 0, no errors.
+- Standalone encode test (see above) compiled and run directly against the built macOS `Shared`
+  module, confirming the actual byte-count reduction empirically rather than by estimate alone.
+- `git diff --check` clean.
+- Not yet re-confirmed on the reporter's own two-device setup that a cast now actually reaches
+  World and launches the hook — this fix directly addresses the exact byte counts captured live
+  from their device, but the loop hasn't been closed with a final "it works now" from them yet.

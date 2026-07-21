@@ -68,7 +68,7 @@ final class FishFightController: ObservableObject {
     @Published private(set) var lastCatchResult: FishCatchResult?
     /// Horizontal distance the most recent cast actually traveled before
     /// splashing, as measured by `WorldViewModel`. HUD-only; also drives
-    /// `sizeCeilingRatio` below.
+    /// `castZone`/`sizeRollWindow` below.
     @Published private(set) var lastCastDistance: Float = 0
     /// Current progression level (1...3), from `ProgressionStore`. See ADR-037.
     @Published private(set) var currentLevel: Int
@@ -144,8 +144,8 @@ final class FishFightController: ObservableObject {
     }
 
     /// Call every tick a new cast lands in the water. `castDistance` is the
-    /// horizontal distance that cast actually traveled, and caps how big a
-    /// fish this cast can hook via `sizeCeilingRatio`.
+    /// horizontal distance that cast actually traveled, and gates how big a
+    /// fish this cast can hook via `castZone`/`sizeRollWindow`.
     func resetForNewCast(castDistance: Float = 0) {
         hasFishOnHook = false
         isFishInterested = false
@@ -178,8 +178,9 @@ final class FishFightController: ObservableObject {
 
         let species = FishCatalog.randomSpecies(unlockedTiers: progressionStore.unlockedTiers)
         currentSpecies = species
-        currentWeight = Self.biasedRoll(in: species.weightRange, ceilingRatio: sizeCeilingRatio)
-        currentLength = Self.biasedRoll(in: species.lengthRange, ceilingRatio: sizeCeilingRatio)
+        let window = sizeRollWindow
+        currentWeight = Self.biasedRoll(in: species.weightRange, floorRatio: window.floor, ceilingRatio: window.ceiling)
+        currentLength = Self.biasedRoll(in: species.lengthRange, floorRatio: window.floor, ceilingRatio: window.ceiling)
         hasFishOnHook = true
         isFishInterested = false
         lineTension = config.initialTension
@@ -347,22 +348,47 @@ final class FishFightController: ObservableObject {
         }
     }
 
-    /// 0.3 (short/no cast) ... 1 (at/near `maxExpectedCastDistance`). Floors
-    /// at 0.3 so a short cast can still land a modest fish rather than being
-    /// capped at the species' absolute minimum every time.
-    private var sizeCeilingRatio: Float {
-        let distanceRatio = min(1, max(0, currentCastDistance / maxExpectedCastDistance))
-        return 0.3 + 0.7 * distanceRatio
+    /// Which third of `maxExpectedCastDistance` the current cast landed in — matches
+    /// `CastMeterView`'s green/yellow/red thirds of the power bar 1:1 (ADR-061), so the zone the
+    /// player watched the flick land in on the meter is the same zone that gates fish size here.
+    private enum CastZone {
+        case green
+        case yellow
+        case red
     }
 
-    /// Rolls a value in `range`, capped at `range.min + span * ceilingRatio`
-    /// instead of the full range — used so a fish's rolled weight/length
-    /// (and thus, via `sizeRatio` below, its resistance) is bounded by how
-    /// far the cast that hooked it traveled.
-    private static func biasedRoll(in range: FishSpeciesRange, ceilingRatio: Float) -> Double {
-        let ratio = Double(min(1, max(0, ceilingRatio)))
-        let ceiling = range.min + (range.max - range.min) * ratio
-        return Double.random(in: range.min...max(range.min, ceiling))
+    private var castZone: CastZone {
+        let ratio = min(1, max(0, currentCastDistance / maxExpectedCastDistance))
+        if ratio < 1.0 / 3.0 { return .green }
+        if ratio < 2.0 / 3.0 { return .yellow }
+        return .red
+    }
+
+    /// Weight/length roll window, as a 0...1 floor/ceiling ratio within the species' own range,
+    /// for the current `castZone` (ADR-061) — chosen so the resulting `stars(forWeight:)` output
+    /// always lands in the advertised tier: green -> 1-2 stars, yellow -> 3-4 stars, red -> 4-5
+    /// stars (the biggest). Derived by inverting `stars(forWeight:in:)`'s own
+    /// `1 + round(4 * ratio)` formula at each star boundary, so this is a hard floor+ceiling window
+    /// per zone, not just a cap on top of the species' full range — a short cast can no longer
+    /// occasionally roll a big fish just by chance.
+    private var sizeRollWindow: (floor: Float, ceiling: Float) {
+        switch castZone {
+        case .green: return (0.0, 0.375)
+        case .yellow: return (0.375, 0.875)
+        case .red: return (0.625, 1.0)
+        }
+    }
+
+    /// Rolls a value in `range`, bounded to `[range.min + span * floorRatio, range.min + span *
+    /// ceilingRatio]` instead of the full range — used so a fish's rolled weight/length (and thus,
+    /// via `sizeRatio` below, its resistance) is bounded by which `castZone` the cast that hooked
+    /// it landed in.
+    private static func biasedRoll(in range: FishSpeciesRange, floorRatio: Float, ceilingRatio: Float) -> Double {
+        let lowRatio = Double(min(1, max(0, floorRatio)))
+        let highRatio = Double(min(1, max(0, ceilingRatio)))
+        let floor = range.min + (range.max - range.min) * lowRatio
+        let ceiling = range.min + (range.max - range.min) * highRatio
+        return Double.random(in: floor...max(floor, ceiling))
     }
 
     private var effectiveFishPullRate: Float {

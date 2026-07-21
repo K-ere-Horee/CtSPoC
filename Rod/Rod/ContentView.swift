@@ -56,6 +56,10 @@ struct ContentView: View {
                         .padding(.horizontal, 40)
                 }
 
+                if viewModel.hasPairedDevice {
+                    pairedDeviceRow
+                }
+
                 Spacer()
                 
                 /*
@@ -80,6 +84,31 @@ struct ContentView: View {
         }
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
+    }
+
+    /// Standalone, non-debug pairing-recovery affordance (ADR-062) — deliberately separate from
+    /// the commented-out Developer Details `DisclosureGroup` below, which predates this and is
+    /// left alone per this project's standing precedent of not touching what looks like someone
+    /// else's in-progress work. `TransportClient.didSubscribeTo` silently ignores any central
+    /// whose identifier doesn't match `PairedCentralStore`'s saved one — the subscription still
+    /// succeeds at the BLE protocol level (so World can read `.ready`/`.streaming` as if
+    /// everything's fine), but Rod never actually sends it anything. Without this row, a stale
+    /// saved pairing (e.g. after World's own "Forget Device" only clears World's side, or after
+    /// reinstalling/testing against a different Mac) was permanently unrecoverable from Rod's UI —
+    /// `RodViewModel.forgetPairedDevice()` already existed and worked, it simply had no visible
+    /// caller. Mirrors World's own `MainMenuView.pairedDeviceRow` for the same recovery action.
+    private var pairedDeviceRow: some View {
+        VStack(spacing: 4) {
+            Text("Paired with \(viewModel.pairedDeviceShortID ?? "Mac")")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Forget Paired Mac", role: .destructive) {
+                viewModel.forgetPairedDevice()
+            }
+            .font(.caption)
+            .buttonStyle(.plain)
+            .foregroundStyle(.red.opacity(0.8))
+        }
     }
 
     /// Single button whose label/action swaps with `isFishing`, rather than two always-present
@@ -113,9 +142,10 @@ struct ContentView: View {
 
     /// Arms one cast attempt (see `RodViewModel.startCasting()`/`RodMotionInterpreter`'s own doc
     /// comment) rather than casting always being live off ordinary phone motion. Disabled once
-    /// `hookPhase != .idle` (per `HookPhase.allowsCasting` — a cast couldn't complete anyway) or
-    /// once already armed, so re-pressing mid-charge does nothing rather than looking like a
-    /// second, independent arm.
+    /// `hookPhase` is neither `.idle` nor `.result` (per `HookPhase.allowsCasting` plus the
+    /// ADR-061 exception that also allows arming from `.result`, doubling as World's old
+    /// "Continue Fishing" tap) or once already armed, so re-pressing mid-charge does nothing
+    /// rather than looking like a second, independent arm.
     private var startCastingButton: some View {
         Button {
             viewModel.startCasting()
@@ -125,7 +155,7 @@ struct ContentView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.large)
-        .disabled(viewModel.hookPhase != .idle || viewModel.isCastingArmed)
+        .disabled((viewModel.hookPhase != .idle && viewModel.hookPhase != .result) || viewModel.isCastingArmed)
     }
 
     private var developerDetails: some View {

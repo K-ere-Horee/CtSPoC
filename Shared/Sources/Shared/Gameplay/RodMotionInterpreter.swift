@@ -203,15 +203,14 @@ public final class RodMotionInterpreter {
             return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .followThrough, action: .casting, reelSpeed: 0, castPower: releasedCastPower, castHoldDuration: releasedHoldDuration, debug: debug)
         }
 
-        switch classification {
-        case .cast where !isCastingArmed:
-            // Pose reads closest to `castPose`, but no "Start Casting" press has armed a cast
-            // attempt — treat exactly like `.idle` rather than silently starting a hold timer the
-            // player never asked for. (`castHoldStartTimestamp` already cleared above.)
-            previousClassification = .idle
-            previousCastPhase = .idle
-            return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .idle, action: .idle, reelSpeed: 0, castPower: 0, debug: debug)
-        case .cast:
+        // Once armed, the timing meter runs immediately regardless of the raw pose classification
+        // above (ADR-061) — the player shouldn't have to first swing the phone into
+        // backswing/cast-pose territory before the meter starts; pressing "Start Casting" alone
+        // starts it, and only the flick (forward acceleration, below) matters from then on. Before
+        // this, arming while holding the phone in its idle position left `classification == .idle`
+        // and the meter pinned at 0 until the player moved the phone closer to `castPose` first,
+        // which read as a delay between pressing the button and the meter actually appearing.
+        if isCastingArmed {
             let isFreshCastEntry = previousClassification != .cast
             // Only starts the timer if it isn't already running — a momentary classification
             // flicker back to `.idle`/`.reel` and straight back to `.cast` (jitter, not a genuine
@@ -237,7 +236,7 @@ public final class RodMotionInterpreter {
             let phase: RodMotionPhase = backswing
                 ? .backswing
                 : forwardMotion ? .release : (castPower > 0.05 ? .charging : .forwardSwing)
-            previousClassification = classification
+            previousClassification = .cast
             previousCastPhase = phase
             if forwardMotion && (isFreshCastEntry || !wasReleased) {
                 castEndsAt = input.timestamp + profile.castDuration
@@ -246,6 +245,16 @@ public final class RodMotionInterpreter {
                 return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .release, action: .casting, reelSpeed: 0, castPower: castPower, castHoldDuration: holdDuration, debug: debug, castSnapshot: snapshot(input: input, orientation: correctedOrientation(currentOrientation), holdDuration: holdDuration))
             }
             return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: phase, action: .idle, reelSpeed: 0, castPower: castPower, castHoldDuration: holdDuration, debug: debug)
+        }
+
+        switch classification {
+        case .cast:
+            // Pose reads closest to `castPose`, but no "Start Casting" press has armed a cast
+            // attempt — treat exactly like `.idle` rather than silently starting a hold timer the
+            // player never asked for. (`castHoldStartTimestamp` already cleared above.)
+            previousClassification = .idle
+            previousCastPhase = .idle
+            return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .idle, action: .idle, reelSpeed: 0, castPower: 0, debug: debug)
         case .reel:
             previousClassification = classification
             guard input.rotationRateMagnitude >= profile.reelRotationRate else { break }

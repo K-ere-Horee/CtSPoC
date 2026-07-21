@@ -29,7 +29,8 @@ struct ContentView: View {
                     pairedDeviceName: viewModel.pairedDeviceName,
                     hasPairedDevice: viewModel.hasPairedDevice,
                     onForgetDevice: viewModel.forgetPairedDevice,
-                    onResetProgression: viewModel.resetProgression
+                    onResetProgression: viewModel.resetProgression,
+                    onRetryConnection: viewModel.retryConnection
                 )
             }
 
@@ -39,10 +40,7 @@ struct ContentView: View {
 
             if viewModel.screen == .playing, viewModel.hookPhase == .result,
                 !viewModel.isShowingCatchCutscene, let result = fishFight.lastCatchResult {
-                ResultView(result: result) {
-                    viewModel.sounds.uiClick()
-                    viewModel.continueFishing()
-                }
+                ResultView(result: result)
             }
 
             if viewModel.screen == .playing, let announcement = fishFight.levelUpAnnouncement {

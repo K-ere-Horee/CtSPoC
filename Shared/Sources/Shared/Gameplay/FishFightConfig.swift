@@ -137,9 +137,9 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
         lowBandInterval: TimeInterval = 0.5,
         mediumBandInterval: TimeInterval = 0.28,
         highBandInterval: TimeInterval = 0.11,
-        lowBandIntensity: Float = 0.5,
-        mediumBandIntensity: Float = 0.7,
-        highBandIntensity: Float = 0.95,
+        lowBandIntensity: Float = 1.0,
+        mediumBandIntensity: Float = 1.0,
+        highBandIntensity: Float = 1.0,
         lowBandSharpness: Float = 0.4,
         mediumBandSharpness: Float = 0.55,
         highBandSharpness: Float = 0.75

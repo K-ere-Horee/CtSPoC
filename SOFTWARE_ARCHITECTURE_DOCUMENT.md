@@ -305,16 +305,32 @@ rendering a live "Holding X.Xs" readout alongside the existing normalized power 
 **A cast attempt must be explicitly armed first (ADR-050).**
 `RodMotionInterpreter.interpret(_:isCastingArmed:)` treats a cast-classified
 pose exactly like `.idle` — no backswing tracking, no charging phase, no cast
-meter — unless `isCastingArmed` is `true`. Rod's new "Start Casting" button
+meter — unless `isCastingArmed` is `true`. Rod's "Start Casting" button
 (`RodViewModel.startCasting()`) is the only way to set it, guarded to
-`isFishing && hookPhase == .idle`; it clears automatically once a cast
-actually fires, once `hookPhase` leaves `.idle` for any reason, or on
+`isFishing && (hookPhase == .idle || hookPhase == .result)` (the `.result`
+branch is ADR-061, see below); it clears automatically once a cast actually
+fires, once `hookPhase` leaves `.idle`/`.result` for any reason, or on
 `endFishing()`. This adds intent on top of the existing motion math above —
 it does not change how power/direction are computed once a real attempt is
 armed and running. `CastMeterView`'s visibility logic itself needed no
 changes for this: it already follows `RodState.motionPhase` reaching a
 charging-related phase, which now only happens once armed (the view's call
 site being commented out, unrelated to arming, was fixed separately above).
+
+**The meter now starts the instant arming happens, not once the pose also drifts toward
+`castPose` (ADR-061).** Before this, `interpret(_:isCastingArmed:)` only ran the
+charging/oscillation logic inside `case .cast:` of a switch over the raw pose classification (the
+same idle/cast/reel comparison used for gesture recognition generally) — so a player who pressed
+"Start Casting" while still holding the phone in its calibrated idle position saw the meter pinned
+at 0 until they *also* physically moved the phone closer to `castPose`, reading as an unexplained
+delay between pressing the button and the meter appearing. The armed-charging logic (hold-duration
+tracking, the oscillation formula, backswing/forward-motion phase detection, release) now runs
+unconditionally whenever `isCastingArmed` is `true`, before the pose-classification switch is even
+reached; the switch only still matters while *not* armed (deciding idle vs. reel vs. an unarmed
+cast-pose read, unchanged). The flick-detection logic itself (`accelerationZ` crossing
+`profile.castAcceleration`) was always independent of pose classification, so this only removes the
+classification *gate* on entering the branch — nothing about how a flick is detected or how power
+is computed changed.
 
 Definition of Done for each sprint:
 
@@ -575,24 +591,22 @@ moves horizontally only, so it reads as sliding across the water's surface;
 within that distance, movement switches to full 3D so the hook rises the rest
 of the way up.
 
-**Inside the lift zone, the climb is a guaranteed fixed speed, not tug-of-war
-(ADR-044).** Outside `hookLiftDistance`, `reelHook` still uses ADR-039's
-tug-of-war (`rodState.reelSpeed * reelSpeed` net `fishFight.fishPullSpeed`),
-which can stall or go negative against a strong fish — intentional for the
-open-water fight. Carried into the lift zone, though, that let the hook stall
-or sink back toward the water right at the dock's edge, reading as the fish
-"floating" instead of being landed. Inside the zone, `reelHook` instead always
-advances at a fixed `dockLiftSpeed` (3.5 m/s, faster than the player's own max
-reel speed), ignoring `fishFight.fishPullSpeed` entirely — a fish this close
-can no longer meaningfully resist. `driftHookAway` (used only while the player
-isn't actively reeling) is unchanged and still lets an escaping fish pull the
-hook back down out of the lift zone via `fishFight.fishPullSpeed`.
-
-`reelHook`'s catch/empty-retrieve resolution now checks full 3D distance to
-`hookLiftTargetPosition` (0.15 m) rather than horizontal distance (previously
-0.12 m, ADR-043) — since the climb above is fast and guaranteed rather than
-tug-of-war-gated, resolution can afford to wait for the hook to actually finish
-arriving instead of firing while it's still mid-climb.
+**Inside the lift zone, the catch/empty-retrieve resolves immediately, with no scripted climb
+(ADR-061, superseding ADR-044's guaranteed-speed climb).** ADR-044 had `reelHook` advance toward
+`hookLiftTargetPosition` at a fixed `dockLiftSpeed` (3.5 m/s) once inside `hookLiftDistance`,
+ignoring `fishFight.fishPullSpeed`, then only resolve the catch once within a further 0.15 m of the
+target — a guaranteed climb that fixed ADR-044's original "fish floating" bug (the tug-of-war
+stalling right at the dock's edge) but introduced a smaller version of the same complaint: the hook
+still visibly hung/drifted in the air for the beat it took to cover that last meter before landing.
+Reported directly: the hook "melayang dikit" (floats a bit) near the pier instead of being caught
+outright once close. `reelHook` now snaps `hookEntity.position` straight to `hookLiftTargetPosition`
+and resolves the catch/empty-retrieve in the same tick the hook first crosses inside
+`hookLiftDistance` — an instant, deliberate "yanked up" landing instead of a climb. The catch
+cutscene's own jump animation (ADR-045/047) still sells the "lift" moment for a caught fish; an
+empty line simply disappears at the same instant. `dockLiftSpeed` and the 3D-distance catch guard
+are gone entirely — dead code now that there's no climb to gate behind. `driftHookAway` (used only
+while the player isn't actively reeling) is unchanged and still lets an escaping fish pull the hook
+back down out of the lift zone via `fishFight.fishPullSpeed`.
 
 **That target is `hookLiftTargetPosition`, not the rod's render anchor (ADR-043).**
 `hookLiftTargetPosition` (`[0.22, 1.95, -4.7]`) shares `dockAnchorPosition`'s X/Y
@@ -609,7 +623,7 @@ the new point.
 
 **Catch resolution plays a cutscene before `ResultView`, as `WorldViewModel`
 presentation state, not a new `HookPhase` (ADR-045).** On a real catch (not an
-empty retrieve), `reelHook`'s `distance3D > 0.15` guard now calls
+empty retrieve), `reelHook`'s lift-zone landing (ADR-061, above) calls
 `fishFight.resolveCatch()` and `beginCatchCutscene(from:)` instead of disabling
 `hookEntity` outright, while still setting `HookPhase` to `.result`
 immediately — casting/reeling stay locked for the whole cutscene exactly as
@@ -690,10 +704,15 @@ fight-ending events plus a `stopFight()` guard on `HookPhase` leaving the
 fight phases. This is the product doc's "resistance through rhythm as
 well as intensity" spec, keyed to live fight state rather than static
 fish size. Band intensities were raised (ADR-054, "haptic nya kurang
-kerasa kenceng") from 0.30/0.45/0.70 to 0.50/0.70/0.95 — alongside every
-other `HapticManager` pattern (cast, splash, reel tick, bite, catch,
-line break, escape, interest) getting a similar real increase, not just
-this one.
+kerasa kenceng") from 0.30/0.45/0.70 to 0.50/0.70/0.95, then maxed
+outright (ADR-060) to 1.0/1.0/1.0 — the largest value CoreHaptics'
+`hapticIntensity` parameter accepts, alongside every other
+`HapticManager` pattern (cast, splash, reel tick, bite, catch, line
+break, escape, interest) also raised to 1.0. `sharpness` was left
+untouched at both passes — it controls timbre (crisp vs. dull), not
+felt strength, so band differentiation (low vs. medium vs. high) still
+reads through rhythm interval and sharpness even with intensity now
+identical across all three.
 
 **Fish Fight Tuning Config (ADR-039).**
 `Shared/Sources/Shared/Gameplay/FishFightConfig.swift` collects every
@@ -756,7 +775,8 @@ the full species `resistance`.
 `0.75 -> 0.60`/`0.95 -> 0.75` pass for `fish_c`/`scott` was superseded by this further cut).
 `fish_a` alone keeps its original `0.35`.
 
-**Cast distance caps how big a fish can roll (ADR-031).**
+**Cast distance gates fish size in three discrete zones, matching the cast meter's own
+green/yellow/red bands (ADR-063, superseding ADR-031's continuous ceiling).**
 `WorldViewModel` measures the real horizontal distance a cast traveled —
 `simd_distance` between the hook's launch position (captured in
 `launchHook(solution:)`) and its splash position (in
@@ -765,19 +785,37 @@ the full species `resistance`.
 from `CastSolution.distance`, Rod's cast-meter estimate shown during
 charging, which is not wired to launch physics. `FishFightController`
 publishes it as `lastCastDistance` (shown in `ContentView`'s Controller
-State grid) and uses it to cap the bite roll:
+State grid) and derives a `castZone` from it, exactly mirroring
+`CastMeterView`'s three equal-width power-bar thirds:
 
 ```text
-sizeCeilingRatio = 0.3 + 0.7 * clamp01(castDistance / maxExpectedCastDistance)
-rolledWeight/Length = random(min, min + span * sizeCeilingRatio)
+ratio = clamp01(castDistance / maxExpectedCastDistance)   // maxExpectedCastDistance = 20.0
+castZone = ratio < 1/3 ? green : ratio < 2/3 ? yellow : red
 ```
 
-`maxExpectedCastDistance` (10.0) is an estimate of the physics' own max
-range at full charge, level release. A short cast still floors at 30% of
-each range so it isn't hopeless; only a cast near max range can roll near
-the species' max weight/length — and since `sizeRatio`/`resistance`
-above already derive from the rolled weight/length, a far cast landing a
-big fish is automatically a tougher fight too.
+ADR-031 originally capped the bite roll with a single continuous ceiling (`0.3 + 0.7 * ratio`) that
+only bounded the *top* of the roll — a short cast could still occasionally land a small-to-modest
+fish anywhere under that ceiling, but nothing stopped a longer cast from also rolling low, so
+"cast farther -> bigger fish" was a soft tendency, not a guarantee. Requested directly: "jika user
+hanya bermain di area hijau dari cast, maka ikan bintang 1-2 saja yang bisa ditangkap ... jika
+kuning, maka bintang 3-4, jika area merah, maka bintang 4-5" (if the player only plays in the
+green zone, only 1-2 star fish should be catchable; yellow -> 3-4 stars; red -> 4-5, the biggest).
+`sizeRollWindow` now gives each zone a hard **floor and ceiling**, derived by inverting
+`stars(forWeight:in:)`'s own `1 + round(4 * ratio)` formula at each star boundary so the window
+exactly covers the advertised tier:
+
+```text
+green:  ratio in [0.000, 0.375)  -> stars 1-2
+yellow: ratio in [0.375, 0.875)  -> stars 3-4
+red:    ratio in [0.625, 1.000]  -> stars 4-5
+rolledWeight/Length = random(min + span * floor, min + span * ceiling)
+```
+
+(Yellow and red both cover ratio `[0.625, 0.875)`, i.e. both can roll a 4-star fish — intentional,
+matching the user's own overlapping wording.) `biasedRoll(in:floorRatio:ceilingRatio:)` replaces
+the old ceiling-only `biasedRoll(in:ceilingRatio:)`. Since `sizeRatio`/`resistance` above already
+derive from the rolled weight/length, a far cast landing a big fish is still automatically a
+tougher fight too — that part of ADR-031's rationale is unchanged.
 
 **Guaranteed fight distance on bite (ADR-031).** If the player was
 already reeling in during the search phase, the hook can already be
@@ -849,11 +887,13 @@ motion sample, reusing the same recurring callback that drives
 `.idle`), and excluded from both `allowsCasting` and `allowsReeling` so a
 physical cast can't race the result screen off-screen before the player
 sees it. `WorldViewModel.continueFishing()` (guarded to
-`hookPhase == .result`) is the only way back to `.idle`, called by the new
-`World/World/Views/ResultView.swift` overlay's "Continue Fishing" button.
-"Return to Menu" was initially left unimplemented here since no Main Menu
-existed yet to return to — see ADR-036, where it was added alongside the
-Main Menu itself. Escape and line-break intentionally do not
+`hookPhase == .result`) is the only way back to `.idle`. Originally called
+by `World/World/Views/ResultView.swift`'s own "Continue Fishing" button;
+ADR-061 (see below) later removed that button in favor of Rod's "Start
+Casting" driving the same dismissal, so `ResultView` no longer owns any
+control of its own. "Return to Menu" was initially left unimplemented here
+since no Main Menu existed yet to return to — see ADR-036, where it was
+added alongside the Main Menu itself. Escape and line-break intentionally do not
 route through `.result`; they keep the direct transitions from ADR-028 —
 only "After a successful catch" gets the full result treatment per the
 product doc's own scoping, and gating every escape/line-break behind a
@@ -977,6 +1017,16 @@ advertising after a central unsubscribes, World restarts scanning after any
 disconnect/failed-connect — matching MPC's previous behavior of leaving the browser/advertiser
 running continuously once `connect()` was called, rather than requiring the caller to retry.
 
+**Manual retry (ADR-061).** Reported directly: the Rod<->World BLE link occasionally wedges into a
+state the automatic reconnection above never recovers from, previously only fixable by
+force-quitting and relaunching World. `WorldViewModel.retryConnection()` runs the same
+disconnect-then-connect sequence a full relaunch would (`transport.disconnect()` tears down
+whatever connection/scan state exists, then `transport.connect()` starts fresh), without losing
+`screen`/`fishFight`/progression state along with it. Exposed as a "Retry Connection" button on
+`MainMenuView`, shown only while `!isRodReady` (retrying a healthy link would just interrupt it).
+Safe to call from any `ConnectionState`, including mid-scan or mid-connect — `TransportHost`'s own
+`disconnect()`/`connect()` are already idempotent-safe to call in any state.
+
 Full rationale, the message-flow inventory used to design the GATT layout, and the platform
 entitlement changes (`Info.plist`, `ENABLE_RESOURCE_ACCESS_BLUETOOTH`) are in ADR-035.
 
@@ -991,7 +1041,26 @@ specifically (not `nil`, which would send to every subscriber regardless of pair
 unpaired Mac subscribing is otherwise still a real BLE subscriber that would receive live data.
 `TransportHost.forgetPairedDevice()`/`TransportClient.forgetPairedDevice()` clear the saved
 identifier to re-enter first-run pairing. Surfaced in World's Main Menu ("Paired with `<name>`" +
-"Forget Device") and Rod's Developer Details ("Paired Mac" + "Forget Paired Mac").
+"Forget Device") and, as of ADR-062, a standalone row on Rod's primary screen ("Paired with
+`<short ID>`" + "Forget Paired Mac") — Rod's original button of the same name lived in its
+Developer Details `DisclosureGroup`, which is commented out (predates recent sessions, left alone
+as likely in-progress work elsewhere), so `RodViewModel.forgetPairedDevice()` had no reachable
+caller until ADR-062 added this separate, minimal affordance instead of touching that block.
+
+**A mismatched pairing fails silently, not loudly, on Rod's side specifically (ADR-062).**
+CoreBluetooth gives a GATT peripheral no way to *reject* a subscription — `didSubscribeTo` firing
+with a central whose identifier doesn't match the saved `pairedCentralStore.identifier` still lets
+the subscription succeed at the protocol level (so the far side reads `.ready`/`.streaming`
+correctly), Rod just never sets `subscribedCentral` for it, so `sendTargets` (`subscribedCentral.map
+{ [$0] }`) stays empty and nothing — not even the first `.state` message — is ever actually sent.
+World's `TransportHost.didDiscover` avoids the equivalent trap by filtering *before* connecting to
+a mismatched peripheral at all, an option only available on the central side. A stale saved pairing
+on Rod (e.g. World's own "Forget Device," which only ever clears World's side, used as a
+troubleshooting step) was previously unrecoverable from Rod's UI at all — the "Forget Paired Mac"
+row above is the fix. Separately, both `TransportHost`/`TransportClient`'s `NetworkMessage` decode
+paths were logging nothing on failure (`try? ... else { continue }`); both now log the error under
+`#if DEBUG` so a genuine schema mismatch (as opposed to this pairing-mismatch trap) is
+distinguishable from it during future debugging.
 
 ------------------------------------------------------------------------
 
@@ -1009,15 +1078,19 @@ dock/water/terrain/rod-rig assets).
    -> .playing
 
 .playing
-   -> hookPhase == .result -> "Continue Fishing" (continueFishing()) -> .playing, hookPhase == .idle
+   -> hookPhase == .result -> RodState.isCastingArmed true (player pressed "Start Casting" on
+      Rod, ADR-061 — continueFishing()) -> .playing, hookPhase == .idle
    -> RodState.isFishing flips false (player pressed "End Fishing" on Rod,
       or Rod disconnects) -> returnToMenu() -> .mainMenu, hookPhase == .idle
 ```
 
 **Screen transitions are Rod-driven, not World-button-driven, as of ADR-038** — see that ADR and
 its own section below for the full design. `World/World/Views/MainMenuView.swift`: title,
-subtitle, and a status row reflecting every `ConnectionState` case (no button); solid black
-background, deliberately opaque so gameplay never visibly renders through the title screen.
+subtitle, a status row reflecting every `ConnectionState` case, and (ADR-061) a "Retry Connection"
+button shown only while not yet connected — the one button this screen owns that isn't gameplay
+session control (alongside "Forget Device"/"Reset Progress", both likewise unrelated to the
+ADR-038 session boundary); solid black background, deliberately opaque so gameplay never visibly
+renders through the title screen.
 
 Rod is never disconnected by returning to the menu — `content`'s transport lifecycle
 (`.onAppear`/`.onDisappear`) is tied to `ContentView`'s own lifetime, not to `screen`, so the

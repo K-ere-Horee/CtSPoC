@@ -24,6 +24,7 @@ struct MainMenuView: View {
     let hasPairedDevice: Bool
     let onForgetDevice: () -> Void
     let onResetProgression: () -> Void
+    let onRetryConnection: () -> Void
 
     private var isRodReady: Bool {
         connectionState == .ready || connectionState == .streaming
@@ -70,6 +71,17 @@ struct MainMenuView: View {
                     Text(statusText)
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.8))
+                }
+
+                // ADR-061: a player-facing recovery button for the Rod<->World BLE link, reported
+                // to occasionally wedge itself into a state that never reconnects on its own —
+                // previously only fixable by force-quitting and relaunching World. Shown only
+                // while not already connected; retrying a healthy link would just interrupt it.
+                if !isRodReady {
+                    Button("Retry Connection", action: onRetryConnection)
+                        .font(.subheadline)
+                        .buttonStyle(.bordered)
+                        .tint(.white)
                 }
 
                 VStack(spacing: 10) {

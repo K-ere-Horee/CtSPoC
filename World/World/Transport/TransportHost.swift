@@ -322,8 +322,17 @@ extension TransportHost: @preconcurrency CBPeripheralDelegate {
         }
 
         for messageData in messages {
-            guard let message = try? decoder.decode(NetworkMessage.self, from: messageData) else { continue }
-            onMessage?(message)
+            do {
+                let message = try decoder.decode(NetworkMessage.self, from: messageData)
+                onMessage?(message)
+            } catch {
+                // Was a silent `try?` — a schema mismatch (e.g. only one of Rod/World rebuilt
+                // after a `RodState`/`NetworkMessage` field change) previously dropped every
+                // message with zero signal, reading as "connected but nothing ever happens."
+                #if DEBUG
+                print("[HOST] Failed to decode incoming message (\(messageData.count) bytes): \(error)")
+                #endif
+            }
         }
     }
 
