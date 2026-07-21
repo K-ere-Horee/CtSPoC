@@ -8458,3 +8458,114 @@ ordinary gameplay (casting, waiting for a bite) completely silent — which read
 - Not run: any live session. This exact fix path (ADR-084's original change) was only caught after
   one live playtest already, so — same as that entry's own Status — unverified live until played
   again.
+
+## Merge PR #7 (feat/ui-slice) into main
+
+Date: 2026-07-21.
+
+Requested directly: "ada 2 pr ke main, tolong di merge dan resolve conflictnya sekalian" (there are
+2 PRs into main, please merge them and resolve the conflicts too). PR #20 (this session's own work)
+merged cleanly first. PR #7 (`feat/ui-slice`, by Radiit/Raditya Aydin, opened 2026-07-18) did not —
+investigating before touching anything found it wasn't a simple textual conflict: it independently
+built a full competing Main Menu/loading/navigation system (`RootView.swift`'s own screen router,
+pill-shaped buttons, a Fredoka-font `Theme.swift`) that directly collides with this session's own
+ADR-081/082 Main Menu/loading-screen redesign and `WorldViewModel.Screen`-driven overlay model.
+Surfaced this to the user rather than picking a side unilaterally — confirmed: keep main's Main
+Menu/loading/navigation entirely, port `feat/ui-slice`'s genuinely new, non-overlapping features
+(`CreditsView.swift`, `TutorialView.swift`) onto main's kept navigation model instead of discarding
+them outright.
+
+### Investigation
+
+`git merge-tree` against the merge-base (`7f47d557`, 2026-07-18 — `feat/ui-slice` never rebased
+after) found real conflicts in six files: `CHECKPOINT.md`, `CLAUDE.md`,
+`World/World/Assets.xcassets/AppIcon.appiconset/Contents.json`, `World/World/Info.plist`,
+`World/World/Reality/EnvironmentSceneBuilder.swift`, `World/World/WorldApp.swift` — plus an add/add
+conflict on `World/World/Views/MainMenuView.swift` (both branches created it independently after
+the merge-base, with entirely different content). Read each side's actual diff before deciding
+anything: `EnvironmentSceneBuilder.swift` and `CLAUDE.md` on `feat/ui-slice`'s side were stale
+July-18 snapshots relative to main's much-since-evolved versions (`CLAUDE.md` still described
+MultipeerConnectivity, pre-ADR-041 audio, etc.); `AppIcon.appiconset/Contents.json` on their side
+would have regressed the app icon to one incomplete iOS-only entry, silently dropping the working
+macOS multi-size icon set (confirmed the actual `CTS-Logo_*.png` files were all still present in
+the tree, so this was a manifest regression, not a missing-asset situation).
+
+### Resolution
+
+- **`World/World/Views/MainMenuView.swift`**: kept main's (ADR-081) entirely, discarded
+  `feat/ui-slice`'s pill-button version. Added a "Credits" button (`StackedMenuButtonStyle
+  (isProminent: false)`, matching "How to Play") that presents the ported `CreditsView` via local
+  `@State private var isShowingCredits`, not a new `WorldViewModel.Screen` case — Credits has no
+  bearing on session/gameplay state, unlike every case that enum already models.
+- **`World/World/WorldApp.swift`**: kept main's (`ContentView()` + the ADR-086 fullscreen delegate)
+  — the auto-merge had silently kept `feat/ui-slice`'s `RootView()`/`.defaultSize(...)` without
+  flagging a conflict (both sides' diffs landed in non-overlapping line ranges), caught only by
+  actually reading the resolved file rather than trusting a clean `git merge` exit.
+- **`World/World/Assets.xcassets/AppIcon.appiconset/Contents.json`**: same silent-wrong-auto-merge
+  pattern — `git status` reported no conflict, but the auto-merged result was `feat/ui-slice`'s
+  regressed single-entry manifest. Restored main's full multi-size version explicitly via `git show
+  origin/main:... > ...`, not trusted from the auto-merge.
+- **`World/World/Reality/EnvironmentSceneBuilder.swift`**: kept main's evolved version entirely.
+- **`World/World/Info.plist`**: combined — kept main's (near-empty, `NSBonjourServices` already
+  intentionally removed as MultipeerConnectivity-era dead config, confirmed unreferenced anywhere
+  via `grep`) as the base, added `feat/ui-slice`'s `UIAppFonts`/`ATSApplicationFontsPath` keys
+  (needed for `Theme.swift`'s Fredoka font). Did not resurrect `NSBonjourServices`.
+- **`CLAUDE.md`**: kept main's content for all three conflicting sections (project structure tree,
+  tech stack, verification command — the last one's `feat/ui-slice` side, `cd Shared && swift
+  build`, was actually taken instead of main's stale hardcoded per-file list, since it's what the
+  file's own unchanged surrounding prose already argues for). Added small project-structure notes
+  for `Support/Theme.swift`, `Fonts/`, `CreditsView.swift`, `TutorialView.swift`, and the
+  `ATSApplicationFontsPath`/`UIAppFonts` dual-registration requirement.
+- **`CHECKPOINT.md`**: kept main's content as the continuation; `feat/ui-slice`'s own ~245-line
+  history section (Main Menu pill-button redesign, Loading screen fixes, the original Tutorial
+  overlay work, a `CLAUDE.md`/`.gitignore` cleanup pass) preserved verbatim underneath an editorial
+  note explaining what was/wasn't ultimately adopted — per this project's "never delete previous
+  checkpoint entries" rule, not summarized or dropped even though the Main Menu/Loading design it
+  describes wasn't shipped.
+- **Dropped entirely**: `World/World/Views/RootView.swift`, `LoadingView.swift`, and their
+  Main-Menu/Loading-specific asset catalog entries (`Assets.xcassets/Image/LoadingScreen.imageset`,
+  `landingImage.imageset`, `logo.imageset`) — superseded by main's ADR-081/082 work, no longer
+  referenced by anything once `MainMenuView.swift`/`WorldApp.swift` were resolved to main's side.
+- **Ported as new additions**: `World/World/Views/CreditsView.swift` (unchanged — self-contained,
+  only needs `Theme.swift`), `World/World/Views/TutorialView.swift` (unchanged aside from one doc
+  comment correcting its "composed by `RootView`" claim), `World/World/Support/Theme.swift`
+  (trimmed — the `overlay`/`menuButtonFace`/`menuButtonEdge`/`menuButtonText` tokens existed solely
+  for the dropped pill-button `MainMenuView`, so removed as dead weight; kept `buttonFill`/
+  `buttonLabel`/`buttonLabelShadow`/`Color(hex:)`/`Font.fredoka`/`fredokaBold`/`ShadowedLabel`,
+  which `CreditsView`/`TutorialView` actually use), `World/World/Fonts/Fredoka-{Bold,Regular}.ttf`,
+  `Assets.xcassets/Image/{FrameIcon,HandTutor}.imageset` (referenced by `TutorialView`), and a root
+  `.gitignore` (xcuserdata/build-artifact excludes — harmless, doesn't retroactively untrack
+  anything already committed).
+- **`World/World/ViewModels/WorldViewModel.swift`**: added `isShowingTutorial: Bool` (set `true`
+  alongside `screen = .playing` in `handleState(_:)`, matching `feat/ui-slice`'s own "shown
+  unconditionally on every Start Fishing" behavior — persisted first-session-only gating was
+  explicitly flagged as future work on the original branch and is inherited as-is, not implemented
+  here either) and `dismissTutorial()`; reset alongside the other overlay flags in `returnToMenu()`.
+- **`World/World/ContentView.swift`**: added `TutorialView(onFinished: viewModel.dismissTutorial)`
+  to the overlay `ZStack`, shown while `screen == .playing && isShowingTutorial` — same composition
+  pattern (`ContentView` + a transparent overlay on top) `RootView` originally used, just reached
+  through this screen's own overlay stack instead of a separate top-level router.
+
+### Verification
+
+- Confirmed via `git write-tree` + `git ls-tree` diff against `origin/main` that the final result is
+  *exactly* `origin/main` plus the deliberate additions listed above — nothing else differs,
+  confirming no unintended regression slipped through anywhere in the six-file conflict resolution.
+- Rebuilt `Shared` for both `arm64-apple-macosx26.0` and `arm64-apple-ios17.0-simulator` — exit code
+  0, no errors on either.
+- `xcrun swiftc -typecheck` against the full `World/World` and `Rod/Rod` Swift file lists — exit
+  code 0, no errors on either.
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`; confirmed via the compiler's own file
+  list that `TutorialView.swift`/`MainMenuView.swift`/`LoadingScreenView.swift` compiled and
+  `RootView.swift`/`LoadingView.swift` did not (i.e. actually gone, not just untracked).
+- Launched the built `.app` and confirmed via `ps` it ran without crashing.
+- Repo-wide `grep` confirmed zero remaining code references to `RootView`/`LoadingView`/
+  `menuButtonFace`/`menuButtonEdge`/`menuButtonText`/`Theme.overlay` (only historical doc-comment
+  mentions of `RootView` remain, describing where `TutorialView`'s composition pattern came from).
+- `git diff --check` clean.
+- Not run: any live session — Credits/Tutorial are newly rewired onto a navigation model neither
+  was originally built against, and `TutorialView` in particular was never visually confirmed live
+  even on its origin branch (no Accessibility/UI-scripting permission there either, per that
+  branch's own CHECKPOINT history above) — worth an explicit playtest of both before considering
+  this fully settled.
