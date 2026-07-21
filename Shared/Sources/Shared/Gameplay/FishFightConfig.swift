@@ -66,6 +66,34 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
     /// never shrink it to an unfair sliver.
     public var minEscapeDistanceAllowance: Float
 
+    // MARK: Fight direction (lateral juke)
+
+    /// A hooked fish's left/right juking phase lasts a random duration in this range (seconds),
+    /// starting the instant it bites — not the whole fight, just this sub-mechanic. After it
+    /// elapses, `FishFightController.fightDirection` goes back to `nil` and only the base
+    /// tension/tug-of-war fight (above) continues for however much longer the fight naturally
+    /// takes.
+    public var fightDirectionMinDuration: Float
+    public var fightDirectionMaxDuration: Float
+    /// While the juking phase is active, the fish's pull direction flips after a random interval
+    /// in this range (seconds) — "rapid randomizer": short enough that the player has to keep
+    /// reacting, not a single slow left-then-right swing.
+    public var fightDirectionSwitchMinInterval: Float
+    public var fightDirectionSwitchMaxInterval: Float
+    /// Minimum `abs(RodState.roll)` (radians, relative to the calibrated idle pose) for the
+    /// player's current rod tilt to count as actively countering a direction at all — below this,
+    /// the rod reads as roughly upright/neutral, not a deliberate counter-lean either way.
+    public var fightDirectionRollThreshold: Double
+    /// Tension/sec *relief* applied on top of the base fight formula while the player is actively
+    /// countering the fish's current pull direction correctly (rod rolled opposite the fish's
+    /// pull, past `fightDirectionRollThreshold`) — rewards reading the fish's juke and leaning the
+    /// rod the other way, real-fishing "rod-side pressure" style.
+    public var fightDirectionCounterRelief: Float
+    /// Tension/sec *penalty* applied on top of the base fight formula whenever the player isn't
+    /// countering correctly (rod neutral, or rolled the wrong way) while the juking phase is
+    /// active — punishes ignoring the fish's direction, not just its raw pull strength.
+    public var fightDirectionPenalty: Float
+
     // MARK: Tension bands (Rod haptic rhythm)
 
     /// `lineTension` at/above this is "medium" band; below is "low". Below `dangerLow`-style
@@ -90,24 +118,31 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
     public init(
         initialTension: Float = 0.5,
         baseFishPullRate: Float = 0.15,
-        baseReelTensionRate: Float = 0.55,
+        baseReelTensionRate: Float = 0.6,
         pullRateResistanceMultiplier: Float = 3.0,
         basePullSpeed: Float = 0.7,
         pullSpeedResistanceMultiplier: Float = 1.8,
         escapeDistanceAllowance: Float = 6.0,
         escapeAllowanceResistancePenalty: Float = 3.5,
         minEscapeDistanceAllowance: Float = 2.0,
+        fightDirectionMinDuration: Float = 5.0,
+        fightDirectionMaxDuration: Float = 10.0,
+        fightDirectionSwitchMinInterval: Float = 0.6,
+        fightDirectionSwitchMaxInterval: Float = 1.8,
+        fightDirectionRollThreshold: Double = 0.15,
+        fightDirectionCounterRelief: Float = 0.25,
+        fightDirectionPenalty: Float = 0.20,
         tensionBandMediumThreshold: Float = 0.55,
         tensionBandHighThreshold: Float = 0.8,
         lowBandInterval: TimeInterval = 0.5,
         mediumBandInterval: TimeInterval = 0.28,
         highBandInterval: TimeInterval = 0.11,
-        lowBandIntensity: Float = 0.3,
-        mediumBandIntensity: Float = 0.45,
-        highBandIntensity: Float = 0.7,
-        lowBandSharpness: Float = 0.3,
-        mediumBandSharpness: Float = 0.45,
-        highBandSharpness: Float = 0.6
+        lowBandIntensity: Float = 1.0,
+        mediumBandIntensity: Float = 1.0,
+        highBandIntensity: Float = 1.0,
+        lowBandSharpness: Float = 0.4,
+        mediumBandSharpness: Float = 0.55,
+        highBandSharpness: Float = 0.75
     ) {
         self.initialTension = initialTension
         self.baseFishPullRate = baseFishPullRate
@@ -118,6 +153,13 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
         self.escapeDistanceAllowance = escapeDistanceAllowance
         self.escapeAllowanceResistancePenalty = escapeAllowanceResistancePenalty
         self.minEscapeDistanceAllowance = minEscapeDistanceAllowance
+        self.fightDirectionMinDuration = fightDirectionMinDuration
+        self.fightDirectionMaxDuration = fightDirectionMaxDuration
+        self.fightDirectionSwitchMinInterval = fightDirectionSwitchMinInterval
+        self.fightDirectionSwitchMaxInterval = fightDirectionSwitchMaxInterval
+        self.fightDirectionRollThreshold = fightDirectionRollThreshold
+        self.fightDirectionCounterRelief = fightDirectionCounterRelief
+        self.fightDirectionPenalty = fightDirectionPenalty
         self.tensionBandMediumThreshold = tensionBandMediumThreshold
         self.tensionBandHighThreshold = tensionBandHighThreshold
         self.lowBandInterval = lowBandInterval

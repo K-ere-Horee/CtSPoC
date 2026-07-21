@@ -50,8 +50,17 @@ final class TransportClient: NSObject, TransportProtocol {
     private var wantsToAdvertise = false
     private var isServiceAdded = false
     private var reliableSendQueue: [QueuedSend] = []
+    private let pairedCentralStore = PairedCentralStore()
 
     var isConnected: Bool { subscribedCentral != nil }
+
+    /// The World this peripheral is paired with, if a central has ever subscribed — `nil` means
+    /// "not paired yet, will pair with the next central that subscribes." `CBCentral` exposes no
+    /// display name (unlike `CBPeripheral` on World's side), so only a short identifier is shown.
+    var hasPairedDevice: Bool { pairedCentralStore.identifier != nil }
+    var pairedDeviceShortID: String? {
+        pairedCentralStore.identifier.map { String($0.uuidString.prefix(8)) }
+    }
 
     var onMessage: ((NetworkMessage) -> Void)?
     var onStateChange: ((ConnectionState) -> Void)?
@@ -76,6 +85,18 @@ final class TransportClient: NSObject, TransportProtocol {
     func disconnect() {
         wantsToAdvertise = false
         peripheralManager.stopAdvertising()
+        failAllQueuedSends(with: ClientError.notConnected)
+        subscribedCentral = nil
+        inboundReassembler.reset()
+        onStateChange?(.disconnected)
+    }
+
+    /// Clears the saved pairing (see `PairedCentralStore`) so the next central to subscribe pairs
+    /// fresh — the same first-run behavior as before any pairing existed. Advertising keeps
+    /// running (never stopped here), matching the existing reconnect behavior in
+    /// `didUnsubscribeFrom`, so a new Mac can pair immediately without restarting the app.
+    func forgetPairedDevice() {
+        pairedCentralStore.clear()
         failAllQueuedSends(with: ClientError.notConnected)
         subscribedCentral = nil
         inboundReassembler.reset()
@@ -129,16 +150,37 @@ final class TransportClient: NSObject, TransportProtocol {
         return max(BLEFraming.headerSize + 1, central.maximumUpdateValueLength)
     }
 
+    /// Restricts every notify/indicate send to the paired central specifically (`nil` would mean
+    /// "every subscribed central," which would leak state/events to an unpaired Mac that happened
+    /// to subscribe even though the app never treats it as connected — see `didSubscribeTo`).
+    private var sendTargets: [CBCentral]? {
+        subscribedCentral.map { [$0] }
+    }
+
     /// Never fragments: a `.state` sample that doesn't fit in one packet is dropped outright
     /// rather than risking a desynced multi-chunk stream on a channel with no delivery
     /// guarantee — see `SessionConfiguration.bleStateCharacteristicUUID`'s doc comment. A fresher
     /// sample is always ~33 ms away, so silently dropping one oversized sample is the same
-    /// semantics `NetworkMessage.requiresReliableDelivery` already documents for this path.
+    /// semantics `NetworkMessage.requiresReliableDelivery` already documents for this path. This
+    /// used to fail with zero signal (ADR-063: `RodState.CodingKeys` exists specifically to keep
+    /// a populated-`castSolution` payload safely under one chunk) — logged now so a future field
+    /// addition that creeps back over budget shows up immediately instead of silently dropping
+    /// every affected message.
     private func sendUnreliable(_ data: Data) {
         guard let stateCharacteristic else { return }
         let framed = BLEFraming.chunks(for: data, maxChunkSize: chunkBudget())
-        guard framed.count == 1 else { return }
-        _ = peripheralManager.updateValue(framed[0], for: stateCharacteristic, onSubscribedCentrals: nil)
+        guard framed.count == 1 else {
+            #if DEBUG
+            print("[CLIENT] .state dropped: \(data.count) bytes exceeds one-chunk budget of \(chunkBudget())")
+            #endif
+            return
+        }
+        let sent = peripheralManager.updateValue(framed[0], for: stateCharacteristic, onSubscribedCentrals: sendTargets)
+        #if DEBUG
+        if !sent {
+            print("[CLIENT] .state updateValue returned false (send queue full), \(data.count) bytes")
+        }
+        #endif
     }
 
     /// Fragments if needed and queues behind any send already in flight, so overlapping calls
@@ -164,7 +206,7 @@ final class TransportClient: NSObject, TransportProtocol {
         while var current = reliableSendQueue.first {
             while !current.remainingChunks.isEmpty {
                 let next = current.remainingChunks[0]
-                let sent = peripheralManager.updateValue(next, for: reliableOutCharacteristic, onSubscribedCentrals: nil)
+                let sent = peripheralManager.updateValue(next, for: reliableOutCharacteristic, onSubscribedCentrals: sendTargets)
                 guard sent else {
                     reliableSendQueue[0] = current
                     return
@@ -231,10 +273,24 @@ extension TransportClient: @preconcurrency CBPeripheralManagerDelegate {
 
     func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
         guard characteristic.uuid == stateUUID else { return }
+        // Once a device is paired, ignore any other central subscribing — several Rods/Worlds can
+        // be in range of each other in the same room. The central is still subscribed at the BLE
+        // protocol level (harmless; CoreBluetooth has no "reject a subscription" API), but
+        // `subscribedCentral` never becomes it, so `isConnected`/`sendTargets` both stay pointed
+        // at the paired central only and this Mac never receives state/events.
+        if let pairedID = pairedCentralStore.identifier, central.identifier != pairedID {
+            #if DEBUG
+            print("[CLIENT] Ignoring unpaired central: \(central.identifier)")
+            #endif
+            return
+        }
         #if DEBUG
         print("[CLIENT] Central subscribed: \(central.identifier)")
         #endif
         subscribedCentral = central
+        if pairedCentralStore.identifier == nil {
+            pairedCentralStore.save(identifier: central.identifier)
+        }
         onStateChange?(.ready)
     }
 
@@ -261,8 +317,17 @@ extension TransportClient: @preconcurrency CBPeripheralManagerDelegate {
             guard request.characteristic.uuid == commandUUID, let value = request.value else { continue }
             let messages = inboundReassembler.feed(value)
             for messageData in messages {
-                guard let message = try? decoder.decode(NetworkMessage.self, from: messageData) else { continue }
-                onMessage?(message)
+                do {
+                    let message = try decoder.decode(NetworkMessage.self, from: messageData)
+                    onMessage?(message)
+                } catch {
+                    // Was a silent `try?` — a schema mismatch (e.g. only one of Rod/World rebuilt
+                    // after a `RodState`/`NetworkMessage` field change) previously dropped every
+                    // message with zero signal, reading as "connected but nothing ever happens."
+                    #if DEBUG
+                    print("[CLIENT] Failed to decode incoming message (\(messageData.count) bytes): \(error)")
+                    #endif
+                }
             }
             peripheral.respond(to: request, withResult: .success)
         }

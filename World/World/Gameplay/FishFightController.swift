@@ -42,7 +42,22 @@ final class FishFightController: ObservableObject {
         case bite
     }
 
+    /// Which way a hooked fish is currently pulling, during the juking sub-phase (see
+    /// `fightDirection`'s own doc comment). The player must roll the rod the *opposite* way to
+    /// counter it — real-fishing "rod-side pressure" — matching this project's own left/right
+    /// convention (world/screen space, not rod-relative): `.left` means the fish pulls toward
+    /// the player's left, so the player must roll the rod toward their right.
+    enum FightDirection {
+        case left
+        case right
+    }
+
     @Published private(set) var hasFishOnHook = false
+    /// Which way a hooked fish is currently pulling, or `nil` when the juking sub-phase isn't
+    /// active (either the fight hasn't started, or `fightDirectionRemainingDuration` ran out).
+    /// World reads this to both drift the hook visually and show the player which way to counter
+    /// (Rod owns no gameplay HUD, so this can't be communicated on the controller itself).
+    @Published private(set) var fightDirection: FightDirection?
     /// A fish is nearby and interested but hasn't bitten. World may show a
     /// subtle cue; Rod plays a slow periodic haptic while this is `true`.
     @Published private(set) var isFishInterested = false
@@ -53,7 +68,7 @@ final class FishFightController: ObservableObject {
     @Published private(set) var lastCatchResult: FishCatchResult?
     /// Horizontal distance the most recent cast actually traveled before
     /// splashing, as measured by `WorldViewModel`. HUD-only; also drives
-    /// `sizeCeilingRatio` below.
+    /// `castZone`/`sizeRollWindow` below.
     @Published private(set) var lastCastDistance: Float = 0
     /// Current progression level (1...3), from `ProgressionStore`. See ADR-037.
     @Published private(set) var currentLevel: Int
@@ -87,6 +102,12 @@ final class FishFightController: ObservableObject {
     /// Hook-to-rod distance on the first `updateFight` tick of the current fight — the baseline
     /// `escapeDistanceAllowance` is measured against. `nil` outside a fight.
     private var fightStartDistance: Float?
+    /// Seconds left in the current fight's juking sub-phase; counts down in `updateFight`.
+    /// `fightDirection` clears once this reaches 0. `0` whenever no fight is active.
+    private var fightDirectionRemainingDuration: Float = 0
+    /// Seconds until the next direction flip — "rapid randomizer," reset to a new random interval
+    /// every time `fightDirection` flips.
+    private var fightDirectionSwitchTimer: Float = 0
 
     private let recordStore: FishRecordStore
     private let progressionStore: ProgressionStore
@@ -113,9 +134,18 @@ final class FishFightController: ObservableObject {
         levelUpAnnouncement = nil
     }
 
+    /// Resets `ProgressionStore` back to Level 1 (only `.small` catchable) and clears any
+    /// in-flight level-up banner, so the player can replay the tier-unlock progression from
+    /// scratch — a debug/utility action, not part of the fishing session loop itself.
+    func resetProgression() {
+        progressionStore.reset()
+        currentLevel = progressionStore.level
+        levelUpAnnouncement = nil
+    }
+
     /// Call every tick a new cast lands in the water. `castDistance` is the
-    /// horizontal distance that cast actually traveled, and caps how big a
-    /// fish this cast can hook via `sizeCeilingRatio`.
+    /// horizontal distance that cast actually traveled, and gates how big a
+    /// fish this cast can hook via `castZone`/`sizeRollWindow`.
     func resetForNewCast(castDistance: Float = 0) {
         hasFishOnHook = false
         isFishInterested = false
@@ -125,6 +155,8 @@ final class FishFightController: ObservableObject {
         currentCastDistance = castDistance
         lastCastDistance = castDistance
         fightStartDistance = nil
+        fightDirection = nil
+        fightDirectionRemainingDuration = 0
     }
 
     /// Call every tick while searching (`.hookInWater`). Returns the search
@@ -146,21 +178,33 @@ final class FishFightController: ObservableObject {
 
         let species = FishCatalog.randomSpecies(unlockedTiers: progressionStore.unlockedTiers)
         currentSpecies = species
-        currentWeight = Self.biasedRoll(in: species.weightRange, ceilingRatio: sizeCeilingRatio)
-        currentLength = Self.biasedRoll(in: species.lengthRange, ceilingRatio: sizeCeilingRatio)
+        let window = sizeRollWindow
+        currentWeight = Self.biasedRoll(in: species.weightRange, floorRatio: window.floor, ceilingRatio: window.ceiling)
+        currentLength = Self.biasedRoll(in: species.lengthRange, floorRatio: window.floor, ceilingRatio: window.ceiling)
         hasFishOnHook = true
         isFishInterested = false
         lineTension = config.initialTension
+
+        // Fight-direction juking phase starts the instant the fish is hooked — a random 5-10s
+        // (config-driven) window during which it darts left/right, on top of the base tension
+        // fight above. Requested directly: fish should "geser kanan kiri dengan rapid randomizer"
+        // for "beberapa detik" per fight, with the player countering by leaning the rod opposite.
+        fightDirection = Bool.random() ? .left : .right
+        fightDirectionRemainingDuration = Float.random(in: config.fightDirectionMinDuration...config.fightDirectionMaxDuration)
+        fightDirectionSwitchTimer = Float.random(in: config.fightDirectionSwitchMinInterval...config.fightDirectionSwitchMaxInterval)
+
         return .bite
     }
 
     /// Call every tick a fish is hooked (`.fishOnHook` or `.reeling`),
     /// whether or not the player is currently reeling. `hookDistance` is the current hook-to-rod
     /// distance World measures; the first tick's value becomes the baseline for the
-    /// distance-escape check (ADR-039). Returns the failure that just ended the fight, if any;
-    /// `nil` while it continues.
+    /// distance-escape check (ADR-039). `rodRoll` is `RodState.roll` (relative to the calibrated
+    /// idle pose) — used only to evaluate the fight-direction counter below; has no effect outside
+    /// the juking phase. Returns the failure that just ended the fight, if any; `nil` while it
+    /// continues.
     @discardableResult
-    func updateFight(deltaTime: Float, isReeling: Bool, reelSpeed: Float, hookDistance: Float) -> FightFailure? {
+    func updateFight(deltaTime: Float, isReeling: Bool, reelSpeed: Float, hookDistance: Float, rodRoll: Double) -> FightFailure? {
         guard hasFishOnHook else { return nil }
 
         if fightStartDistance == nil {
@@ -172,7 +216,8 @@ final class FishFightController: ObservableObject {
         }
 
         let reelPull = isReeling ? reelSpeed * config.baseReelTensionRate : 0
-        lineTension = min(1, max(0, lineTension + (reelPull - effectiveFishPullRate) * deltaTime))
+        let directionDelta = updateFightDirection(deltaTime: deltaTime, rodRoll: rodRoll)
+        lineTension = min(1, max(0, lineTension + (reelPull - effectiveFishPullRate + directionDelta) * deltaTime))
 
         if lineTension <= 0 {
             resolve(outcome: .escaped)
@@ -183,6 +228,36 @@ final class FishFightController: ObservableObject {
             return .lineBreak
         }
         return nil
+    }
+
+    /// Advances the juking sub-phase (direction flips, phase expiry) and evaluates whether the
+    /// player is currently countering the fish's pull correctly, returning a tension/sec delta to
+    /// fold into `updateFight`'s main formula — `0` whenever the phase isn't active. Kept as a
+    /// separate method purely for readability; it's still just more `lineTension` math, no
+    /// entity/RealityKit knowledge crosses into this controller.
+    private func updateFightDirection(deltaTime: Float, rodRoll: Double) -> Float {
+        guard let direction = fightDirection else { return 0 }
+
+        fightDirectionRemainingDuration -= deltaTime
+        guard fightDirectionRemainingDuration > 0 else {
+            fightDirection = nil
+            return 0
+        }
+
+        fightDirectionSwitchTimer -= deltaTime
+        if fightDirectionSwitchTimer <= 0 {
+            fightDirection = direction == .left ? .right : .left
+            fightDirectionSwitchTimer = Float.random(in: config.fightDirectionSwitchMinInterval...config.fightDirectionSwitchMaxInterval)
+        }
+
+        // The fish pulls `.left` -> the player must roll the rod toward their right (positive
+        // roll, by this project's convention) to counter it, and vice versa — real-fishing
+        // "rod-side pressure." `fightDirection` may have just flipped above; re-read it so the
+        // very same tick already evaluates against the new direction rather than lagging a frame.
+        let isCountering = fightDirection == .left
+            ? rodRoll >= config.fightDirectionRollThreshold
+            : rodRoll <= -config.fightDirectionRollThreshold
+        return isCountering ? -config.fightDirectionCounterRelief : config.fightDirectionPenalty
     }
 
     /// Current haptic rhythm tier for Rod, from `lineTension` (ADR-039). `nil` when no fight is
@@ -245,6 +320,8 @@ final class FishFightController: ObservableObject {
         lineTension = 0
         interestTimer = Float.random(in: 0.8...2.0)
         fightStartDistance = nil
+        fightDirection = nil
+        fightDirectionRemainingDuration = 0
     }
 
     /// 1...5, from how close the catch weight is to the species' max.
@@ -271,22 +348,47 @@ final class FishFightController: ObservableObject {
         }
     }
 
-    /// 0.3 (short/no cast) ... 1 (at/near `maxExpectedCastDistance`). Floors
-    /// at 0.3 so a short cast can still land a modest fish rather than being
-    /// capped at the species' absolute minimum every time.
-    private var sizeCeilingRatio: Float {
-        let distanceRatio = min(1, max(0, currentCastDistance / maxExpectedCastDistance))
-        return 0.3 + 0.7 * distanceRatio
+    /// Which third of `maxExpectedCastDistance` the current cast landed in — matches
+    /// `CastMeterView`'s green/yellow/red thirds of the power bar 1:1 (ADR-061), so the zone the
+    /// player watched the flick land in on the meter is the same zone that gates fish size here.
+    private enum CastZone {
+        case green
+        case yellow
+        case red
     }
 
-    /// Rolls a value in `range`, capped at `range.min + span * ceilingRatio`
-    /// instead of the full range — used so a fish's rolled weight/length
-    /// (and thus, via `sizeRatio` below, its resistance) is bounded by how
-    /// far the cast that hooked it traveled.
-    private static func biasedRoll(in range: FishSpeciesRange, ceilingRatio: Float) -> Double {
-        let ratio = Double(min(1, max(0, ceilingRatio)))
-        let ceiling = range.min + (range.max - range.min) * ratio
-        return Double.random(in: range.min...max(range.min, ceiling))
+    private var castZone: CastZone {
+        let ratio = min(1, max(0, currentCastDistance / maxExpectedCastDistance))
+        if ratio < 1.0 / 3.0 { return .green }
+        if ratio < 2.0 / 3.0 { return .yellow }
+        return .red
+    }
+
+    /// Weight/length roll window, as a 0...1 floor/ceiling ratio within the species' own range,
+    /// for the current `castZone` (ADR-061) — chosen so the resulting `stars(forWeight:)` output
+    /// always lands in the advertised tier: green -> 1-2 stars, yellow -> 3-4 stars, red -> 4-5
+    /// stars (the biggest). Derived by inverting `stars(forWeight:in:)`'s own
+    /// `1 + round(4 * ratio)` formula at each star boundary, so this is a hard floor+ceiling window
+    /// per zone, not just a cap on top of the species' full range — a short cast can no longer
+    /// occasionally roll a big fish just by chance.
+    private var sizeRollWindow: (floor: Float, ceiling: Float) {
+        switch castZone {
+        case .green: return (0.0, 0.375)
+        case .yellow: return (0.375, 0.875)
+        case .red: return (0.625, 1.0)
+        }
+    }
+
+    /// Rolls a value in `range`, bounded to `[range.min + span * floorRatio, range.min + span *
+    /// ceilingRatio]` instead of the full range — used so a fish's rolled weight/length (and thus,
+    /// via `sizeRatio` below, its resistance) is bounded by which `castZone` the cast that hooked
+    /// it landed in.
+    private static func biasedRoll(in range: FishSpeciesRange, floorRatio: Float, ceilingRatio: Float) -> Double {
+        let lowRatio = Double(min(1, max(0, floorRatio)))
+        let highRatio = Double(min(1, max(0, ceilingRatio)))
+        let floor = range.min + (range.max - range.min) * lowRatio
+        let ceiling = range.min + (range.max - range.min) * highRatio
+        return Double.random(in: floor...max(floor, ceiling))
     }
 
     private var effectiveFishPullRate: Float {

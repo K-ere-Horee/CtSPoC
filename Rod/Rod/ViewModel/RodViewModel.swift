@@ -38,6 +38,13 @@ final class RodViewModel: ObservableObject {
     /// "Start Fishing" (after calibrating) before physical motion is
     /// interpreted as gameplay intent; "End Fishing" clears it again.
     @Published private(set) var isFishing = false
+    /// Gates whether `RodMotionInterpreter` treats a cast-classified pose as a real cast attempt.
+    /// Set by the "Start Casting" button, not automatic — otherwise ordinary phone movement that
+    /// happens to read closest to the calibrated `castPose` would silently start charging. Cleared
+    /// automatically once a cast actually fires (`updateAction()`), whenever `hookPhase` leaves
+    /// `.idle`/`.result` (ADR-061 — arming is also allowed from `.result`, see `startCasting()`),
+    /// or on `endFishing()` — a stale arm can never survive past one cast attempt.
+    @Published private(set) var isCastingArmed = false
 
     /// Debug-only: the calibrated `reelSpeed` ramp's min/max rotation rate (`calibrateMotion()`'s
     /// `.reel` step), surfaced so a narrow calibrated range — the leading suspect for the
@@ -62,9 +69,6 @@ final class RodViewModel: ObservableObject {
             yaw: 0,
             accelerationZ: 0,
         rotationRateMagnitude: 0
-        , rotationRateX: 0
-        , rotationRateY: 0
-        , rotationRateZ: 0
     )
     private var pose = RodMotionPose(pitch: 0, roll: 2, yaw: 0)
     private var orientation = RodOrientation.identity
@@ -165,6 +169,17 @@ final class RodViewModel: ObservableObject {
         hasStarted = false
     }
 
+    /// The World this session is paired with (see `PairedCentralStore`), for display in Developer
+    /// Details — `nil` until a central has ever subscribed. `CBCentral` has no display name, only
+    /// an identifier, so only a short ID is shown.
+    var pairedDeviceShortID: String? { transport.pairedDeviceShortID }
+    var hasPairedDevice: Bool { transport.hasPairedDevice }
+
+    /// Clears the saved pairing so the next Mac to subscribe becomes the new paired device.
+    func forgetPairedDevice() {
+        transport.forgetPairedDevice()
+    }
+
     func startFishing() {
         guard calibrationStep == .complete else { return }
         isFishing = true
@@ -172,6 +187,21 @@ final class RodViewModel: ObservableObject {
 
     func endFishing() {
         isFishing = false
+        isCastingArmed = false
+    }
+
+    /// Arms one cast attempt: until this is pressed, `RodMotionInterpreter` ignores a
+    /// cast-classified pose entirely (see its own doc comment), so idly holding or moving the
+    /// phone can never accidentally start charging a cast. Requires an actual fishing session and
+    /// either an idle hook or a still-showing result screen (ADR-061) — the latter lets "Start
+    /// Casting" double as World's old "Continue Fishing" tap, since `WorldViewModel.handle(_:)`
+    /// dismisses `.result` back to `.idle` the instant it sees `RodState.isCastingArmed` true.
+    /// `HookPhase.allowsCasting` itself is untouched (still only `.idle`), so a physical flick
+    /// still can't actually fire a cast until World's dismissal round-trip completes — this only
+    /// relaxes when the button may be *armed*, not when a cast may complete.
+    func startCasting() {
+        guard isFishing, hookPhase == .idle || hookPhase == .result, !isCastingArmed else { return }
+        isCastingArmed = true
     }
 
     func calibrateMotion() {
@@ -235,6 +265,13 @@ final class RodViewModel: ObservableObject {
             fishingHaptics.handle(event)
         case let .hookPhase(phase):
             hookPhase = phase
+            // `.result` is deliberately excluded here (ADR-061): World auto-dismisses `.result`
+            // back to `.idle` the instant it sees an armed cast, so a stale arm surviving the
+            // brief `.result` window is exactly the point, not a bug — clearing it here would
+            // race the very message that's supposed to carry it through.
+            if phase != .idle, phase != .result {
+                isCastingArmed = false
+            }
             if phase != .hookInWater {
                 fishingHaptics.stopInterest()
             }
@@ -251,7 +288,8 @@ final class RodViewModel: ObservableObject {
                     action: action,
                     reelSpeed: reelSpeed,
                     castSolution: nil,
-                    isFishing: isFishing
+                    isFishing: isFishing,
+                    isCastingArmed: isCastingArmed
                 )
                 publishState()
             }
@@ -272,7 +310,9 @@ final class RodViewModel: ObservableObject {
             castSolution: rodState.castSolution,
             motionPhase: rodState.motionPhase,
             castPower: rodState.castPower,
-            isFishing: isFishing
+            castHoldDuration: rodState.castHoldDuration,
+            isFishing: isFishing,
+            isCastingArmed: isCastingArmed
         )
         guard connectionState == .ready || connectionState == .streaming else { return }
         connectionState = .streaming
@@ -290,7 +330,7 @@ final class RodViewModel: ObservableObject {
         let previousAction = action
         motionAccelerationZ = motion.accelerationZ
         motionRotationRate = motion.rotationRateMagnitude
-        let interpretation = motionInterpreter.interpret(motionInput)
+        let interpretation = motionInterpreter.interpret(motionInput, isCastingArmed: isCastingArmed)
         debugRecorder.append(
             MotionDebugSample(
                 input: motionInput,
@@ -304,6 +344,8 @@ final class RodViewModel: ObservableObject {
         if let snapshot = interpretation.castSnapshot {
             let resolved = castResolver.resolve(snapshot)
             resolvedCastSolution = resolved.with(distance: castMeterConfig.distance(for: resolved.power))
+            // A real cast just fired — one "Start Casting" press only ever arms a single attempt.
+            isCastingArmed = false
         } else {
             resolvedCastSolution = rodState.castSolution
         }
@@ -329,7 +371,9 @@ final class RodViewModel: ObservableObject {
             castSolution: resolvedCastSolution,
             motionPhase: motionPhase,
             castPower: interpretation.castPower,
-            isFishing: isFishing
+            castHoldDuration: interpretation.castHoldDuration,
+            isFishing: isFishing,
+            isCastingArmed: isCastingArmed
         )
 
         if action == .casting, previousAction != .casting {
@@ -350,9 +394,6 @@ final class RodViewModel: ObservableObject {
             yaw: motion.yaw,
             rotationRateMagnitude: motion.rotationRateMagnitude,
             accelerationZ: motion.accelerationZ
-            , rotationRateX: motion.rotationRateX
-            , rotationRateY: motion.rotationRateY
-            , rotationRateZ: motion.rotationRateZ
         )
     }
 
