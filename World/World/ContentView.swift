@@ -23,6 +23,10 @@ struct ContentView: View {
         ZStack {
             content
 
+            if viewModel.screen == .loading {
+                LoadingScreenView()
+            }
+
             if viewModel.screen == .onboarding {
                 OnboardingView(onComplete: viewModel.completeOnboarding)
             }
@@ -89,6 +93,7 @@ struct ContentView: View {
                 let rod = await viewModel.makeSceneEntity()
                 content.add(rod)
                 viewModel.attachFrameLoop(to: content)
+                await viewModel.sceneDidFinishLoading()
             }
             .frame(minHeight: 320)
             .overlay(alignment: .topLeading) {

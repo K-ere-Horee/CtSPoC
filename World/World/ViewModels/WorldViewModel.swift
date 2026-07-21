@@ -25,13 +25,19 @@ final class WorldViewModel: ObservableObject {
     /// (`GAMEPLAY_ARCHITECTURE_V1.md`: "World owns... Tutorial, Calibration Instructions"). Shown
     /// automatically before `.mainMenu` on a fresh install (see `hasSeenOnboarding`/`init`), and
     /// on demand afterward via Main Menu's "How to Play" (`showOnboarding()`).
+    ///
+    /// `.loading` (ADR-082) is the very first screen, covering the one-time async asset load in
+    /// `makeSceneEntity()` (environment, rod rig, fish) so the player never sees an empty/
+    /// half-built scene before `.onboarding`/`.mainMenu` appears. `sceneDidFinishLoading()`,
+    /// called once from `ContentView`'s `RealityView` `make` closure, is the only way out of it.
     enum Screen {
+        case loading
         case onboarding
         case mainMenu
         case playing
     }
 
-    @Published private(set) var screen: Screen = .mainMenu
+    @Published private(set) var screen: Screen = .loading
     @Published private(set) var rodState = RodState()
     @Published private(set) var connectionState: ConnectionState = .idle
     @Published private(set) var hookPhase: HookPhase = .idle
@@ -329,7 +335,9 @@ final class WorldViewModel: ObservableObject {
         transport: TransportHost
     ) {
         self.transport = transport
-        screen = Self.hasSeenOnboarding ? .mainMenu : .onboarding
+        // `screen` starts (and stays) `.loading` until `sceneDidFinishLoading()` fires — the
+        // onboarding-vs-menu decision below now happens there instead of here (ADR-082).
+        loadingStartedAt = Date()
 
         transport.onStateChange = { [weak self] state in
             Task { @MainActor in
@@ -361,7 +369,6 @@ final class WorldViewModel: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
-        sounds.handleScreenChange(isPlaying: screen == .playing)
 
         Task {
             do {
@@ -466,6 +473,34 @@ final class WorldViewModel: ObservableObject {
         fps = Double(fpsFrameCount) / fpsElapsedTime
         fpsFrameCount = 0
         fpsElapsedTime = 0
+    }
+
+    /// Set once, in `init`, the instant `.loading` begins — `sceneDidFinishLoading()` measures
+    /// elapsed time against it to enforce `minimumLoadingScreenDuration`.
+    private let loadingStartedAt: Date
+
+    /// Floor on how long `.loading` stays visible, regardless of how fast the actual asset load
+    /// finishes (requested directly: "kasih delay 10 detik dong ke loading screen"). Without this,
+    /// a fast load could flash the loading screen for a fraction of a second — not long enough to
+    /// actually read the screen ADR-082 just added.
+    private static let minimumLoadingScreenDuration: TimeInterval = 10
+
+    /// Called once, from `ContentView`'s `RealityView` `make` closure, right after
+    /// `makeSceneEntity()`'s assets are added to the scene (ADR-082/ADR-083). Moves `screen` off
+    /// `.loading` for the only time it ever changes away from it — the same
+    /// onboarding-vs-menu decision `init` used to make immediately now waits for the actual asset
+    /// load to finish (plus `minimumLoadingScreenDuration`, whichever is longer) first. `async`
+    /// so it can `Task.sleep` out the remainder itself, in the same async context the `RealityView`
+    /// `make` closure already runs in — no separate `Task {}`/timer needed.
+    func sceneDidFinishLoading() async {
+        guard screen == .loading else { return }
+        let elapsed = Date().timeIntervalSince(loadingStartedAt)
+        let remaining = Self.minimumLoadingScreenDuration - elapsed
+        if remaining > 0 {
+            try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+        }
+        guard screen == .loading else { return }
+        screen = Self.hasSeenOnboarding ? .mainMenu : .onboarding
     }
 
     func makeSceneEntity() async -> Entity {
@@ -603,8 +638,22 @@ final class WorldViewModel: ObservableObject {
     /// instant Rod reports an armed cast (ADR-061) — World's `ResultView` no longer has its own
     /// dismiss button, since pressing "Start Casting" on Rod is now the single action that both
     /// dismisses the result and starts the next attempt.
+    ///
+    /// **Also requires `!isShowingCatchCutscene` (ADR-085).** `hookPhase` becomes `.result` the
+    /// instant the catch resolves — at the very *start* of the cutscene, not the end, since
+    /// `tick()`'s `case .result:` branch needs it to keep animating the cutscene forward every
+    /// frame. Rod's "Start Casting" button only checks `hookPhase`, so without this guard, a press
+    /// during the cutscene would flip `hookPhase` to `.idle` immediately and freeze the cutscene
+    /// mid-animation (`tick()` would stop entering `case .result:`, so `updateCatchCutscene` would
+    /// simply never run again) while `isShowingCatchCutscene` stayed stuck `true`. Rod's armed
+    /// press isn't lost, just deferred: `isCastingArmed` stays `true` on Rod's side, `handleState(_:)`
+    /// re-checks it on every incoming `.state` message, so the instant the cutscene's own
+    /// completion flips `isShowingCatchCutscene` false, the very next `.state` message dismisses
+    /// the result and arms the next cast — reads as "the button becomes active once the fish/
+    /// 'CATCH!!' cutscene disappears," as requested, without needing to teach Rod about
+    /// `isShowingCatchCutscene` at all.
     func continueFishing() {
-        guard hookPhase == .result else { return }
+        guard hookPhase == .result, !isShowingCatchCutscene else { return }
         setHookPhase(.idle)
     }
 
@@ -616,7 +665,10 @@ final class WorldViewModel: ObservableObject {
     /// Rod; the transport connection is left running so starting again doesn't need to
     /// rediscover/reconnect.
     private func returnToMenu() {
-        guard screen != .mainMenu else { return }
+        // Also skip while `.loading` (ADR-082) — a disconnect arriving before the async asset
+        // load finishes must not skip past the loading screen (and the first-launch onboarding
+        // decision `sceneDidFinishLoading()` still owns) straight to the menu.
+        guard screen != .mainMenu, screen != .loading else { return }
         hookVelocity = .zero
         hookEntity?.isEnabled = false
         caughtFishEntity?.isEnabled = false
@@ -626,7 +678,6 @@ final class WorldViewModel: ObservableObject {
         fishFight.resetForNewCast()
         setHookPhase(.idle)
         screen = .mainMenu
-        sounds.handleScreenChange(isPlaying: false)
     }
 
     private func setHookPhase(_ phase: HookPhase) {
@@ -691,7 +742,12 @@ final class WorldViewModel: ObservableObject {
         }
 
         sounds.updateReelLoop(active: rodState.action == .reeling && hookPhase != .idle && hookPhase != .flying && hookPhase != .result)
-        sounds.updateIdleLoop(active: screen == .playing && (hookPhase == .idle || hookPhase == .hookInWater))
+        // ADR-084 (amended): exactly one base ambience is active at a time — `ambienceLake` during
+        // gameplay, `idle` at the Main Menu/Onboarding — never both, never neither (outside
+        // `.loading`, where neither plays). Only `idle` was ever meant to stop when gameplay
+        // starts; the lake ambience continuing through gameplay is unchanged from before ADR-084.
+        sounds.updateAmbienceLoop(active: screen == .playing)
+        sounds.updateIdleLoop(active: screen == .mainMenu || screen == .onboarding)
         sounds.updateReelFightLoop(active: screen == .playing && (hookPhase == .fishOnHook || hookPhase == .reeling))
         syncTensionBand()
         syncQTE()
@@ -1288,7 +1344,6 @@ final class WorldViewModel: ObservableObject {
         // `isFishing`'s edges instead of a World-side button.
         if state.isFishing, !wasFishing {
             screen = .playing
-            sounds.handleScreenChange(isPlaying: true)
         } else if !state.isFishing, wasFishing {
             returnToMenu()
         }

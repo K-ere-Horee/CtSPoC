@@ -1101,8 +1101,10 @@ motion sample, reusing the same recurring callback that drives
 `reelHook()`'s catch path (`resolveCatch()` then `.result` instead of
 `.idle`), and excluded from both `allowsCasting` and `allowsReeling` so a
 physical cast can't race the result screen off-screen before the player
-sees it. `WorldViewModel.continueFishing()` (guarded to
-`hookPhase == .result`) is the only way back to `.idle`. Originally called
+sees it. `WorldViewModel.continueFishing()` (guarded to `hookPhase == .result` and, as of ADR-085,
+also `!isShowingCatchCutscene` — an armed press arriving mid-cutscene is deferred, not dropped,
+taking effect the instant the cutscene's own completion clears that flag) is the only way back to
+`.idle`. Originally called
 by `World/World/Views/ResultView.swift`'s own "Continue Fishing" button;
 ADR-061 (see below) later removed that button in favor of Rod's "Start
 Casting" driving the same dismissal, so `ResultView` no longer owns any
@@ -1311,12 +1313,24 @@ dock/water/terrain/rod-rig assets).
 ```
 
 **Screen transitions are Rod-driven, not World-button-driven, as of ADR-038** — see that ADR and
-its own section below for the full design. `World/World/Views/MainMenuView.swift`: title,
-subtitle, a status row reflecting every `ConnectionState` case, and (ADR-061) a "Retry Connection"
-button shown only while not yet connected — the one button this screen owns that isn't gameplay
-session control (alongside "Forget Device"/"Reset Progress", both likewise unrelated to the
-ADR-038 session boundary); solid black background, deliberately opaque so gameplay never visibly
-renders through the title screen.
+its own section below for the full design. `World/World/Views/MainMenuView.swift`: a logo mark, a
+status row reflecting every `ConnectionState` case, and (ADR-061) a "Retry Connection" button
+shown only while not yet connected — the one button this screen owns that isn't gameplay session
+control (alongside "Forget Device"/"Reset Progress", both likewise unrelated to the ADR-038
+session boundary). Deliberately opaque (a full-bleed background photo, not translucent) so gameplay
+never visibly renders through the title screen.
+
+**Visual design (ADR-081).** Restyled from a plain black screen with plain-text title to a
+full-bleed background photo (`main_menu_bg`) and logo image (`logo_cts`), both loose bundled
+resources loaded via a `bundleImage(_:)` helper (`NSImage(contentsOf:)` from a `Bundle.main.url
+(forResource:withExtension:)` lookup) rather than the plain `Image("name")` initializer — confirmed
+by building the target that `World.xcodeproj`'s `PBXFileSystemSynchronizedRootGroup` flattens loose
+files straight into the bundle's `Resources/` root, which the bare string-literal `Image` initializer
+doesn't reliably resolve outside `Assets.xcassets`. Actionable buttons (`Retry Connection`, `How to
+Play`) use a new `StackedMenuButtonStyle` — a cream, dark-bordered card with a second, darker
+rectangle offset behind it, reading as two stacked cards — matching a supplied reference design's
+"Start Fishing"/"Credits" button treatment. The calibration/status area gained a translucent dark
+card background for legibility against the photo; `CalibrationGuidanceView` itself is unchanged.
 
 Rod is never disconnected by returning to the menu — `content`'s transport lifecycle
 (`.onAppear`/`.onDisappear`) is tied to `ContentView`'s own lifetime, not to `screen`, so the
@@ -1499,8 +1513,8 @@ layer (`Rod/Rod/Haptics/HapticManager.swift` + `FishingHaptics.swift`):
     `AVAudioPlayer` per `Sound` case (`prepareToPlay()` at init to avoid a first-play hitch), with
     `play`/`startLoop`/`stopLoop`/`stopAllLoops`/`setVolume` primitives.
 -   `FishingSounds` — the event router, one `handle(_ event: FishingEvent)` switch plus loop
-    lifecycle helpers (`updateReelLoop`, `handlePhaseChange`, `handleScreenChange`, `stopAll`),
-    same shape as `FishingHaptics.handle(_:)`.
+    lifecycle helpers (`updateReelLoop`, `updateIdleLoop`, `updateReelFightLoop`,
+    `handlePhaseChange`, `stopAll`), same shape as `FishingHaptics.handle(_:)`.
 
 Sound is presentation and stays out of `Shared` and off the transport. `WorldViewModel` owns a
 `let sounds: FishingSounds` and funnels every World-emitted `FishingEvent` through one point so
@@ -1527,6 +1541,15 @@ so `launchHook(solution:)` calls `sounds.castLaunched()` directly. The reel loop
 tick from `rodState.action`/`hookPhase` rather than from an event, so an empty-line retrieve
 during `.hookInWater` (no fish on hook yet) still sounds, not just a fish fight. `setHookPhase(_:)`
 calls `sounds.handlePhaseChange(_:)` on every transition as a belt-and-suspenders stop for stale
-loops, mirroring `FishingHaptics.stopInterest()`/`stopFight()`. A looping lake ambience track
-plays across both the main menu and gameplay (`FishingSounds.Config.ambiencePlaysInMenu`),
-started from `start()`/screen transitions and stopped only in `WorldViewModel.stop()`.
+loops, mirroring `FishingHaptics.stopInterest()`/`stopFight()`.
+
+**Ambient loops, redesigned (ADR-084): exactly one active at a time, purely `screen`/`hookPhase`
+driven, never during `.loading`.** The original separate lake-ambience track (always playing,
+across menu and gameplay both) is retired entirely. `idle` is now the Main Menu/Onboarding's only
+ambient sound (`WorldViewModel.tick()`: `sounds.updateIdleLoop(active: screen == .mainMenu ||
+screen == .onboarding)`) — silent during both `.loading` and `.playing`. `reelFight` is unchanged,
+active only while a fish is hooked during gameplay (`screen == .playing && (hookPhase ==
+.fishOnHook || hookPhase == .reeling)`). Both are purely frame-driven from `tick()`, which itself
+only starts once `attachFrameLoop(to:)` subscribes — after `makeSceneEntity()`'s async asset load
+finishes — so no loop can start during `.loading` even transiently; there is no longer a separate
+`start()`/screen-transition call path that could race ahead of that.
