@@ -582,14 +582,28 @@ while the player rests, and — ADR-039's tug-of-war — *subtracted from
 the player's reel speed inside `reelHook(deltaTime:)`* while reeling: a
 net-negative speed moves the hook away even mid-reel, so a strong fish
 gains line against weak reeling and can win outright via the distance
-escape above. The same two retune passes moved
-`WorldViewModel.reelSpeed` (the player-input-to-m/s multiplier feeding
-that subtraction) `3.0 -> 4.5 -> 3.375` and its paired floor `0.35 ->
-0.525 -> 0.39375` in lockstep with `basePullSpeed`'s own two moves,
-since the player's own pull-in speed — not the fish's — was the
-originally reported "too slow" half of the tug-of-war. The controller
-publishes a speed only, it never touches RealityKit. Tension and
-physical hook
+escape above.
+
+**Reel-in speed is tension-scaled risk/reward while a fish is hooked (ADR-039 retune).** The
+player's own pull-in speed used to be a single flat `WorldViewModel.reelSpeed` constant
+(`3.0 -> 4.5 -> 3.375` across two earlier retune passes) applied unconditionally. Requested
+directly — "balance pull nya dengan cara: ketika hijau, 1 rotasi reel misalnya narik 0.5m/s, dan
+ketika ke merah reel distance nya naik jadi 1m/s gitu, jadi ada reward untuk player yang berani
+stay di red zone" — `FishFightController.reelPullSpeed` now computes the per-unit pull speed from
+`lineTension` itself: `config.reelPullSpeedSafe` at/below `config.reelSpeedSafeTension`
+(0.7, matching `LineTensionView`'s own `safeHigh` green-zone edge — numerically aligned, not
+code-shared), linearly interpolating up to `config.reelPullSpeedDanger` once tension
+reaches `config.reelSpeedDangerTension` (0.85, matching `LineTensionView`'s `dangerHigh` red-zone
+edge) — rewarding a player willing to hold tension near the snap threshold instead of playing it
+safe. The safe/danger speeds themselves went through two more passes after launch: `0.5`/`1.0` m/s
+first (unplayably slow, "the gameplay is not even playable now"), briefly `3.375`/`5.0` m/s
+(restoring the old flat constant's magnitude), then explicitly retuned to **`2.0`/`4.0`** m/s
+("coba base nya 2 m/s... naik jadi 4 m/s di area merah") — the values now in effect.
+`reelHook(deltaTime:)` reads `fishFight.reelPullSpeed` **only while `hasFishOnHook`** —
+empty-line retrieves keep the old flat `reelSpeed` constant, since there's no tension to manage in
+that case. The minimum-guaranteed floor dropped from `0.39375` to a flat `0.1` for the fish-fight
+path — still comfortably below the current 2.0-4.0 m/s range. The controller publishes a speed
+only, it never touches RealityKit. Tension and physical hook
 position move together: ignoring a hooked fish drains tension *and* lets
 it swim away; over-reeling snaps the line; under-reeling loses the
 tug-of-war.

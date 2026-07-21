@@ -279,6 +279,22 @@ final class FishFightController: ObservableObject {
         return config.basePullSpeed * (1 + resistance * config.pullSpeedResistanceMultiplier)
     }
 
+    /// m/s per full (1.0) `RodState.reelSpeed` input, right now — tension-scaled risk/reward:
+    /// reeling while `lineTension` is at/below `config.reelSpeedSafeTension` (the safe/green zone)
+    /// pulls in at `config.reelPullSpeedSafe`; reeling with tension pushed up to/past
+    /// `config.reelSpeedDangerTension` (the near-snap red zone) pulls in at
+    /// `config.reelPullSpeedDanger` instead — faster by default — rewarding a player willing to
+    /// hold tension there rather than backing off to safety. Linearly interpolates between the two
+    /// thresholds. World's `reelHook(deltaTime:)` reads this in place of a flat constant.
+    var reelPullSpeed: Float {
+        let low = config.reelSpeedSafeTension
+        let high = config.reelSpeedDangerTension
+        guard lineTension > low else { return config.reelPullSpeedSafe }
+        guard lineTension < high else { return config.reelPullSpeedDanger }
+        let t = (lineTension - low) / max(0.0001, high - low)
+        return config.reelPullSpeedSafe + (config.reelPullSpeedDanger - config.reelPullSpeedSafe) * t
+    }
+
     /// Call when the hook reaches the rod while a fish is attached.
     func resolveCatch() {
         guard hasFishOnHook else { return }

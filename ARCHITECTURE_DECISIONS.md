@@ -11,6 +11,157 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-067 --- fish_catched SFX, Tension-Slacking Eased 30%, Idle-Loop Coverage Confirmed
+
+## Decision
+
+Three requests in one message.
+
+**Idle loop during `.hookInWater` — already correct, no change needed.** "Play idle music itu
+selama hook masih inWater juga, jangan langsung di stop" describes exactly what
+`WorldViewModel.tick()`'s existing `sounds.updateIdleLoop(active: screen == .playing &&
+(hookPhase == .idle || hookPhase == .hookInWater))` (ADR-065's revision) already does, and
+`FishingSounds.handlePhaseChange(_:)`'s idle safety-stop already excludes `.hookInWater` too.
+Verified both call sites directly rather than assuming; neither needed editing.
+
+**New `fish_catched.wav` plays alongside `catchSplash` on every catch.** The player supplied the
+asset directly under `World/World/Assets/SFX/`. `SoundManager.Sound` gains `.fishCatched`
+("fish_catched"), default `.wav`/`0.85` volume (the standard one-shot tier — no specific volume
+was requested this time, unlike `idle`/`reelFight`'s explicit ~30%). `FishingSounds.handle(_:)`'s
+`.catchFish` case gains `sounds.play(.fishCatched)` alongside the existing `sounds.play
+(.catchSplash)` — additive, not a replacement, matching "tambahin" (add).
+
+**Tension-slacking eased 30%.** `FishFightConfig.baseFishPullRate` (tension/sec drained by the
+fish while not actively countered — "slack" building up) `0.15 -> 0.105`.
+`pullRateResistanceMultiplier` (tier differentiation, unaffected) is untouched, matching this
+session's established pattern (`basePullSpeed` earlier) of scaling only the base term so easier
+tiers stay easier proportionally rather than compressing every tier's difficulty uniformly.
+
+## Rationale
+
+Requested directly: "play idle music itu selama hook masih inWater juga, jangan langsung di stop.
+terus, tambahin music fish_catched ketika ikan berhasil ditangkap. terus, benerin sedikit
+mekanisme fish pull nya, dengan mengurangi sedikit speed tension (maybe kurangi tension slacking
+sebesar 30%)." The first item turned out to already be satisfied by ADR-065's revision earlier the
+same day — checked the actual current source before making any change, rather than assuming a
+regression and re-editing blind.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against the
+`arm64-apple-macosx26.0` `Shared` module and the full `World/World` file list; not yet played on a
+physical device.
+
+------------------------------------------------------------------------
+
+# ADR-066 --- Cast Distance Floor Raised So Short Casts Clear the Dock
+
+## Decision
+
+`WorldViewModel.launchHook(solution:)`'s speed-vs-power formula changes from
+`castSpeed * (0.5 + power * 1.5)` to `castSpeed * (1.4 + power * 0.6)`. The `power = 1` ceiling is
+unchanged (`castSpeed * 2.0` either way, `castSpeed = 5.0` untouched) — only the `power = 0` floor
+rises, from `castSpeed * 0.5` to `castSpeed * 1.4`. Launch angle (`CastConfig.minimumLaunchAngle`/
+`maximumLaunchAngle`, 0.15-0.65 rad) and every other part of the pipeline are untouched.
+
+Verified numerically (`speed^2 * sin(2*angle) / gravity`, `gravity = 4.0`):
+
+```text
+              old formula          new formula
+power 0.00    speed 2.50, 0.46 m   speed 7.00, 3.62 m
+power 0.33    speed 4.97, 3.65 m   speed 7.99, 9.40 m
+power 0.66    speed 7.45, 11.37 m  speed 8.98, 16.51 m
+power 1.00    speed 10.00, 24.09 m speed 10.00, 24.09 m  <- unchanged
+```
+
+Since the cast meter's green/yellow/red bands are equal power thirds (0-0.33/0.33-0.66/0.66-1,
+`CastMeterView`/ADR-063's `castZone`), this reads as: the shortest green-zone cast used to land at
+0.46 m and now lands at 3.62 m; what used to be roughly yellow's distance range (3.65-11.37 m) is
+now roughly green's own range (3.62-9.40 m); red's ceiling is exactly unchanged (24.09 m) while its
+floor rose to 16.51 m, leaving 9.40-16.51 m for the new yellow band in between.
+
+## Rationale
+
+Reported directly: "jarak si cast nya, bisa di perbaiki ga? jadi kuning sekarang distancenya
+hijau, merah tetap, dan kuning yang baru itu between hijau dan merah (biar gaada lagi case cast di
+hijau tapi nembus pier kebawah)." Root cause: the dock's own measured mesh footprint extends to
+`Z = -4.5` (ADR-043's own measurement), starting from roughly the rod's held position around
+`Z = -2.1` — any hook landing closer than ~2.4 m from the rod lands *inside* the dock's solid
+geometry instead of splashing in open water beyond it, since the ballistic simulation has no
+collision awareness of the dock mesh at all. At the old floor, the bottom of the green zone
+(0.46-3.65 m) mostly fell short of that clearance; at the new floor, the entire range clears it
+with margin. Compressing the low end while holding the high end fixed (rather than, say, uniformly
+scaling the whole curve up, which would have also pushed red's ceiling past its current value,
+violating "merah tetap") was the natural way to satisfy both constraints from one parameter change.
+
+Deliberately left `CastMeterConfig` (Rod's own displayed distance *estimate* during charging,
+`shortMaximum`/`mediumMaximum`/`longMaximum` = 6/12/18) untouched — it was already documented as
+disconnected from real launch physics before this change (a decorative preview, not a measurement),
+and updating it wasn't necessary to fix the reported bug. It's now a slightly larger
+underestimate at the low end than before (was already inaccurate); revisit only if that specific
+mismatch gets reported.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against the
+`arm64-apple-macosx26.0` `Shared` module and a standalone numeric check of the projectile-range
+formula (both matched the table above). Not yet played on a physical device — in particular
+whether 3.62 m of clearance is enough margin in practice (vs. the dock's exact 2.4 m minimum) is
+unverified, and the simplified equal-launch-height range formula slightly *underestimates* true
+range here (the tip launches above `waterHeight`, adding hang time), so real clearance should be
+at least as good as calculated, not worse.
+
+------------------------------------------------------------------------
+
+# ADR-065 --- Two New SFX: Idle Ambience Loop, Fish-Fight Music Loop With Fade-Out
+
+## Decision
+
+The player supplied two new assets directly under `World/World/Assets/SFX/` (auto-bundled, no
+pbxproj entry needed, per `SoundManager`'s existing convention): `idle.wav` and `reel_fight.wav`.
+Both wired into `SoundManager.Sound` (rawValue matching the filename) at `defaultVolume: 0.3` (the
+requested ~30%) alongside the existing catalog.
+
+**`idle.wav` loops while the hook has no fish on it** — `HookPhase.idle` or `.hookInWater`, and
+`screen == .playing` — a state-specific ambient layer distinct from `ambienceLake` (the game-wide
+lake ambience, which also plays at the Main Menu per `FishingSounds.Config.ambiencePlaysInMenu`).
+`FishingSounds` gains `updateIdleLoop(active:)`, frame-driven, same pattern as the existing
+`updateReelLoop(active:)`; `WorldViewModel.tick()` computes the active condition and calls it
+every tick, since `FishingSounds` doesn't track `screen`/`hookPhase` itself. Belt-and-suspenders
+instant-stops in `handlePhaseChange(_:)` and `handleScreenChange(isPlaying:)`, mirroring the
+existing safety-stop pattern for `reelLoop`/`fishInterestedLoop`.
+
+**`reel_fight.wav` loops while a fish is actually hooked** (`HookPhase.fishOnHook`/`.reeling`),
+**fading out over 1.5s** rather than cutting instantly once the fight ends — by catch, escape, or
+line break alike. `FishingSounds` gains `updateReelFightLoop(active:)`, same frame-driven pattern,
+whose *stop* path calls a new `SoundManager.stopLoop(_:fadeDuration:)` overload
+(`AVAudioPlayer.setVolume(_:fadeDuration:)`, then an `async`-scheduled actual `.stop()` once the
+fade completes, restoring the player's volume for the next `startLoop`). The belt-and-suspenders
+safety stops in `handlePhaseChange(_:)`/`handleScreenChange(isPlaying:)` use the instant (no-fade)
+path deliberately — those cover abrupt resets ("End Fishing" mid-fight, disconnect), not the
+natural end-of-fight transition, which the frame-driven stop already fades on its own every tick.
+
+**Revision, same day: `reel_fight.wav` redefined from a star-gated flourish to fight music.**
+Originally landed (see this same ADR's first version) as a one-shot flourish for landing a 4+ star
+fish, layered on top of `catchSplash`. Reported directly, immediately after: "reel fight music
+harusnya hanya played ketika hook status nya ada fish. selama hook idle/inWater aja, play music
+idle. ketika berhasil catch fish, matikan perlahan music reel fight, dan kembali ke idle" — a
+complete redesign into a state-driven music pair (idle vs. fight), not a per-catch flourish. The
+star-based trigger (`FishFightController.lastCatchResult?.stars >= 4`) and the `bigCatch()`
+one-shot method were both removed outright, replaced by the loop/fade design described above.
+
+## Rationale
+
+Requested directly, across the original message and the same-day revision above. Both additions
+follow ADR-040's existing "World-side audio mirrors the Rod haptics router" architecture — a new
+`Sound` case plus thin `FishingSounds` methods — no new architectural pattern was needed beyond the
+fade-capable `stopLoop` overload, which is itself a narrow, backward-compatible addition (existing
+call sites default to `fadeDuration: 0`, identical to the prior instant-stop behavior).
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against the
+`arm64-apple-macosx26.0` `Shared` module; not yet played on a physical device. Unverified in
+particular: whether 30% lands at the intended perceived loudness, whether 1.5s reads as a
+deliberate fade rather than "the music lagged," and whether the loop start/stop timing feels
+seamless at hook-phase transition boundaries.
+
+------------------------------------------------------------------------
+
 # ADR-064 --- Onboarding Flow, Live Calibration Guidance in World, Calibration Available Any Time the Hook Is Idle
 
 ## Decision
@@ -1661,6 +1812,43 @@ direction. `basePullSpeed` `0.35` -> **`0.2625`**; `reelSpeed` `4.5` -> **`3.375
 floor `0.525` -> **`0.39375`**. Same reasoning as the pass above applies unchanged (both scale
 uniformly regardless of `resistance`), just compounded on top of the already-retuned values rather
 than the original ADR-039 defaults.
+
+**Same-day follow-up: fight-direction penalty eased, reel-in speed made tension-scaled
+risk/reward.** Two related requests: "kurangin pull dari state ketika 'Fish Pulling' terjadi" and
+"balance pull nya dengan cara: ketika hijau, 1 rotasi reel misalnya narik 0.5m/s, dan ketika ke
+merah reel distance nya naik jadi 1m/s gitu, jadi ada reward untuk player yang berani stay di red
+zone."
+
+*Fight-direction penalty halved.* "Fish pulling" is `LineTensionView`'s own label for the
+left/right juking sub-phase (ADR-053) — shown whenever `fightDirection != nil`. `FishFightConfig.
+fightDirectionPenalty` (the tension/sec penalty applied while not correctly countering the fish's
+current juke direction) `0.20` -> **`0.10`**. `fightDirectionCounterRelief` (the reward for
+countering correctly) is unchanged — only the punishment side was eased. No explicit percentage
+was given for this one; halved to match this session's own established retune magnitude, flagged
+as a first guess pending live feedback.
+
+*Reel-in speed now scales with tension, rewarding holding the danger zone.* Previously a flat
+`WorldViewModel.reelSpeed` constant multiplied every reel input regardless of `lineTension`. Now
+`FishFightController` gains a `reelPullSpeed` computed property: `config.reelPullSpeedSafe` (0.5
+m/s per full reel input) while `lineTension` is at/below `config.reelSpeedSafeTension` (0.7 —
+matches `LineTensionView`'s own `safeHigh`, the green zone's upper edge, though the two constants
+aren't code-shared, just numerically aligned), linearly interpolating up to
+`config.reelPullSpeedDanger` (1.0 m/s) once `lineTension` reaches `config.reelSpeedDangerTension`
+(0.85 — matches `LineTensionView`'s `dangerHigh`, the near-snap red edge). `WorldViewModel.
+reelHook(deltaTime:)` reads this in place of the flat constant **only while a fish is actually
+hooked** — `pullSpeedPerUnit = fishFight.hasFishOnHook ? fishFight.reelPullSpeed : reelSpeed`, so
+empty-line retrieves (no tension to manage) keep the old flat `reelSpeed` (3.375) unaffected. The
+minimum-guaranteed floor also dropped to a flat `0.1` (from `0.39375`), since the new 0.5-1.0 m/s
+range is itself much smaller than the old flat constant's 3.375 m/s ceiling — the old floor would
+have dominated almost the entire new range otherwise.
+
+**Same-day follow-up #2: 0.5/1.0 m/s was unplayably slow — retuned to 2.0/4.0 m/s.** Reported
+directly, immediately after trying it: "fish reel speed nya kekecilan, the gameplay is not even
+playable now. coba base nya 2 m/s instead of 0.5 - 1. dan dari 2 m/s di area green, naik jadi 4
+m/s di area merah." `reelPullSpeedSafe` `0.5 -> 2.0`, `reelPullSpeedDanger` `1.0 -> 4.0` — same 2x
+safe-to-danger ratio, both explicit numbers from the request. The interpolation thresholds
+(`reelSpeedSafeTension`/`reelSpeedDangerTension`, 0.7/0.85) are untouched; only the two speed
+endpoints moved.
 
 ## Rationale
 
