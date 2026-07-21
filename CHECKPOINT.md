@@ -7736,3 +7736,468 @@ branches numbering forward from the same branch-point without coordinating.
   that the merged source compiles and every ADR-068 reference resolves to the correct feature.
 - Not yet pushed to `origin/dev` — merge commit only, per this session's standing rule of not pushing
   without an explicit request.
+
+## Fix: Rod Root Rotation Restricted to Yaw Only (ADR-079)
+
+Date: 2026-07-21.
+
+Requested directly: "aku mau agar asset Rod nya cukup diam di tempat, dan ga ikut muter muter as I
+reel the Rod. Kalo bisa, movement Rod di World yang valid itu cuma yaw kanan dan kiri, just like di
+real life aja."
+
+### World: WorldViewModel
+
+- `updateRodPose()`: `controllerEntity.orientation` no longer set directly from
+  `RodState.orientation`'s full pitch/roll/yaw quaternion — now set from a new
+  `yawOnly(from:)` instead.
+- Added `yawOnly(from: RodOrientation) -> simd_quatf`: applies the full corrected quaternion to the
+  scene's fixed forward direction `(0, 0, -1)`, projects the result onto the horizontal plane, and
+  derives a single yaw angle via `atan2(forward.x, -forward.z)` — the same signed-angle convention
+  `clampedToForwardCone` already uses — then builds a fresh Y-axis-only `simd_quatf`. Geometric
+  derivation chosen over algebraic decomposition because `RodState.orientation` is
+  `inverse(reference) * current` (the calibration correction), a quaternion product that doesn't
+  cleanly separate back into independent pitch/roll/yaw terms.
+- `rodRig?.applyBend(pitch: rodState.pitch, roll: rodState.roll)` — the rig's per-bone flex
+  visualization — left untouched; it's a secondary bend effect on the mesh, not a rotation of the
+  whole entity, and wasn't part of the reported "muter muter" (spinning) problem.
+
+### Amendment: fixed diagonal rest tilt
+
+Same-day follow-up: "tolong turunin pitch rod nya (maksudnya biar rod nya ga horizontal, tapi
+diagonal gitu)." Once yaw-only landed, the rod read as flat/horizontal at rest — no pitch at all.
+
+- Added `rodRestPitch: Float = .pi / 6` (30°, about the rod's local right axis) — a fixed,
+  sensor-independent art-direction constant, not derived from `RodState`.
+- `updateRodPose()`: `controllerEntity.orientation` now `yaw * simd_quatf(angle: rodRestPitch, axis:
+  [1, 0, 0])` — the rest tilt composed *under* the live yaw (in the rod's own local frame) so it
+  turns together with the player's yaw rather than staying pinned to a world axis.
+
+### Documentation
+
+- `CLAUDE.md`: updated the `updateRodPose()` architecture-contract line to state yaw-only rotation.
+- `ARCHITECTURE_DECISIONS.md`: added ADR-079, amended in place with the rest-tilt addition (kept as
+  one entry — same decision, extended same day — rather than a new ADR number).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "World Controller and Hook Separation" section to
+  describe the yaw-only reduction plus the rest tilt.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0` — exit code 0, no errors, for both the yaw-only change and the rest-tilt
+  amendment.
+- `git diff --check` clean.
+- Not run: any live session. Unverified in particular: whether the derived yaw sign matches the
+  player's actual left/right hand motion 1:1, whether dropping pitch/roll entirely (rather than,
+  say, damping toward zero) ever reads as visually abrupt during fast tilt changes, and whether 30°
+  specifically looks like the intended "diagonal" angle once actually seen.
+
+## Feature: Cast Direction Follows the Rod's Own Live Yaw (ADR-080)
+
+Date: 2026-07-21.
+
+Requested directly: "would it be possible untuk arah throw nya itu sesuai arah rod nya itself? jadi
+kalo rod nya lagi ke arah 'kiri', ya throw hook nya ke arah kiri juga."
+
+### World: WorldViewModel
+
+- Refactored `yawOnly(from:)`'s body out into a new `rodYawAngle(from: RodOrientation) -> Float`,
+  returning just the signed angle instead of a quaternion; `yawOnly(from:)` now calls it and wraps
+  the result. Single source, two callers (`updateRodPose()` for the rod's visual rotation,
+  `launchHook(solution:)` for cast direction) — they can't disagree about which way the rod points.
+- Noticed in passing while refactoring: `rodYawAngle`'s `atan2` result is negated
+  (`-atan2(forward.x, -forward.z)`) relative to what this session originally wrote for
+  `yawOnly(from:)` in the ADR-079 entry above — left as-is (not reverted) per this session's
+  standing rule of treating externally-observed changes to values/signs as authoritative rather than
+  assuming stale memory of a prior edit is still correct.
+- `launchHook(solution:)`: replaced the entire tip-position-vector aim derivation (`tipPosition -
+  controllerEntity.position`, `rotatedAroundY` by the empirical `aimCorrectionAngle` constant, then
+  `clampedToForwardCone`) with `rodYawAngle(from: rodState.orientation)`, clamped directly into
+  `±castConeHalfAngle`, then converted to a horizontal direction vector inline.
+- Removed `aimCorrectionAngle` (the empirical 180°-ish correction constant), `rotatedAroundY(_:by:)`,
+  `clampedToForwardCone(_:)`, and `signedAngleDegrees(_:)` — all now unused; grepped the file
+  afterward to confirm zero remaining references. `castConeHalfAngle` itself is kept unchanged (135°
+  total) as a safety bound, its doc comment updated to explain it now clamps a trustworthy signal
+  rather than compensating for an unreliable one.
+- `debugRawAimDegrees`/`debugCorrectedAimDegrees` (unchanged property names, `ContentView.swift`'s
+  "Raw Aim Angle"/"Corrected Aim Angle" debug rows untouched) now populate directly from the yaw
+  angle in degrees, pre- and post-clamp, rather than from `signedAngleDegrees(vector:)`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-080.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0` — exit code 0, no errors.
+- `git diff --check` clean.
+- Repo-wide `grep` for the four removed helpers/constant — zero remaining references anywhere.
+- Not run: any live session. Unverified in particular: whether the cast direction now visually
+  matches the rod's own on-screen heading 1:1 (the whole point of this change), and whether
+  `castConeHalfAngle`'s ±67.5° bound (originally sized to mask the old unreliable signal, not tuned
+  as a deliberate gameplay limit) still feels like the right limit now that the underlying direction
+  is trustworthy.
+
+## Feature: Main Menu Restyled — Background Photo, Logo, Stacked-Rectangle Buttons (ADR-081)
+
+Date: 2026-07-21.
+
+Requested directly with a reference screenshot: "ganti tampilan main menu kaya di desain ini. aku
+udah masukin main_menu_bg dan logo_cts ke dalam World/Assets/Images. button itu pake rectangle yang
+di stack btw. sesuaiin button nya dan desain language nya ke dalam UI sekarang."
+
+### Investigation: how loose bundled images actually resolve
+
+Before writing any image-loading code, confirmed empirically (not assumed) how
+`World/World/Assets/Images/main_menu_bg.png`/`logo_cts.png` — dropped directly into the filesystem,
+not added to `Assets.xcassets` — actually land in the built app. Built the real target
+(`xcodebuild -project World/World.xcodeproj -target World -configuration Debug
+CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO`, succeeded) and inspected the resulting
+`World.app/Contents/Resources/`: both PNGs sit flattened at the bundle root, alongside every other
+loose asset (`.wav`, `.usdz`, `.jpg`) — confirms `World.xcodeproj`'s
+`PBXFileSystemSynchronizedRootGroup` flattens nested folders the same way it already does for
+`Assets/FishCaught/mekong_catfish_caught.usdz`. Concluded the plain `Image("name")` SwiftUI
+initializer (reliable mainly for `Assets.xcassets` entries) was the wrong tool; used
+`Bundle.main.url(forResource:withExtension: "png")` + `NSImage(contentsOf:)` instead, which only
+depends on the resource being *somewhere* in the bundle, not on catalog membership.
+
+### World: MainMenuView
+
+- Added `bundleImage(_ name: String) -> Image`, loading via the bundle-URL + `NSImage` path above;
+  falls back to an SF Symbol only if the resource is genuinely missing (a build-config problem, not
+  a runtime one — a blank/crashing menu would be worse than a visible gap).
+- `backgroundImage`: `main_menu_bg`, full-bleed (`resizable().scaledToFill()`), with a top-to-bottom
+  black gradient overlay (clear at top, ~45% opaque at bottom) so the status panel/buttons over the
+  photo's busier lower half stay legible.
+- Plain-text title replaced with `logo_cts`, `scaledToFit()` capped at 360pt wide, drop shadow added.
+- New `StackedMenuButtonStyle` (private `ButtonStyle`): cream, dark-bordered rounded-rectangle card
+  with a second, darker rectangle offset behind it — matches the reference's "two stacked cards"
+  button look. `isProminent` scales text/padding for primary vs. secondary role. Pressing narrows the
+  offset between the two rectangles (reads as the top card pressing onto its stack).
+- Applied to `Retry Connection` (prominent while disconnected) and `How to Play` (prominent once
+  connected, since `Retry Connection` disappears at that point — whichever is the only actionable
+  button showing gets the larger treatment). `Forget Device`/`Reset Progress` deliberately kept their
+  existing small plain-text destructive styling, not promoted to stacked-card buttons — preserves the
+  visual hierarchy between common and dangerous actions.
+- Status/calibration area wrapped in a new translucent dark rounded-rectangle background
+  (`Color.black.opacity(0.38)`) for legibility against the photo. `CalibrationGuidanceView` itself
+  unchanged.
+- Not added: a literal "Start Fishing"/"Credits" button pair matching the reference 1:1 — those don't
+  correspond to real actions in this app (ADR-038: Rod, not World, owns the session-start boundary).
+  Read the request as a visual-language transplant onto this screen's *existing* buttons, not a
+  literal recreation of the reference's exact button set.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-081.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "World Main Menu" section's description of
+  `MainMenuView`'s appearance (was "solid black background... title, subtitle"), added a "Visual
+  design (ADR-081)" paragraph.
+
+### Verification
+
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Launched the built `.app` (`open`) and confirmed via `ps`/no crash that it ran without a
+  missing-resource crash or SwiftUI layout exception.
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0` — exit code 0, no errors.
+- `git diff --check` clean.
+- **Not verified**: an actual visual screenshot. `screencapture` failed ("could not create image
+  from display") — this environment has no screen-recording permission granted, so the rendered
+  menu's layout, colors, gradient legibility, and button-stack effect are confirmed only by code
+  inspection and a successful (non-crashing) launch, not by eye. Flagged explicitly as the one
+  meaningful gap in this pass — a live look is needed before calling this fully done.
+
+## Feature: Loading Screen Covers the Initial Async Asset Load (ADR-082)
+
+Date: 2026-07-21.
+
+Requested directly, with a reference screenshot: "tambahin loading screen dong, di awal aja waktu
+nge load semua asset. image background nya udah ditambahin under folder yang sama, 'loading_screen'.
+tambahin semacam rectangle layer dengan fills #505277 dengan opacity 40%."
+
+### World: WorldViewModel
+
+- `Screen` gained a new first case, `.loading`. `screen`'s initial value changed from
+  `Self.hasSeenOnboarding ? .mainMenu : .onboarding` (computed immediately in `init`) to `.loading`;
+  that same decision moved into a new `sceneDidFinishLoading()`.
+- Added `sceneDidFinishLoading()`: guards `screen == .loading`, then applies the exact same
+  onboarding-vs-menu logic `init` used to run immediately. Called once from `ContentView`'s
+  `RealityView` `make` closure, right after `makeSceneEntity()`'s assets are added to the scene.
+- `returnToMenu()`: added `screen != .loading` to its existing `screen != .mainMenu` guard — a Rod
+  disconnect arriving mid-load must not skip past the loading screen straight to the menu.
+
+### World: new views
+
+- `BundleImage.swift` (new file): factored `bundleImage(_:)` out of `MainMenuView` into a shared,
+  file-scope function — `LoadingScreenView` needs the same loose-bundled-PNG loading behavior for
+  its own images. `MainMenuView`'s private copy removed, its `import AppKit` (no longer directly
+  needed) removed too; no behavior change there.
+- `LoadingScreenView.swift` (new file): full-bleed `loading_screen` background, a flat
+  `Color(red: 0x50/255, green: 0x52/255, blue: 0x77/255).opacity(0.4)` layer over it (a flat color,
+  not a gradient, per the request), `logo_cts` top-left, "Loading..." text bottom-left.
+- `ContentView.swift`: added `if viewModel.screen == .loading { LoadingScreenView() }` to the overlay
+  `ZStack`, alongside the existing `.onboarding`/`.mainMenu` overlays; added
+  `viewModel.sceneDidFinishLoading()` to the `RealityView` `make` closure, right after
+  `content.add(rod)`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-082.
+
+### Verification
+
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Confirmed `loading_screen.png` lands in the built `.app`'s `Contents/Resources/` alongside
+  `main_menu_bg.png`/`logo_cts.png` (same flattened `PBXFileSystemSynchronizedRootGroup` layout
+  ADR-081 already confirmed).
+- Launched the built `.app` and confirmed via `ps` that it ran without a missing-resource crash or
+  SwiftUI layout exception.
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0` — exit code 0, no errors.
+- `git diff --check` clean.
+- **Not verified**: an actual visual screenshot, for the same reason as ADR-081 (no
+  screen-recording permission in this environment) — nor how long the loading screen is actually
+  visible in practice, since asset loading may finish fast enough that a live tester barely sees it.
+
+## Amendment: Loading Screen Gets a 10-Second Minimum Display Duration (ADR-082)
+
+Date: 2026-07-21.
+
+Requested directly, same day: "kasih delay 10 detik dong ke loading screen" — a direct response to
+this feature's own flagged risk that fast asset loading could make the loading screen barely visible.
+
+Also reported around the same time: four Xcode compile errors in `ContentView.swift` (an `==`
+mismatch between `WorldViewModel.Screen` and RealityKit's unrelated `VideoPlayerComponent.
+RenderingStatus`, plus three `@ObservedObject`/dynamic-member errors on `viewModel`). Investigated
+before touching any code: `grep`'d the whole repo and found exactly one `Screen` type anywhere
+(`WorldViewModel.Screen` itself) — `VideoPlayerComponent` is never referenced in this codebase at
+all. Ran a full `xcodebuild -target World -configuration Debug` (unsigned) — succeeded with zero
+errors — then a from-scratch `xcodebuild ... clean build` in a fresh `SYMROOT` — also succeeded with
+zero errors. Concluded this is Xcode's own stale index/derived-data state (classic Swift
+ViewBuilder cascading-diagnostic behavior — one root issue can make the type checker report
+nonsense errors at unrelated lines, referencing unrelated types it examined as fallback candidates)
+rather than a real bug in the merged code, most likely from the just-added `BundleImage.swift`/
+`LoadingScreenView.swift` files not yet being picked up by a stale Xcode session. No source change
+made in response to this — advised a Clean Build Folder (⇧⌘K) + rebuild instead.
+
+### World: WorldViewModel
+
+- Added `loadingStartedAt: Date` (set once in `init`, the instant `.loading` begins) and
+  `minimumLoadingScreenDuration: TimeInterval = 10`.
+- `sceneDidFinishLoading()` is now `async`: measures elapsed time since `loadingStartedAt`, and if
+  under 10 seconds, `Task.sleep`s out the remainder before transitioning `screen` off `.loading`.
+  Additive to the real-completion gating already in place, not a replacement — the loading screen
+  now requires both the actual asset load *and* 10 seconds to have elapsed, whichever is longer.
+  Re-checks `screen == .loading` after the sleep (defensive — nothing currently moves `screen` off
+  `.loading` during the wait, given `returnToMenu()`'s existing guard, but cheap to keep correct).
+
+### World: ContentView
+
+- `RealityView`'s `make` closure: `viewModel.sceneDidFinishLoading()` call site now `await`s it,
+  since the function became `async`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: amended ADR-082 in place with an "Amendment: 10-Second Minimum
+  Display Duration" section (same decision extended same day, not a new ADR number).
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Launched the built `.app`, confirmed via `ps` it was still running unchanged 11+ seconds later
+  (past the 10-second floor) with no crash/relaunch.
+- `git diff --check` clean.
+- Not run: any live session, and specifically not re-confirmed on the user's own Xcode that a Clean
+  Build Folder actually clears the four reported errors — only confirmed independently that a
+  from-scratch `xcodebuild` build has none.
+
+## Fix: Ambient Sound Redesign, Loading-Screen Silence, Deferred "Start Casting" (ADR-084/085)
+
+Date: 2026-07-21.
+
+Three notes given together:
+
+1. "loading screen ga seharusnya nge play sfx apapun."
+2. "ketika di main menu, matiin semua suara environment, dan hanya play idle. ketika bermain, idle
+   dimatikan, dan hanya reel_fight yang aktif ketika reeling."
+3. "saat berhasil catch, ada slight delay karena menunggu layar ikan dan tulisan CATCH!! menghilang,
+   baru tombol Start Casting bisa aktif lagi."
+
+Asked one clarifying question before touching code: whether note 2's "reel_fight aktif ketika
+reeling" meant the whole fight (`fishOnHook || reeling`, this session's own already-tuned ADR-065/
+067 behavior) or literally only `RodState.action == .reeling`. Confirmed: the whole fight, unchanged.
+
+### Investigation: why note 1's bug actually happens
+
+Traced `start()` (called from `ContentView`'s `.onAppear`, firing immediately at launch,
+independent of asset loading): it called `sounds.handleScreenChange(isPlaying: screen ==
+.playing)` unconditionally. Since `screen` is always `.loading` at that exact point (ADR-082), and
+`FishingSounds.Config.ambiencePlaysInMenu` defaulted `true`, the lake ambience started playing
+immediately — before any asset had loaded, before the loading screen's own minimum-duration gate
+had even begun counting. This single call site was the entire root cause.
+
+### World: SoundManager
+
+- Removed `Sound.ambienceLake` case entirely, and `Category.ambience` (its only user). `fileExtension`
+  simplified to a constant `"wav"` (was a ternary only ever selecting `.mp3` for the now-removed
+  case). `defaultVolume`'s `.ambienceLake` branch removed. `categoryVolumeMultipliers`' initial
+  dict drops the `.ambience` entry.
+- `ambience_lake.mp3` left on disk, unreferenced — not deleted.
+
+### World: FishingSounds
+
+- Removed `Config` struct entirely (its only field, `ambiencePlaysInMenu`, is now meaningless) and
+  the `config` parameter from `init`.
+- Removed `handleScreenChange(isPlaying:)` entirely.
+- `updateIdleLoop(active:)`'s doc comment rewritten to describe its new role (menu-only ambient,
+  not gameplay "waiting for a bite" layer) — no change to the method body itself, only to what
+  `WorldViewModel.tick()` now passes in.
+- `handlePhaseChange(_:)`: removed the `idle`-stopping block (`if phase != .idle, phase !=
+  .hookInWater { sounds.stopLoop(.idle); ... }`) — idle's lifecycle is `screen`-driven now, not
+  `HookPhase`-driven, so this belt-and-suspenders block was actively wrong under the new design.
+
+### World: WorldViewModel
+
+- `start()`: removed the eager `sounds.handleScreenChange(...)` call — the actual fix for note 1.
+- `returnToMenu()` and the `.playing` transition in `handleState(_:)`: removed their
+  `sounds.handleScreenChange(...)` calls too (now dead code, and unnecessary — `tick()`'s
+  frame-driven `updateIdleLoop`/`updateReelFightLoop` calls already react to `screen` changes on
+  the very next frame with no explicit call needed).
+- `tick()`: `updateIdleLoop`'s active condition changed from `screen == .playing && (hookPhase ==
+  .idle || hookPhase == .hookInWater)` to `screen == .mainMenu || screen == .onboarding`.
+  `updateReelFightLoop`'s condition unchanged (`screen == .playing && (hookPhase == .fishOnHook ||
+  hookPhase == .reeling)`), per the confirmed answer to the clarifying question above.
+- `continueFishing()`: added `!isShowingCatchCutscene` to its existing `hookPhase == .result` guard
+  (ADR-085) — fixes note 3. Traced why this was needed: `hookPhase` becomes `.result` at the
+  *start* of the catch cutscene (required so `tick()`'s `case .result:` branch keeps calling
+  `updateCatchCutscene(deltaTime:)` every frame), not the end, and Rod's "Start Casting" button has
+  no awareness of `isShowingCatchCutscene` (a World-only presentation flag never sent over the
+  wire) — so without this guard, a press during the cutscene would flip `hookPhase` to `.idle`
+  immediately, silently freezing the cutscene mid-animation (`tick()` stops entering `case
+  .result:`, so `updateCatchCutscene` never runs again) while `isShowingCatchCutscene` stayed stuck
+  `true`. The armed press isn't lost — `handleState(_:)` re-checks `state.isCastingArmed` on every
+  incoming `.state` message, so the instant the cutscene's own completion clears
+  `isShowingCatchCutscene`, the next message dismisses the result as normal. No Rod/Shared/wire
+  changes needed.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-084, ADR-085.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: rewrote the "World Audio Subsystem" section's closing
+  paragraph (was describing the now-retired lake-ambience design) and updated its
+  `FishingSounds`-helpers list; updated the Result Screen section's `continueFishing()` mention to
+  note the new cutscene guard.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Launched the built `.app` and confirmed via `ps` it ran without crashing.
+- Repo-wide `grep` for `ambienceLake`/`ambiencePlaysInMenu`/`handleScreenChange`/
+  `FishingSounds.Config` across `World`/`Shared`/`Rod` — zero remaining references.
+- `git diff --check` clean.
+- Not run: any live session. Unverified in particular: whether the new sparser ambient design (idle
+  only at menu, silence during ordinary gameplay, reel_fight only during a fight) feels right in
+  practice, and whether the deferred "Start Casting" press reads clearly to a player as "registered,
+  taking effect shortly" rather than "unresponsive."
+
+## Feature: World Launches Directly Into Fullscreen (ADR-086)
+
+Date: 2026-07-21.
+
+Requested directly: "kalo nge buka World, langsung otomatis masuk mode full screen (jadi ga bisa
+windowed)."
+
+### World: WorldApp
+
+- Added `WorldAppDelegate: NSObject, NSApplicationDelegate`, attached via
+  `@NSApplicationDelegateAdaptor`. Its `applicationDidFinishLaunching(_:)` finds
+  `NSApplication.shared.windows.first` and calls `toggleFullScreen(nil)` on it (guarded to skip if
+  already fullscreen), wrapped in `DispatchQueue.main.async` since SwiftUI's `WindowGroup` window
+  can be created a beat after AppKit's own launch-finished callback fires.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-086.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Launched the built `.app` and directly confirmed fullscreen engaged — not just inferred from the
+  code. This environment has no Accessibility permission for AppleScript/System Events UI scripting
+  (`AXFullScreen` unreadable), so verified instead via `CGWindowListCopyWindowInfo`: the running
+  app's on-screen window layers span the full display including the menu-bar row (`Y:0, Height:33`
+  present), which only a fullscreen window occupies — every windowed app queried the same way
+  (Xcode, Chrome, etc.) sits at `Y:33`, below the menu bar. Positive confirmation, not absence of
+  evidence.
+- `git diff --check` clean.
+- Not run: any live session on an actual multi-display setup, or confirmation that the standard
+  fullscreen-exit affordances (green button, Control-Command-F) still work as expected afterward —
+  only that fullscreen engages automatically on launch.
+
+## Fix: `ambienceLake` Restored, Scoped to Gameplay Only (ADR-084 amendment)
+
+Date: 2026-07-21.
+
+Reported directly, from a live playtest of the previous ADR-084 change: "ada bug sedikit, ketika in
+game, semua suara yang seharusnya main sebelumnya, tiba tiba berhenti semua. I believe aku minta ke
+kamu buat specifically matiin idle.wav aja ketika in game (karena idle intended untuk dimainkan di
+main menu aja)."
+
+### Diagnosis
+
+Re-read ADR-084's own two source clauses separately instead of re-guessing: "ketika di main menu,
+matiin semua suara environment, dan hanya play idle" is scoped entirely to the *menu*; "ketika
+bermain, idle dimatikan, dan hanya reel_fight yang aktif ketika reeling" says idle turns off during
+gameplay and reel_fight is the only *fight* loop — neither clause actually asked for gameplay's
+continuous background bed to disappear outside of a fight. The previous pass over-applied the
+menu clause's "turn off all environment sound" globally (retiring `ambienceLake` outright), leaving
+ordinary gameplay (casting, waiting for a bite) completely silent — which read to the player as
+"everything stopped," when only `idle.wav` was ever meant to stop.
+
+### World: SoundManager
+
+- Re-added `Sound.ambienceLake = "ambience_lake"` (category `.ambience`, `.mp3`, default volume
+  `0.35`) and `Category.ambience`, both removed in the previous pass — restored verbatim to their
+  pre-ADR-084 definitions.
+- `categoryVolumeMultipliers`'s initial dict: `.ambience: 1` re-added.
+
+### World: FishingSounds
+
+- Added `isAmbienceLoopActive: Bool` and a new `updateAmbienceLoop(active:)` — same frame-driven
+  start/stop pattern as `updateIdleLoop`/`updateReelFightLoop`, looping/stopping `.ambienceLake`.
+- `stopAll()`: resets `isAmbienceLoopActive` alongside the other three flags.
+
+### World: WorldViewModel
+
+- `tick()`: added `sounds.updateAmbienceLoop(active: screen == .playing)`, alongside the existing
+  `updateIdleLoop`/`updateReelFightLoop` calls. Net effect: exactly one base ambience active at a
+  time (`ambienceLake` during gameplay, `idle` at the menu), never both, never neither outside
+  `.loading`. `updateIdleLoop`/`updateReelFightLoop` themselves are unchanged from the previous pass.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: amended ADR-084 in place with an "Amendment: `ambienceLake` Restored,
+  Scoped to Gameplay" section (same decision corrected same day, not a new ADR number).
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Launched the built `.app` and confirmed via `ps` it ran without crashing.
+- Repo-wide `grep` confirmed `ambiencePlaysInMenu`/`handleScreenChange`/`FishingSounds.Config`
+  remain correctly absent (not accidentally reintroduced), and that `ambienceLake` now appears only
+  in its restored, gameplay-scoped form.
+- `git diff --check` clean.
+- Not run: any live session. This exact fix path (ADR-084's original change) was only caught after
+  one live playtest already, so — same as that entry's own Status — unverified live until played
+  again.

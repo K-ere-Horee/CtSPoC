@@ -28,8 +28,13 @@ final class SoundManager {
         case fishBite = "fish_bite"
         case reelLoop = "reel_loop"
         case catchSplash = "catch_splash"
+        /// Loops while `WorldViewModel.screen == .playing` (ADR-084/amendment) — gameplay's
+        /// continuous background bed, alongside `reelFight` during an actual fight. See
+        /// `FishingSounds.updateAmbienceLoop(active:)`.
         case ambienceLake = "ambience_lake"
-        /// Loops while the hook has no fish on it (`HookPhase.idle`/`.hookInWater`) — see
+        /// Loops while `WorldViewModel.screen` is `.mainMenu`/`.onboarding` (ADR-084) — the menu's
+        /// own ambient loop, replacing `ambienceLake` there specifically (menu and gameplay each
+        /// have exactly one base ambience, never both, never neither). See
         /// `FishingSounds.updateIdleLoop(active:)`.
         case idle = "idle"
         /// Loops while a fish is actually hooked (`HookPhase.fishOnHook`/`.reeling`), fading out

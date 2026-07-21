@@ -359,8 +359,14 @@ and move only the hook entity for cast motion.
 ## World Controller and Hook Separation
 
 `WorldViewModel.updateRodPose()` is controller-only. It applies a fixed
-camera-relative `controllerOffset` and the corrected `RodState.orientation`.
-It does not inspect cast direction, cast distance, or hook phase.
+camera-relative `controllerOffset` and, as of ADR-079, only the yaw component
+of the corrected `RodState.orientation` — reduced via `yawOnly(from:)`, which
+derives a single Y-axis rotation from the full quaternion's effect on the
+scene's fixed forward direction rather than applying pitch/roll/yaw wholesale,
+so the rod root turns left/right but never tumbles. A fixed `rodRestPitch`
+(30°, sensor-independent) is composed under that live yaw so the rod reads as
+diagonally held rather than flat horizontal. It does not inspect cast
+direction, cast distance, or hook phase.
 
 **Nearby Interaction's spatial distance/direction are not read here, or
 anywhere else in gameplay (ADR-041).** Rod still owns and runs the NI session
@@ -383,47 +389,39 @@ phases.
 **Launch heading comes from live rig geometry, not `CastSolution.direction`
 (ADR-033).** `CastResolver` (Shared) computes `direction` by rotating a
 fixed, mesh-agnostic reference vector — Shared has no knowledge of whatever
-rig World happens to render, and must not. World's rendered rig can (and,
-across the asset-integration merge, did) have a completely different local
-"tip" axis than that reference assumes, which silently misaims every cast by
-a fixed offset. `WorldViewModel.launchHook(solution:)` therefore derives the
-horizontal launch heading itself, live, from
-`tipEntity.position(relativeTo: nil) - controllerEntity.position` at the
-moment of launch — correct by construction, since it's just "wherever the
-rendered tip currently is relative to the fixed rod root," independent of
-any particular rig's rest-pose axis convention. Only the heading is
-re-derived this way; `solution.power`, `launchAngle`, and `distance` still
-come from `CastSolution` unchanged.
+rig World happens to render, and must not. `solution.power`, `launchAngle`,
+and `distance` come from `CastSolution` unchanged; only the horizontal
+heading is re-derived in World.
 
-**Launch heading is clamped to a forward cone (ADR-034).** Whatever
-horizontal heading the derivation above produces, `launchHook(solution:)`
-clamps it into `castConeHalfAngle` (67.5°, i.e. a 135° total cone) of the
-camera's fixed forward direction *at launch time* before using it — the
-launch computation itself always uses the constant `(0, 0, -1)` reference
-regardless of the camera's live orientation, so `atan2(direction.x,
--direction.z)` giving the signed angle from straight ahead is safe even
-though the camera can move afterward (see below). This is a deliberate
-outcome guarantee independent of whether the upstream aim derivation is
-fully correct — a cast can never land behind or far to the side of the
-player, regardless of rig geometry quirks.
+**Launch heading now follows the rod's own live yaw, not a rendered-tip
+vector (ADR-080).** Two earlier approaches both proved unreliable enough to
+need active correction: rotating `CastVector3.forward` by `solution.direction`
+silently misaimed by a fixed offset whenever World's rig used a different
+local "tip" axis than Shared's reference assumed (ADR-033), and the
+tip-position-vector fix that replaced it (`tipEntity.position(relativeTo:
+nil) - controllerEntity.position`, ADR-033/034) needed an empirical,
+undiagnosed 180°-ish correction constant (`aimCorrectionAngle`) just to point
+roughly the right way — live testing had measured its raw bias at -174°, not
+a clean inversion. ADR-079 removed the actual root cause: the rod's visual
+rotation is now driven by a single exact value, `rodYawAngle(from:
+rodState.orientation)`, with no rig geometry, bone chains, or rest-pose
+conventions involved at all. `launchHook(solution:)` now reads that same
+value directly for cast direction — `tipPosition`, `rotatedAroundY`,
+`clampedToForwardCone`, `signedAngleDegrees`, and `aimCorrectionAngle` are
+all gone. Because `updateRodPose()` (the rod players see) and
+`launchHook(solution:)` (where the hook actually flies) now read the
+identical angle, the two are structurally guaranteed to agree — "rod points
+left, hook flies left" is no longer a tuned approximation.
 
-**`aimCorrectionAngle` rotates the raw aim before clamping (ADR-034).**
-Live testing (via the camera-follow debug aid below) showed the raw
-rig-derived aim consistently biased left of the player's true intended
-heading — every cast was landing outside the cone and pinning at its
-left edge, which also explained a sharp, consistent drop in cast
-distance versus before the clamp existed. `rotatedAroundY(_:by:)` applies
-a simple Y-axis rotation to `rawHorizontal` before it reaches
-`clampedToForwardCone`, so the corrected heading falls inside the cone
-as intended rather than constantly hitting its boundary. An initial 90°
-guess (from the symptom alone) still landed pinned at the cone boundary,
-which a clamped landing coordinate can't diagnose further — a dedicated
-debug angle readout (`debugRawAimDegrees`/`debugCorrectedAimDegrees`,
-unclamped, exposed below the clamp) measured the true raw bias at
-**-174°**, close to a full inversion rather than a quarter turn.
-`aimCorrectionAngle` is now `.pi` (180°) — a single tunable constant,
-still empirical rather than derived from rig geometry, with a small ~6°
-residual pending the next live reading.
+**Launch heading is still clamped to a forward cone (ADR-034, retained by
+ADR-080).** `launchHook(solution:)` clamps the rod's yaw angle into
+`castConeHalfAngle` (67.5°, i.e. a 135° total cone) around the camera's fixed
+forward direction before converting it to a launch vector — a player swinging
+the rod hard to one side still can't cast directly behind themselves. The
+clamp's purpose changed with ADR-080, though: it no longer compensates for an
+unreliable upstream signal (there isn't one anymore), it's a deliberate
+gameplay bound on an otherwise-trustworthy direction — worth revisiting on its
+own terms now that the signal it clamps is no longer noisy.
 
 **Camera follows the hook.** `WorldViewModel.updateCameraFollow()`,
 called every `tick()`, swings `playerCamera` to trail behind/above the
@@ -1103,8 +1101,10 @@ motion sample, reusing the same recurring callback that drives
 `reelHook()`'s catch path (`resolveCatch()` then `.result` instead of
 `.idle`), and excluded from both `allowsCasting` and `allowsReeling` so a
 physical cast can't race the result screen off-screen before the player
-sees it. `WorldViewModel.continueFishing()` (guarded to
-`hookPhase == .result`) is the only way back to `.idle`. Originally called
+sees it. `WorldViewModel.continueFishing()` (guarded to `hookPhase == .result` and, as of ADR-085,
+also `!isShowingCatchCutscene` — an armed press arriving mid-cutscene is deferred, not dropped,
+taking effect the instant the cutscene's own completion clears that flag) is the only way back to
+`.idle`. Originally called
 by `World/World/Views/ResultView.swift`'s own "Continue Fishing" button;
 ADR-061 (see below) later removed that button in favor of Rod's "Start
 Casting" driving the same dismissal, so `ResultView` no longer owns any
@@ -1313,12 +1313,24 @@ dock/water/terrain/rod-rig assets).
 ```
 
 **Screen transitions are Rod-driven, not World-button-driven, as of ADR-038** — see that ADR and
-its own section below for the full design. `World/World/Views/MainMenuView.swift`: title,
-subtitle, a status row reflecting every `ConnectionState` case, and (ADR-061) a "Retry Connection"
-button shown only while not yet connected — the one button this screen owns that isn't gameplay
-session control (alongside "Forget Device"/"Reset Progress", both likewise unrelated to the
-ADR-038 session boundary); solid black background, deliberately opaque so gameplay never visibly
-renders through the title screen.
+its own section below for the full design. `World/World/Views/MainMenuView.swift`: a logo mark, a
+status row reflecting every `ConnectionState` case, and (ADR-061) a "Retry Connection" button
+shown only while not yet connected — the one button this screen owns that isn't gameplay session
+control (alongside "Forget Device"/"Reset Progress", both likewise unrelated to the ADR-038
+session boundary). Deliberately opaque (a full-bleed background photo, not translucent) so gameplay
+never visibly renders through the title screen.
+
+**Visual design (ADR-081).** Restyled from a plain black screen with plain-text title to a
+full-bleed background photo (`main_menu_bg`) and logo image (`logo_cts`), both loose bundled
+resources loaded via a `bundleImage(_:)` helper (`NSImage(contentsOf:)` from a `Bundle.main.url
+(forResource:withExtension:)` lookup) rather than the plain `Image("name")` initializer — confirmed
+by building the target that `World.xcodeproj`'s `PBXFileSystemSynchronizedRootGroup` flattens loose
+files straight into the bundle's `Resources/` root, which the bare string-literal `Image` initializer
+doesn't reliably resolve outside `Assets.xcassets`. Actionable buttons (`Retry Connection`, `How to
+Play`) use a new `StackedMenuButtonStyle` — a cream, dark-bordered card with a second, darker
+rectangle offset behind it, reading as two stacked cards — matching a supplied reference design's
+"Start Fishing"/"Credits" button treatment. The calibration/status area gained a translucent dark
+card background for legibility against the photo; `CalibrationGuidanceView` itself is unchanged.
 
 Rod is never disconnected by returning to the menu — `content`'s transport lifecycle
 (`.onAppear`/`.onDisappear`) is tied to `ContentView`'s own lifetime, not to `screen`, so the
@@ -1501,8 +1513,8 @@ layer (`Rod/Rod/Haptics/HapticManager.swift` + `FishingHaptics.swift`):
     `AVAudioPlayer` per `Sound` case (`prepareToPlay()` at init to avoid a first-play hitch), with
     `play`/`startLoop`/`stopLoop`/`stopAllLoops`/`setVolume` primitives.
 -   `FishingSounds` — the event router, one `handle(_ event: FishingEvent)` switch plus loop
-    lifecycle helpers (`updateReelLoop`, `handlePhaseChange`, `handleScreenChange`, `stopAll`),
-    same shape as `FishingHaptics.handle(_:)`.
+    lifecycle helpers (`updateReelLoop`, `updateIdleLoop`, `updateReelFightLoop`,
+    `handlePhaseChange`, `stopAll`), same shape as `FishingHaptics.handle(_:)`.
 
 Sound is presentation and stays out of `Shared` and off the transport. `WorldViewModel` owns a
 `let sounds: FishingSounds` and funnels every World-emitted `FishingEvent` through one point so
@@ -1529,6 +1541,15 @@ so `launchHook(solution:)` calls `sounds.castLaunched()` directly. The reel loop
 tick from `rodState.action`/`hookPhase` rather than from an event, so an empty-line retrieve
 during `.hookInWater` (no fish on hook yet) still sounds, not just a fish fight. `setHookPhase(_:)`
 calls `sounds.handlePhaseChange(_:)` on every transition as a belt-and-suspenders stop for stale
-loops, mirroring `FishingHaptics.stopInterest()`/`stopFight()`. A looping lake ambience track
-plays across both the main menu and gameplay (`FishingSounds.Config.ambiencePlaysInMenu`),
-started from `start()`/screen transitions and stopped only in `WorldViewModel.stop()`.
+loops, mirroring `FishingHaptics.stopInterest()`/`stopFight()`.
+
+**Ambient loops, redesigned (ADR-084): exactly one active at a time, purely `screen`/`hookPhase`
+driven, never during `.loading`.** The original separate lake-ambience track (always playing,
+across menu and gameplay both) is retired entirely. `idle` is now the Main Menu/Onboarding's only
+ambient sound (`WorldViewModel.tick()`: `sounds.updateIdleLoop(active: screen == .mainMenu ||
+screen == .onboarding)`) — silent during both `.loading` and `.playing`. `reelFight` is unchanged,
+active only while a fish is hooked during gameplay (`screen == .playing && (hookPhase ==
+.fishOnHook || hookPhase == .reeling)`). Both are purely frame-driven from `tick()`, which itself
+only starts once `attachFrameLoop(to:)` subscribes — after `makeSceneEntity()`'s async asset load
+finishes — so no loop can start during `.loading` even transiently; there is no longer a separate
+`start()`/screen-transition call path that could race ahead of that.

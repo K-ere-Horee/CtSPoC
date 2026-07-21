@@ -14,12 +14,6 @@ import Shared
 @MainActor
 final class FishingSounds {
 
-    struct Config {
-        /// User decision (ADR-040): the lake ambience plays continuously across the main menu and
-        /// gameplay rather than starting only once a session begins.
-        var ambiencePlaysInMenu: Bool = true
-    }
-
     /// Seconds `reelFight` takes to fade out once a fight ends (catch, escape, or line break) —
     /// "matikan perlahan music reel fight" (fade the reel-fight music out gently, not an instant
     /// cut). Applied only by `updateReelFightLoop(active:)`'s own natural stop, not the
@@ -28,14 +22,13 @@ final class FishingSounds {
     private static let reelFightFadeDuration: TimeInterval = 1.5
 
     private let sounds: SoundManager
-    private let config: Config
     private var isReelLoopActive = false
+    private var isAmbienceLoopActive = false
     private var isIdleLoopActive = false
     private var isReelFightLoopActive = false
 
-    init(sounds: SoundManager, config: Config = Config()) {
+    init(sounds: SoundManager) {
         self.sounds = sounds
-        self.config = config
     }
 
     /// Mirrors `FishingHaptics.handle(_:)`. `.cast` and `.reelTick` are Rod-local events World
@@ -96,12 +89,26 @@ final class FishingSounds {
         }
     }
 
-    /// Loops `idle.wav` while the hook has no fish on it (`HookPhase.idle`/`.hookInWater`) — a
-    /// state-specific ambient layer distinct from the game-wide lake ambience (`ambienceLake`,
-    /// which also plays at the Main Menu, per `Config.ambiencePlaysInMenu`). Frame-driven, same
+    /// Loops `ambience_lake.mp3` while `WorldViewModel.screen == .playing` (ADR-084 amendment) —
+    /// gameplay's continuous background bed, alongside `reelFight` during an actual fight. Silent
+    /// during `.loading` and at the Main Menu/Onboarding, where `idle` plays instead — the two
+    /// never overlap and one of them is always active whenever the other isn't. Frame-driven, same
+    /// pattern as `updateReelLoop(active:)`.
+    func updateAmbienceLoop(active: Bool) {
+        guard active != isAmbienceLoopActive else { return }
+        isAmbienceLoopActive = active
+        if active {
+            sounds.startLoop(.ambienceLake)
+        } else {
+            sounds.stopLoop(.ambienceLake)
+        }
+    }
+
+    /// Loops `idle.wav` while `WorldViewModel.screen` is `.mainMenu`/`.onboarding` (ADR-084) — the
+    /// menu's own ambient sound, replacing `ambienceLake` there specifically. Also silent during
+    /// `.loading` and `.playing`, by the same active-condition computation. Frame-driven, same
     /// pattern as `updateReelLoop(active:)`; `WorldViewModel.tick()` computes the active condition
-    /// (`screen == .playing && (hookPhase == .idle || hookPhase == .hookInWater)`) since this
-    /// class doesn't track `screen`/`hookPhase` itself.
+    /// since this class doesn't track `screen` itself.
     func updateIdleLoop(active: Bool) {
         guard active != isIdleLoopActive else { return }
         isIdleLoopActive = active
@@ -130,6 +137,9 @@ final class FishingSounds {
     /// Belt-and-suspenders safety stop, mirroring `FishingHaptics.stopInterest()`/`stopFight()`:
     /// called from `setHookPhase(_:)` so a stale bubble/reel loop can never survive a phase
     /// transition, however it happened (recast, catch, escape, "End Fishing," disconnect fail-safe).
+    /// `idle` is deliberately not touched here (ADR-084) — its lifecycle is purely `screen`-driven
+    /// via `updateIdleLoop(active:)`, not `HookPhase`-driven, so a phase transition alone should
+    /// never start or stop it.
     func handlePhaseChange(_ phase: HookPhase) {
         if phase != .hookInWater {
             sounds.stopLoop(.fishInterestedLoop)
@@ -137,10 +147,6 @@ final class FishingSounds {
         if phase != .hookInWater, phase != .fishOnHook, phase != .reeling {
             sounds.stopLoop(.reelLoop)
             isReelLoopActive = false
-        }
-        if phase != .idle, phase != .hookInWater {
-            sounds.stopLoop(.idle)
-            isIdleLoopActive = false
         }
         if phase != .fishOnHook, phase != .reeling {
             // Instant stop here, not the fade — this is the abrupt-reset safety net (recast,
@@ -151,27 +157,10 @@ final class FishingSounds {
         }
     }
 
-    /// Starts/stops the lake ambience loop as `WorldViewModel.screen` changes, per `Config`. Also
-    /// stops the idle/reel-fight loops on returning to the Main Menu — belt-and-suspenders
-    /// alongside their own frame-driven stops, since both are gameplay-only.
-    func handleScreenChange(isPlaying: Bool) {
-        let shouldPlay = isPlaying || config.ambiencePlaysInMenu
-        if shouldPlay {
-            sounds.startLoop(.ambienceLake)
-        } else {
-            sounds.stopLoop(.ambienceLake)
-        }
-        if !isPlaying {
-            sounds.stopLoop(.idle)
-            isIdleLoopActive = false
-            sounds.stopLoop(.reelFight)
-            isReelFightLoopActive = false
-        }
-    }
-
     func stopAll() {
         sounds.stopAllLoops()
         isReelLoopActive = false
+        isAmbienceLoopActive = false
         isIdleLoopActive = false
         isReelFightLoopActive = false
     }
