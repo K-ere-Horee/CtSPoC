@@ -37,6 +37,10 @@ public struct RodState: Codable, Sendable, Equatable {
     /// specifically, auto-dismissing the result screen the instant the player arms a new cast
     /// instead of requiring a separate "Continue Fishing" tap on World first.
     public let isCastingArmed: Bool
+    /// Live motion-calibration step (ADR-064), transmitted so World can render calibration
+    /// guidance itself instead of that instruction text living only on Rod — see
+    /// `CalibrationStep`'s own doc comment for the design-intent citation.
+    public let calibrationStep: CalibrationStep
 
     /// Short wire keys (ADR-063). `RodState` is sent on BLE's unreliable `.state` notify path,
     /// which `TransportClient.sendUnreliable(_:)` deliberately never fragments across multiple BLE
@@ -66,6 +70,7 @@ public struct RodState: Codable, Sendable, Equatable {
         case castHoldDuration = "chd"
         case isFishing = "f"
         case isCastingArmed = "ca"
+        case calibrationStep = "cal"
     }
 
     public init(
@@ -82,7 +87,8 @@ public struct RodState: Codable, Sendable, Equatable {
         castPower: Float = 0,
         castHoldDuration: TimeInterval = 0,
         isFishing: Bool = false,
-        isCastingArmed: Bool = false
+        isCastingArmed: Bool = false,
+        calibrationStep: CalibrationStep = .idle
     ) {
         self.timestamp = timestamp
         distance = spatial.distance
@@ -101,5 +107,6 @@ public struct RodState: Codable, Sendable, Equatable {
         self.castHoldDuration = castHoldDuration
         self.isFishing = isFishing
         self.isCastingArmed = isCastingArmed
+        self.calibrationStep = calibrationStep
     }
 }

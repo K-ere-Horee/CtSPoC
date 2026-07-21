@@ -6221,3 +6221,485 @@ once the root cause was found and fixed — kept only what has lasting diagnosti
 - Not yet re-confirmed on the reporter's own two-device setup that a cast now actually reaches
   World and launches the hook — this fix directly addresses the exact byte counts captured live
   from their device, but the loop hasn't been closed with a final "it works now" from them yet.
+
+## Feature: Onboarding Flow, Live Calibration Guidance in World, Calibration Any Time Idle (ADR-064)
+
+Date: 2026-07-21.
+
+Requested directly: add an onboarding flow before the player jumps into play (game explanation,
+main goal, levels, calibration tutorial); change calibration so it's available whenever
+`HookPhase == .idle` instead of only when World is at the Main Menu; add live calibration tutorial
+text in World, including which button to press. Recorded as ADR-064 in `ARCHITECTURE_DECISIONS.md`
+— closes the "World Main Menu + Tutorial + Calibration instructions" gap flagged open since
+ADR-029/038 (Main Menu itself already closed by ADR-036; Tutorial and Calibration-in-World were
+the still-open halves).
+
+### Shared: CalibrationStep moves out of Rod
+
+- New `Shared/Sources/Shared/Models/Rod/CalibrationStep.swift`: `Codable`/`Sendable`/`Equatable`
+  enum, `.idle`/`.cast`/`.reel`/`.complete` — same cases as the `MotionCalibrationStep` it
+  replaces, which was previously a Rod-local, non-transmittable enum.
+- `Shared/Sources/Shared/Models/Rod/RodState.swift`: added `calibrationStep: CalibrationStep`
+  (short wire key `"cal"`, following ADR-063's compact-`CodingKeys` convention). Verified via a
+  standalone encode test that a populated-`castSolution` payload (the largest `RodState` gets)
+  stays comfortably under ADR-063's 512-byte one-chunk BLE budget: 436 bytes measured, ~76 bytes
+  of margin.
+
+### Rod: calibration gating relaxed, field wired through
+
+- `Rod/Rod/ViewModel/RodViewModel.swift`: removed the local `MotionCalibrationStep` enum
+  (`calibrationStep` now typed `CalibrationStep`). `calibrateMotion()` gained a `hookPhase == .idle`
+  guard (previously ungated beyond `hasMotionSample`) — this is what actually makes recalibration
+  reachable mid-session, not just a UI-level change. All three `RodState(...)` construction sites
+  (`handle(_:)`'s `.idle`-hookPhase reset, `publishState()`, `updateAction()`) now pass
+  `calibrationStep: calibrationStep`.
+- `Rod/Rod/ContentView.swift`: Calibrate toolbar button's `.disabled(...)` changed from
+  `!hasMotionSample || isFishing` to `!hasMotionSample || hookPhase != .idle`. `startCastingButton`
+  gained an additional `calibrationStep != .complete` disabled condition — not a correctness fix
+  (a cast attempt mid-recalibration already silently can't do anything, since re-entering the
+  calibration sequence sets `profile.isComplete = false`), just keeps the button's own label
+  honest now that this state is newly reachable.
+
+### World: live calibration guidance + onboarding
+
+- New `World/World/Views/CalibrationGuidanceView.swift`: per-`CalibrationStep` title/instruction
+  text plus a "Press \u{201C}<label>\u{201D} on your Rod" callout (except at `.complete`), the
+  label hand-matched to Rod's own `calibrationButtonTitle` switch so the two can't drift apart.
+- `World/World/Views/MainMenuView.swift`: gained a `calibrationStep: CalibrationStep` parameter;
+  the "press Start Fishing" status row is replaced by `CalibrationGuidanceView` whenever
+  `isRodReady && calibrationStep != .complete`. Also gained a "How to Play" button
+  (`onShowOnboarding: () -> Void`).
+- `World/World/ContentView.swift`: added a `recalibrationOverlay` (scrim + centered card, matching
+  `ResultView`'s own treatment) shown whenever `screen == .playing && hookPhase == .idle &&
+  rodState.calibrationStep != .complete` — the mid-session recalibration case the Rod-side gating
+  change just made reachable. `MainMenuView(...)` call site updated with the two new parameters.
+- New `World/World/Views/OnboardingView.swift`: three static, manually-paged screens (page-style
+  `TabView` is an iOS idiom, this is a macOS app) — Welcome/two-device explanation, Main Goal
+  (catch fish, ultimately catch Scott), Levels & Fish Tiers (real `ProgressionStore` thresholds:
+  3/5/10/1 small/medium/big/boss) — with Back/Next, a page-dot indicator, a "Skip Intro" escape
+  hatch, and a final "Let's Calibrate" button. Deliberately does not embed calibration instructions
+  itself; its completion just returns to `.mainMenu`, where `MainMenuView`'s own guidance (above)
+  takes over automatically for a first-time player.
+- `World/World/ViewModels/WorldViewModel.swift`: `Screen` gains `.onboarding`. `init` sets the
+  initial `screen` from a new persisted `world.hasSeenOnboarding` `UserDefaults` flag —
+  `.onboarding` on a fresh install, `.mainMenu` on every later launch. Added `completeOnboarding()`
+  (persists the flag, returns to `.mainMenu`) and `showOnboarding()` (Main Menu's "How to Play,"
+  guarded to only fire from `.mainMenu` so it can't interrupt an active session).
+
+### Incidental fix
+
+- `World/World/Gameplay/ProgressionStore.swift`: fixed the class doc comment, which described an
+  older 10/10, three-level progression that no longer matches the shipped 3/5/10/1, four-level
+  code — found and fixed while writing the onboarding Levels page, which needed the real numbers.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-064; appended a short "Closed by ADR-064" note to
+  ADR-029's own historical "known gap" paragraph rather than rewriting it.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added a full "Onboarding & Live Calibration Guidance
+  (ADR-064)" section; updated the World Main Menu flow diagram to include `.onboarding`; appended
+  the same "Closed by ADR-064" note to its own matching "known gap" paragraph.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-ios17.0-simulator` and an `arm64-apple-macosx26.0`
+  module (`-emit-module -emit-library`) directly from `find Sources/Shared -name "*.swift"` — no
+  errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `Rod/Rod` file list (iOS 17 simulator)
+  and the full `World/World` file list (macOS 26, including both new view files) — both exit code
+  0, no errors.
+- Standalone encode test (see above) confirming the payload-size margin empirically.
+- `git diff --check` clean.
+- Not run: any live session on physical devices. Unverified in particular: onboarding pacing/copy,
+  and whether recalibrating mid-session is actually discoverable in practice — there's no
+  in-gameplay hint pointing at Rod's Calibrate button until a recalibration is already underway.
+
+## Retune: Fish Pull Speed -50%, Player Reel-Pull Speed +50% (ADR-039 amendment)
+
+Date: 2026-07-21.
+
+Requested directly as two feel notes: "fish pull speed rasanya terlalu kencang. kurangi 50% di
+semua difficulty" and "ketika reel, jarak ikan ke tariknya terlalu pelan. tingkatkan 50% juga di
+semua difficulty." Amended ADR-039 in place (same precedent as its earlier live-tested
+corrections) rather than a new ADR — this is a pure retune of already-established, already-tunable
+values, not a new decision.
+
+### Shared: FishFightConfig
+
+- `basePullSpeed` default `0.7` -> `0.35`. Since `fishPullSpeed = basePullSpeed * (1 + resistance *
+  pullSpeedResistanceMultiplier)`, halving only the base term scales the fish's pull speed down
+  50% uniformly at every resistance/tier — `pullSpeedResistanceMultiplier` (1.8) untouched, so
+  tier differentiation is preserved, just against a lower floor.
+
+### World: WorldViewModel
+
+- `reelSpeed` (the private constant converting Rod's normalized `0...1` reel input into m/s for
+  `reelHook(deltaTime:)`'s tug-of-war) `3.0` -> `4.5`.
+- The paired minimum-guaranteed floor in the same function, `max(0.35, ...)` -> `max(0.525, ...)`
+  — raised by the same 50% so light reeling gets the full boost too, not just full-speed reeling.
+
+Both changes are difficulty-independent by construction: `basePullSpeed`'s scaling is
+multiplicative across every `resistance` value, and `reelSpeed`/its floor never read `resistance`
+at all — "di semua difficulty" fell out automatically from where each number already lived, no
+per-tier special-casing needed.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: appended a "Live-tested retune" paragraph to ADR-039's `Decision`
+  section, in place.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the `fishPullSpeed`/`basePullSpeed` paragraph's
+  stated value (`0.7` -> `0.35`) and added the `reelSpeed`/floor retune alongside it.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-ios17.0-simulator` and an `arm64-apple-macosx26.0`
+  module — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `Rod/Rod` and `World/World` file
+  lists — both exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session. Whether -50%/+50% actually lands at "feels right" (as opposed to
+  overshooting into "too easy now") is unverified until tried physically, per this project's own
+  standing caveat for every feel-tuning change.
+
+## Retune: Both Cut a Further 25% (ADR-039 amendment, same day)
+
+Date: 2026-07-21.
+
+Same-day follow-up to the -50%/+50% retune above. Requested directly: "oke kurangin keduanya by
+25%" — "both" referring back to the two values just retuned (fish pull speed, player reel-pull
+speed), not a reversal of either one's direction. Amended ADR-039 in place again, same paragraph.
+
+### Shared: FishFightConfig
+
+- `basePullSpeed` `0.35` -> `0.2625` (a further 25% cut on top of the prior 50% cut).
+
+### World: WorldViewModel
+
+- `reelSpeed` `4.5` -> `3.375`.
+- `reelHook(deltaTime:)`'s paired minimum-guaranteed floor `0.525` -> `0.39375`.
+
+Both moved by the same 25% as `basePullSpeed`, same reasoning as the prior pass: both scale
+uniformly regardless of `resistance`, so no per-tier adjustment was needed.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: appended a second "Same-day follow-up" paragraph to ADR-039's
+  `Decision` section, directly after the prior retune paragraph.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the `fishPullSpeed`/`basePullSpeed`/`reelSpeed`
+  paragraph to show both retune passes in sequence (`0.7 -> 0.35 -> 0.2625`, `3.0 -> 4.5 -> 3.375`,
+  `0.35 -> 0.525 -> 0.39375`).
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module — no errors.
+- `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session — same standing caveat as every feel-tuning change in this project.
+
+## Feature: Fight-Direction Penalty Eased, Reel-In Speed Now Tension-Scaled Risk/Reward (ADR-039 amendment, same day)
+
+Date: 2026-07-21.
+
+Requested directly as two related proposals in one message: "kurangin pull dari state ketika 'Fish
+Pulling' terjadi" and "balance pull nya dengan cara: ketika hijau, 1 rotasi reel misalnya narik
+0.5m/s, dan ketika ke merah reel distance nya naik jadi 1m/s gitu, jadi ada reward untuk player
+yang berani stay di red zone." Amended ADR-039 in place again, same paragraph run.
+
+### 1. Fight-direction penalty halved
+
+Confirmed "Fish Pulling" is `LineTensionView.swift:80`'s own literal label (`Label("Fish pulling",
+...)`, shown during the ADR-053 left/right juking sub-phase) before touching anything — grepped
+the whole codebase for "Pulling" to find the exact referent rather than guessing.
+
+- `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: `fightDirectionPenalty` default `0.20`
+  -> `0.10`. `fightDirectionCounterRelief` (the reward for countering correctly) left unchanged —
+  only the not-countering punishment was eased. No exact percentage was given for this one; halved
+  to match this session's own established retune magnitude, explicitly flagged to the user as a
+  first guess pending live feedback.
+
+### 2. Reel-in speed becomes tension-scaled (risk/reward)
+
+- `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: added four fields —
+  `reelSpeedSafeTension` (0.7, matches `LineTensionView`'s own `safeHigh` green-zone edge — the two
+  aren't code-shared, just numerically aligned so the mechanic feels consistent with what the bar
+  visibly shows), `reelSpeedDangerTension` (0.85, matches `LineTensionView`'s `dangerHigh` red-zone
+  edge), `reelPullSpeedSafe` (0.5 m/s), `reelPullSpeedDanger` (1.0 m/s).
+- `World/World/Gameplay/FishFightController.swift`: added a `reelPullSpeed: Float` computed
+  property — `reelPullSpeedSafe` at/below `reelSpeedSafeTension`, linearly interpolating up to
+  `reelPullSpeedDanger` at/above `reelSpeedDangerTension`, pure function of `lineTension`.
+- `World/World/ViewModels/WorldViewModel.swift`: `reelHook(deltaTime:)`'s `playerSpeed` calculation
+  now reads `fishFight.reelPullSpeed` instead of the flat `reelSpeed` constant **only while
+  `fishFight.hasFishOnHook`** (`pullSpeedPerUnit = fishFight.hasFishOnHook ? fishFight.reelPullSpeed
+  : reelSpeed`) — empty-line retrieves keep the old flat `reelSpeed` (3.375) unaffected, since
+  there's no tension to manage in that case. Minimum-guaranteed floor changed from `0.39375` to a
+  flat `0.1` — the new 0.5-1.0 m/s range is itself much narrower than the old constant's 3.375 m/s
+  ceiling, so the old floor would have dominated almost the entire new range otherwise. Updated the
+  `reelSpeed` constant's own doc comment to clarify it now only governs the empty-retrieve path.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: appended a third "Same-day follow-up" paragraph to ADR-039's
+  `Decision` section.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: replaced the tug-of-war paragraph's reel-speed description
+  with the new tension-scaled formula and its two thresholds.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-ios17.0-simulator` and an `arm64-apple-macosx26.0`
+  module — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `Rod/Rod` and `World/World` file
+  lists — both exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session. In particular unverified: whether 0.5/1.0 m/s (a much smaller absolute
+  range than the previous flat 3.375 m/s constant) still lets a player land a fish at all in the
+  safe zone, or whether the risk/reward curve actually reads as a deliberate choice rather than
+  just "reeling feels slow now" — both need a real playtest to confirm.
+
+## Feature: Idle Ambience Loop and Big-Catch Flourish SFX (ADR-065)
+
+Date: 2026-07-21.
+
+Player added two new assets directly under `World/World/Assets/SFX/` (`idle.wav`, `reel_fight.wav`)
+and requested them wired in: "idle.wav di play ketika user tidak melakukan apa apa (alias base
+state), dan play volume nya sekitar 30%. play reel_fight, kalau user mendapat ikan bintang 4 keatas
+(dengan volume sama, 30% juga)." Recorded as ADR-065.
+
+### World: SoundManager
+
+- `SoundManager.Sound` gains `.idle` ("idle") and `.reelFight` ("reel_fight"), both `.wav`
+  (default extension). `defaultVolume` gains a case for both at `0.3` (the requested ~30%,
+  alongside the existing 0.35/0.5/0.85 tiers already in that switch).
+
+### World: FishingSounds
+
+- Added `isIdleLoopActive` (mirrors `isReelLoopActive`).
+- Added `updateIdleLoop(active: Bool)` — frame-driven start/stop, identical pattern to the
+  existing `updateReelLoop(active:)`.
+- Added `bigCatch()` — one-shot `sounds.play(.reelFight)`, a direct World-triggered call (like
+  `castLaunched()`/`uiClick()`), not routed through `handle(_:FishingEvent)` since
+  `FishingEvent.catchFish` carries no star count.
+- `handlePhaseChange(_:)`: added a belt-and-suspenders stop for the idle loop on any phase other
+  than `.idle`, mirroring the existing `reelLoop`/`fishInterestedLoop` safety stops.
+- `handleScreenChange(isPlaying:)`: added a matching stop when leaving `.playing` (returning to
+  the Main Menu), since `idle.wav` is gameplay-only, unlike `ambienceLake`.
+
+### World: WorldViewModel
+
+- `tick(deltaTime:)`: added `sounds.updateIdleLoop(active: screen == .playing && hookPhase ==
+  .idle)` alongside the existing `updateReelLoop(...)` call.
+- `reelHook(deltaTime:)`'s catch-resolution branch: right after `fishFight.resolveCatch()` (which
+  populates `lastCatchResult` synchronously), checks `fishFight.lastCatchResult?.stars` and calls
+  `sounds.bigCatch()` when `stars >= 4`, before `beginCatchCutscene`/`emit(.catchFish)`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-065.
+- `CLAUDE.md`: updated the `Assets/SFX/` file listing in the project-structure tree to include
+  `idle.wav`/`reel_fight.wav` — was already stale before this (a general project-doc-accuracy
+  fix, not itself part of the feature).
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module (unaffected by this change, rebuilt only
+  to typecheck against) — no errors.
+- `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session — whether the two new assets actually load (right filename/extension
+  match, valid `.wav` files) can only be confirmed by actually running World, not by typechecking
+  Swift source. Whether 30% reads as the intended loudness relative to the existing 85% one-shots
+  is also unverified until heard.
+
+## Retune: Tension-Scaled Reel Speed Was Unplayably Slow — 0.5/1.0 -> 2.0/4.0 m/s (ADR-039 amendment)
+
+Date: 2026-07-21.
+
+Reported directly, live, right after the previous risk/reward retune landed: "fish reel speed nya
+kekecilan, the gameplay is not even playable now. coba base nya 2 m/s instead of 0.5 - 1. dan dari
+2 m/s di area green, naik jadi 4 m/s di area merah." Amended ADR-039 in place again.
+
+Note: `Shared/Sources/Shared/Gameplay/FishFightConfig.swift` was found with `reelPullSpeedSafe`/
+`reelPullSpeedDanger` already at `3.375`/`5.0` (an intermediate value restoring roughly the old
+flat `reelSpeed` constant's magnitude) rather than this session's last-written `0.5`/`1.0` — edited
+outside this conversation between turns. Treated as the authoritative starting point; this entry's
+change is on top of that.
+
+### Shared: FishFightConfig
+
+- `reelPullSpeedSafe` -> `2.0`.
+- `reelPullSpeedDanger` -> `4.0` (same 2x ratio as the original `0.5`/`1.0` pair).
+- `reelSpeedSafeTension`/`reelSpeedDangerTension` (0.7/0.85, the interpolation thresholds)
+  untouched — only the two speed endpoints moved.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: appended a fourth "Same-day follow-up" paragraph to ADR-039's
+  `Decision` section.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the reel-in-speed paragraph to show the full retune
+  history (`0.5/1.0` -> `3.375/5.0` -> `2.0/4.0`) instead of a single stale pair of numbers.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module — no errors.
+- `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session — same standing caveat as every feel-tuning change in this project.
+
+## Revision: reel_fight.wav Redefined From Star-Gated Flourish to Fight Music With Fade-Out (ADR-065 revision)
+
+Date: 2026-07-21.
+
+Reported directly, right after the previous SFX entry landed: "reel fight music harusnya hanya
+played ketika hook status nya ada fish. selama hook idle/inWater aja, play music idle. ketika
+berhasil catch fish, matikan perlahan music reel fight, dan kembali ke idle." A full redesign of
+`reel_fight.wav`'s trigger — from a one-shot 4+ star catch flourish to state-driven fight music —
+not a numeric retune. Amended ADR-065 in place.
+
+### World: SoundManager
+
+- `stopLoop(_:)` gained a `fadeDuration: TimeInterval = 0` parameter (source-compatible — every
+  existing call site keeps the old instant-stop behavior by default). `fadeDuration > 0` calls
+  `AVAudioPlayer.setVolume(_:fadeDuration:)` to ramp to silence, then schedules the actual
+  `.stop()`/`.currentTime = 0`/volume-restore via `Task { @MainActor in try? await Task.sleep(...) }`
+  once the fade completes, so the player is ready (at full volume again) for its next `startLoop`.
+- Updated `Sound.idle`/`Sound.reelFight`'s doc comments for the new semantics.
+
+### World: FishingSounds
+
+- Added `import Foundation` (needed for `TimeInterval`, previously only `import Shared`).
+- Added `private static let reelFightFadeDuration: TimeInterval = 1.5` and
+  `isReelFightLoopActive`.
+- Removed `bigCatch()` entirely (no longer applicable — there's no star-count check anymore).
+- Added `updateReelFightLoop(active: Bool)` — frame-driven, same pattern as `updateReelLoop`/
+  `updateIdleLoop`; its *stop* path is the one place that calls `stopLoop(_:fadeDuration:)` with a
+  nonzero duration, everywhere else stays instant.
+- `updateIdleLoop`'s doc comment/active-condition description updated: `HookPhase.idle` only ->
+  `.idle` or `.hookInWater` (matches "selama hook idle/inWater aja").
+- `handlePhaseChange(_:)`: idle-loop safety-stop condition widened to `phase != .idle, phase !=
+  .hookInWater`; added a new reel-fight safety-stop (`phase != .fishOnHook, phase != .reeling`),
+  instant (no fade) — this is the abrupt-reset path, not the natural transition.
+- `handleScreenChange(isPlaying:)`: added a matching instant reel-fight stop alongside the
+  existing idle-loop stop when leaving `.playing`.
+- `stopAll()`: resets `isReelFightLoopActive` alongside the other two loop flags.
+
+### World: WorldViewModel
+
+- `tick(deltaTime:)`: `updateIdleLoop`'s active condition widened to include `.hookInWater`; added
+  `sounds.updateReelFightLoop(active: screen == .playing && (hookPhase == .fishOnHook || hookPhase
+  == .reeling))`.
+- `reelHook(deltaTime:)`'s catch-resolution branch: removed the `stars >= 4` check and `sounds.
+  bigCatch()` call entirely — `updateReelFightLoop` already fades `reelFight` out on its own the
+  next tick after `hookPhase` leaves `.fishOnHook`/`.reeling`, so no explicit stop was needed here
+  even before this simplification.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: rewrote ADR-065's `Decision`/`Rationale` in place (title also
+  updated) rather than appending a separate amendment paragraph, since this changes what the
+  feature *is*, not just a tuning number — kept the original star-flourish description as a
+  labeled "Revision, same day" paragraph documenting what was replaced and why, rather than
+  erasing it.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module (unaffected by this change, rebuilt only
+  to typecheck against) — no errors.
+- `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session. In particular unverified: whether the 1.5s fade duration reads as
+  deliberate rather than "the music lagged," and whether the state-driven idle/fight-music split
+  actually feels like a coherent audio layer rather than two loops fighting each other at phase
+  transition boundaries.
+
+## Fix: Short (Green-Zone) Casts Could Land Inside the Dock's Own Footprint (ADR-066)
+
+Date: 2026-07-21.
+
+Reported directly: "jarak si cast nya, bisa di perbaiki ga? jadi kuning sekarang distancenya
+hijau, merah tetap, dan kuning yang baru itu between hijau dan merah (biar gaada lagi case cast di
+hijau tapi nembus pier kebawah)." Recorded as ADR-066.
+
+### Diagnosis
+
+Worked the projectile-range formula (`speed^2 * sin(2*angle) / gravity`) by hand for `power`
+0/0.33/0.66/1.0, then verified numerically with a standalone script. Old formula
+(`castSpeed * (0.5 + power*1.5)`) put the shortest possible cast (`power = 0`) at only ~0.46 m —
+well short of the ~2.4 m clearance needed to clear the dock's own measured mesh footprint
+(extends to `Z = -4.5`, from ADR-043's measurement, starting near the rod's held position around
+`Z = -2.1`). The ballistic simulation has no collision awareness of the dock mesh at all, so a
+too-short cast simply lands inside the dock's solid geometry — "nembus pier kebawah."
+
+### World: WorldViewModel
+
+- `launchHook(solution:)`: `let speed = castSpeed * (0.5 + (solution.power * 1.5))` ->
+  `castSpeed * (1.4 + (solution.power * 0.6))`. Chosen so `power = 1`'s ceiling is mathematically
+  identical to before (`castSpeed * 2.0` either way — "merah tetap") while `power = 0`'s floor
+  rises from `castSpeed * 0.5` to `castSpeed * 1.4`, pushing the minimum achievable distance from
+  ~0.46 m to ~3.62 m. Verified table (old -> new): power 0.00: 0.46 -> 3.62 m; power 0.33:
+  3.65 -> 9.40 m; power 0.66: 11.37 -> 16.51 m; power 1.00: 24.09 -> 24.09 m (unchanged).
+  Compressing the low end while holding the ceiling fixed is what naturally produces "yellow's old
+  distance becomes green's, red's ceiling stays, new yellow fills the gap" — a single parameter
+  change, not a hand-authored zone remap.
+
+Deliberately left `CastMeterConfig` (Rod's own displayed distance *estimate*, already documented
+as disconnected from real physics) untouched — out of scope for this specific bug, revisit only if
+the display mismatch itself gets reported.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-066, including the full verified distance table.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module (unaffected by this change, rebuilt only
+  to typecheck against) — no errors.
+- `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
+- Standalone Python script re-deriving the projectile-range formula for both old and new
+  coefficients at four power values, confirming the table above numerically rather than by hand
+  arithmetic alone.
+- `git diff --check` clean.
+- Not run: any live session. Whether ~3.62 m of clearance is comfortably enough margin past the
+  dock's ~2.4 m minimum (vs. right at the edge) is unverified until actually cast and watched.
+
+## Feature: fish_catched SFX, Tension-Slacking Eased 30% (ADR-067)
+
+Date: 2026-07-21.
+
+Requested directly as three items: "ok, play idle music itu selama hook masih inWater juga,
+jangan langsung di stop. terus, tambahin music fish_catched ketika ikan berhasil ditangkap. terus,
+benerin sedikit mekanisme fish pull nya, dengan mengurangi sedikit speed tension (maybe kurangi
+tension slacking sebesar 30%)." Recorded as ADR-067.
+
+### 1. Idle loop during `.hookInWater`
+
+Checked the current source before touching anything: `WorldViewModel.tick()`'s `sounds.
+updateIdleLoop(active: screen == .playing && (hookPhase == .idle || hookPhase == .hookInWater))`
+and `FishingSounds.handlePhaseChange(_:)`'s matching idle safety-stop (`phase != .idle, phase !=
+.hookInWater`) — both already implement this exactly, landed as part of ADR-065's same-day
+revision. No code change made; confirmed to the user instead of blindly re-editing.
+
+### 2. fish_catched.wav
+
+- Player added the asset directly under `World/World/Assets/SFX/`.
+- `World/World/Audio/SoundManager.swift`: `Sound` gains `.fishCatched` ("fish_catched"), default
+  `.wav`/`0.85` volume tier (the standard one-shot default — no specific volume requested this
+  time).
+- `World/World/Audio/FishingSounds.swift`: `handle(_:)`'s `.catchFish` case gains `sounds.play
+  (.fishCatched)` alongside the existing `sounds.play(.catchSplash)` — additive, matching
+  "tambahin" (add), not a replacement.
+
+### 3. Tension-slacking eased 30%
+
+- `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: `baseFishPullRate` default `0.15` ->
+  `0.105` (a 30% cut). `pullRateResistanceMultiplier` (tier differentiation) untouched — same
+  base-term-only scaling pattern as `basePullSpeed`'s earlier cut this session.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-067.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module — no errors.
+- `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session — same standing caveat as every feel-tuning/SFX change in this project.

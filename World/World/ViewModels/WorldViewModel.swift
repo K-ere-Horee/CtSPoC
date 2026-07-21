@@ -20,7 +20,13 @@ final class WorldViewModel: ObservableObject {
     /// scene (`content`) mounted for the whole app session regardless of `screen` — only an
     /// overlay is shown/hidden — so returning to the menu and starting again doesn't reload the
     /// environment/rod rig from disk a second time.
+    ///
+    /// `.onboarding` (ADR-064) closes the "World Tutorial" gap flagged open since ADR-029/038
+    /// (`GAMEPLAY_ARCHITECTURE_V1.md`: "World owns... Tutorial, Calibration Instructions"). Shown
+    /// automatically before `.mainMenu` on a fresh install (see `hasSeenOnboarding`/`init`), and
+    /// on demand afterward via Main Menu's "How to Play" (`showOnboarding()`).
     enum Screen {
+        case onboarding
         case mainMenu
         case playing
     }
@@ -57,7 +63,14 @@ final class WorldViewModel: ObservableObject {
     /// Raised 3.6 -> 5.0 (ADR-039, "rod casting nya kurang jauh"): max-power ballistic range goes
     /// from ~13 m to ~24 m. `FishFightController.maxExpectedCastDistance` was retuned to match.
     private let castSpeed: Float = 5.0
-    private let reelSpeed: Float = 3.0
+    /// m/s-per-unit-`reelSpeed` multiplier converting Rod's normalized `0...1` reel input into the
+    /// actual hook-closing speed used by `reelHook(deltaTime:)`'s **empty-retrieve** case only (no
+    /// fish on hook — retrieving a bare line, where there's no tension to manage). Raised 3.0 ->
+    /// 4.5 (ADR-039 retune, "ketika reel, jarak ikan ke tariknya terlalu pelan"), then cut a
+    /// further 25% -> 3.375 ("kurangin keduanya by 25%"). A later retune replaced this constant
+    /// for the *actual fight* case with `FishFightController.reelPullSpeed`'s tension-scaled
+    /// risk/reward curve — this flat value now only governs the unrelated empty-retrieve path.
+    private let reelSpeed: Float = 3.375
 
     /// Half-angle (radians) of the allowed cast cone around the camera's fixed forward direction
     /// (-Z, per `makePlayerCamera()` — the camera never rotates dynamically, so this stays a
@@ -249,6 +262,7 @@ final class WorldViewModel: ObservableObject {
         transport: TransportHost
     ) {
         self.transport = transport
+        screen = Self.hasSeenOnboarding ? .mainMenu : .onboarding
 
         transport.onStateChange = { [weak self] state in
             Task { @MainActor in
@@ -332,6 +346,30 @@ final class WorldViewModel: ObservableObject {
     /// curve without reinstalling or clearing app data by hand.
     func resetProgression() {
         fishFight.resetProgression()
+    }
+
+    // MARK: - Onboarding (ADR-064)
+
+    private static let hasSeenOnboardingKey = "world.hasSeenOnboarding"
+
+    private static var hasSeenOnboarding: Bool {
+        UserDefaults.standard.bool(forKey: hasSeenOnboardingKey)
+    }
+
+    /// Called from `OnboardingView`'s final page — persists so onboarding is never shown
+    /// automatically again (see `init`), then returns to the normal Main Menu, which itself
+    /// takes over with live calibration guidance if the rod isn't calibrated yet.
+    func completeOnboarding() {
+        UserDefaults.standard.set(true, forKey: Self.hasSeenOnboardingKey)
+        screen = .mainMenu
+    }
+
+    /// Main Menu's "How to Play" — lets a returning player revisit the intro pages on demand.
+    /// Deliberately does not touch the persisted flag or any calibration state; only reachable
+    /// from `.mainMenu` so it can't interrupt an active session.
+    func showOnboarding() {
+        guard screen == .mainMenu else { return }
+        screen = .onboarding
     }
 
     /// Called once from `ContentView`'s `RealityView` `make` closure. Subscribes to the scene's
@@ -573,6 +611,8 @@ final class WorldViewModel: ObservableObject {
         }
 
         sounds.updateReelLoop(active: rodState.action == .reeling && hookPhase != .idle && hookPhase != .flying && hookPhase != .result)
+        sounds.updateIdleLoop(active: screen == .playing && (hookPhase == .idle || hookPhase == .hookInWater))
+        sounds.updateReelFightLoop(active: screen == .playing && (hookPhase == .fishOnHook || hookPhase == .reeling))
         syncTensionBand()
     }
 
@@ -772,7 +812,18 @@ final class WorldViewModel: ObservableObject {
         debugRawAimDegrees = signedAngleDegrees(rawHorizontal)
         debugCorrectedAimDegrees = signedAngleDegrees(correctedHorizontal)
 
-        let speed = castSpeed * (0.5 + (solution.power * 1.5))
+        // Speed-vs-power floor raised 0.5 -> 1.4 (ADR-066), the multiplier shrunk 1.5 -> 0.6 to
+        // compensate, keeping the power=1 ceiling exactly unchanged (castSpeed * 2.0 either way —
+        // "merah tetap," the longest casts travel exactly as far as before). Reported directly:
+        // a short (green-zone) cast could land inside the dock's own footprint (measured Z extent
+        // out to -4.5, ADR-043) instead of clearing it into open water — "nembus pier kebawah."
+        // At `minimumLaunchAngle` (0.15 rad) the old floor produced under half a meter of range;
+        // the new floor produces roughly 3.6 m, safely past the dock edge. Raising the floor while
+        // holding the ceiling fixed compresses the whole curve, which is also what pushes what
+        // used to be yellow's distance range down into green's, and red's down-shifted lower
+        // bound leaves room for a new yellow in between — "kuning sekarang distancenya hijau...
+        // kuning yang baru itu between hijau dan merah."
+        let speed = castSpeed * (1.4 + (solution.power * 0.6))
         hookVelocity = horizontal * (cos(angle) * speed)
             + SIMD3<Float>(0, sin(angle) * speed, 0)
 
@@ -860,6 +911,8 @@ final class WorldViewModel: ObservableObject {
             if caughtFish {
                 // ADR-045: keep the hook enabled and start the catch cutscene instead of
                 // disabling it outright — `beginCatchCutscene` takes over its position from here.
+                // `reelFight` (ADR-065 revision) fades out on its own the moment `hookPhase` next
+                // leaves `.fishOnHook`/`.reeling` — no explicit stop needed here.
                 fishFight.resolveCatch()
                 beginCatchCutscene(from: hookEntity.position)
                 emit(.catchFish)
@@ -873,10 +926,20 @@ final class WorldViewModel: ObservableObject {
             // speed, so a strong fish gains line even while the player is actively (but weakly)
             // reeling — net-negative speed moves the hook AWAY. Combined with the distance-escape
             // check in `updateFight`, weak reeling against a strong fish is now a losing strategy
-            // rather than a slow guaranteed win. Empty retrieves (`fishPullSpeed` is 0 with no fish)
-            // behave exactly as before. Only applies outside the lift zone — inside it, the catch
-            // resolves immediately instead of continuing this tug-of-war math (see above).
-            let playerSpeed = max(0.35, rodState.reelSpeed * reelSpeed)
+            // rather than a slow guaranteed win. Only applies outside the lift zone — inside it, the
+            // catch resolves immediately instead of continuing this tug-of-war math (see above).
+            //
+            // Tension-scaled risk/reward (ADR-039 retune): while a fish is actually hooked, the
+            // per-unit pull speed comes from `fishFight.reelPullSpeed` instead of the flat
+            // `reelSpeed` constant — reeling near the tension bar's red/danger zone pulls in faster
+            // than reeling in the safe zone, rewarding a player willing to hold tension there. Empty
+            // retrieves (no fish on hook) keep the flat `reelSpeed` constant unchanged — there's no
+            // tension to manage, so the reward curve doesn't apply. The floor briefly dropped to a
+            // flat `0.1` when `reelPullSpeed`'s own scale was tiny (0.5-1.0) — restored to
+            // `0.39375` (matching this scale's own ~11.7% ratio, same as before) now that
+            // `reelPullSpeedSafe`/`reelPullSpeedDanger` are back in the 3.375-5.0 range.
+            let pullSpeedPerUnit = fishFight.hasFishOnHook ? fishFight.reelPullSpeed : reelSpeed
+            let playerSpeed = max(0.39375, rodState.reelSpeed * pullSpeedPerUnit)
             let netSpeed = playerSpeed - fishFight.fishPullSpeed
             let step = netSpeed * deltaTime
 

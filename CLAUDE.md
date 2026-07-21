@@ -38,7 +38,8 @@ CtSPoC/
     ├── Transport/       # CoreBluetooth host (World = BLE central)
     ├── Views/CastMeterView.swift, LineTensionView.swift, ResultView.swift
     └── Assets/Rod.usdz, Assets/SFX/ (ui_click.wav, cast_throw.wav, hook_splash.wav,
-        fish_interested_loop.wav, fish_bite.wav, reel_loop.wav, catch_splash.wav, ambience_lake.mp3)
+        fish_interested_loop.wav, fish_bite.wav, reel_loop.wav, catch_splash.wav, ambience_lake.mp3,
+        idle.wav, reel_fight.wav)
 ```
 
 ## Tech Stack

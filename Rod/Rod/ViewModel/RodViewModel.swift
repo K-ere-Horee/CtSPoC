@@ -9,13 +9,6 @@ import SwiftUI
 import Shared
 import Combine
 
-enum MotionCalibrationStep: String {
-    case idle
-    case cast
-    case reel
-    case complete
-}
-
 @MainActor
 final class RodViewModel: ObservableObject {
 
@@ -32,7 +25,7 @@ final class RodViewModel: ObservableObject {
     @Published private(set) var motionAccelerationZ: Double = 0
     @Published private(set) var motionRotationRate: Double = 0
     @Published private(set) var lastError: String?
-    @Published private(set) var calibrationStep: MotionCalibrationStep = .idle
+    @Published private(set) var calibrationStep: CalibrationStep = .idle
     @Published private(set) var calibrationSampleCount = 0
     /// Gates cast/reel gesture reporting. The player must explicitly
     /// "Start Fishing" (after calibrating) before physical motion is
@@ -204,8 +197,15 @@ final class RodViewModel: ObservableObject {
         isCastingArmed = true
     }
 
+    /// Requires `hookPhase == .idle` (ADR-064) rather than the old `!isFishing`-only gate — a
+    /// player can now recalibrate at any point the hook itself isn't mid-cast/fight, including
+    /// mid-session, not only before ever pressing "Start Fishing." Motion during recalibration
+    /// naturally can't be misread as a real cast/reel gesture in the meantime: re-entering the
+    /// sequence (the `case .complete:` branch below) sets `profile.isComplete = false` right away,
+    /// which already makes `RodMotionInterpreter` report `.invalid` until the sequence completes
+    /// again, independent of this gate.
     func calibrateMotion() {
-        guard hasMotionSample else { return }
+        guard hasMotionSample, hookPhase == .idle else { return }
         switch calibrationStep {
         case .idle:
             guard calibrationSamples.count >= 3 else { return }
@@ -289,7 +289,8 @@ final class RodViewModel: ObservableObject {
                     reelSpeed: reelSpeed,
                     castSolution: nil,
                     isFishing: isFishing,
-                    isCastingArmed: isCastingArmed
+                    isCastingArmed: isCastingArmed,
+                    calibrationStep: calibrationStep
                 )
                 publishState()
             }
@@ -312,7 +313,8 @@ final class RodViewModel: ObservableObject {
             castPower: rodState.castPower,
             castHoldDuration: rodState.castHoldDuration,
             isFishing: isFishing,
-            isCastingArmed: isCastingArmed
+            isCastingArmed: isCastingArmed,
+            calibrationStep: calibrationStep
         )
         guard connectionState == .ready || connectionState == .streaming else { return }
         connectionState = .streaming
@@ -373,7 +375,8 @@ final class RodViewModel: ObservableObject {
             castPower: interpretation.castPower,
             castHoldDuration: interpretation.castHoldDuration,
             isFishing: isFishing,
-            isCastingArmed: isCastingArmed
+            isCastingArmed: isCastingArmed,
+            calibrationStep: calibrationStep
         )
 
         if action == .casting, previousAction != .casting {
