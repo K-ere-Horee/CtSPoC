@@ -47,6 +47,12 @@ final class WorldViewModel: ObservableObject {
     /// this is purely a World-side presentation flag gating which overlay `ContentView` shows, not a
     /// new `HookPhase` case, so Shared/Rod need no changes.
     @Published private(set) var isShowingCatchCutscene = false
+    /// Ported from `feat/ui-slice`'s `RootView` (ADR-087): shown as soon as `screen` flips to
+    /// `.playing`, dismissed by `dismissTutorial()` once `TutorialView`'s tap-to-advance sequence
+    /// finishes. Shown unconditionally on every "Start Fishing," not gated to a player's first
+    /// session — an explicit, inherited simplification (persisted first-session gating was flagged
+    /// as future work on the original branch, not implemented here either).
+    @Published private(set) var isShowingTutorial = false
     @Published private(set) var lastError: String?
     @Published private(set) var fps: Double = 0
     /// Debug pair for diagnosing cast direction: where a perfectly straight-ahead cast of the
@@ -446,6 +452,12 @@ final class WorldViewModel: ObservableObject {
         screen = .onboarding
     }
 
+    /// `TutorialView`'s tap-to-advance sequence reaching its last step (ADR-087). No persisted
+    /// state to update — see `isShowingTutorial`'s own doc comment for why it's shown every time.
+    func dismissTutorial() {
+        isShowingTutorial = false
+    }
+
     /// Called once from `ContentView`'s `RealityView` `make` closure. Subscribes to the scene's
     /// real per-frame update event so the simulation ticks in lockstep with actual rendering
     /// instead of a separate, imprecise timer.
@@ -675,6 +687,7 @@ final class WorldViewModel: ObservableObject {
         caughtFishAnimationController = nil
         catchCutscene = nil
         isShowingCatchCutscene = false
+        isShowingTutorial = false
         fishFight.resetForNewCast()
         setHookPhase(.idle)
         screen = .mainMenu
@@ -1344,6 +1357,7 @@ final class WorldViewModel: ObservableObject {
         // `isFishing`'s edges instead of a World-side button.
         if state.isFishing, !wasFishing {
             screen = .playing
+            isShowingTutorial = true
         } else if !state.isFishing, wasFishing {
             returnToMenu()
         }

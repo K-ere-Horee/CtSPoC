@@ -3061,6 +3061,263 @@ clearing, `hookPhase` resync on reconnect), `World/World/ContentView.swift` (FPS
 `RealityView` to a `make`-only initializer), `Rod/Rod/ContentView.swift` (re-enabled
 `MotionDebugView` under Developer Details).
 
+**Editorial note, added during the PR #7/#20 merge (2026-07-21):** the `MainMenuView.swift`/
+`LoadingView.swift`/`RootView.swift` work described below (pill buttons, `Loading -> Main Menu ->
+Game/Credits` routing) was **not adopted** — `main` had independently redesigned the Main Menu
+and added a loading screen by the time this branch merged (ADR-081/082, stacked-rectangle
+buttons, a `WorldViewModel.Screen`-driven overlay model instead of `RootView`'s own router), and
+that design was kept. `TutorialView.swift`, `CreditsView.swift`, `Support/Theme.swift` (Fredoka
+font tokens), and the `ATSApplicationFontsPath` fix were carried forward and rewired onto the
+kept navigation model — see the "Merge PR #7 (feat/ui-slice) into main" entry near the end of this
+file for exactly what was kept, dropped, and why. This section is preserved as-is below, unedited,
+as the historical record of the original work (per this project's "never delete previous
+checkpoint entries" rule) — read `MainMenuView`/`LoadingView`/`RootView` mentions below as
+describing a design that was superseded, not the current one.
+
+## Main Menu layout: logo sizing and pill-button redesign to match the approved mockup
+
+Context: the `feat/ui-slice` branch already carried a working-tree, not-yet-checkpointed front-end
+slice (`World/World/Views/RootView.swift`, `LoadingView.swift`, `MainMenuView.swift`,
+`CreditsView.swift`, `Support/Theme.swift`, `Fonts/`, plus the `LandingImage`/`LoadingScreen`/`logo`
+asset catalog entries) implementing `Loading -> Main Menu -> Game/Credits` routing. None of that had a
+`CHECKPOINT.md` entry yet; this entry covers only the Main Menu visual fix done in this task, not a
+retroactive writeup of the whole slice.
+
+User supplied an approved mockup and a screenshot of the running app: the mockup's logo is large and
+sits roughly a quarter of the way down the screen, and "Start Fishing"/"Credits" are cream, pill-shaped
+(capsule), content-width buttons centered over the lake; the running app instead showed a small
+64pt-tall logo docked to the top edge and two full-width dark-brown rectangular bars flush to the
+bottom edge — a plain placeholder, not the intended design.
+
+**`World/World/Views/MainMenuView.swift` rewritten:**
+- Wrapped the screen in `GeometryReader` so logo size/position and button bottom padding scale with
+  window height (`0.22`, `0.06`, `0.1` fractions) instead of fixed point values, matching the mockup's
+  proportions across window sizes.
+- Buttons changed from `RoundedRectangle(cornerRadius: 18)` stretched `.frame(maxWidth: .infinity)`
+  bars to content-sized `Capsule` pills (`Text` with only horizontal/vertical padding, no forced
+  width), centered by the parent `VStack`.
+- Replaced the dark-fill/light-text `ShadowedLabel` styling (correct for the *Credits* screen's
+  dark-mode look, still used there) with a new cream-face/dark-text pill style, added to
+  `World/World/Support/Theme.swift` as three new tokens — `menuButtonFace` ("F2E6C8"),
+  `menuButtonEdge` ("2E2013"), `menuButtonText` ("2B1D10") — kept separate from the pre-existing
+  `buttonFill`/`buttonLabel`/`buttonLabelShadow` tokens so `CreditsView.swift`'s unrelated "Back"
+  button and heading text (which still want the dark-mode palette) were left untouched.
+
+**Bug hit and fixed along the way:** the first pass built the thick bottom "3D" edge with a plain
+`.shadow(color: Theme.menuButtonEdge, radius: 0, x: 0, y: 5)` on the whole button label. Verified live
+in the running app (not just by inspection) via `xcodebuild ... build`, launching `World.app`, and
+`screencapture`, then zooming into the rendered PNG — `.shadow` renders a colored silhouette of the
+*entire* modified view's alpha channel, so it duplicated the `Text` glyphs themselves, not just the
+capsule outline, producing a visibly ghosted/double-exposed "Credits" label offset diagonally down-left
+where two stacked buttons' shadows overlapped. Fixed by moving the offset copy into the `Text`'s
+`.background` layer as a plain filled `Capsule().offset(y: 5)` sibling behind the face capsule, so only
+the capsule shape duplicates, never the text; also widened the button `VStack` spacing from 14 to 20pt
+so the shadow's 5pt overhang no longer reaches the next button.
+
+**Verified:** `xcodebuild -workspace CtSPoC.xcworkspace -scheme World -destination 'platform=macOS'
+build` → **BUILD SUCCEEDED** after each change. Live-launched `World.app` three times during this task
+(quitting the prior instance first each time, since `open` on an already-running app reattaches to its
+existing window instead of restarting at the Loading screen) and `screencapture`-verified the actual
+rendered Main Menu against the approved mockup each iteration, including a pixel-level crop to confirm
+the final text-ghosting fix. Not verified: Rod-side or in-game (post "Start Fishing") screens, since
+this task was scoped to the Main Menu only; `CreditsView.swift`'s dark-mode look was intentionally left
+unchanged and not re-verified against any new mockup.
+
+Files changed: `World/World/Views/MainMenuView.swift`, `World/World/Support/Theme.swift` (three new
+`menuButton*` tokens added, existing tokens untouched).
+
+**Follow-up same day: Fredoka Bold was not actually rendering.** User reported the button label font
+still looked like the system font, not Fredoka Bold, after the above fix. Root cause: `Info.plist`
+only had `UIAppFonts` (`World/World/Info.plist`), which is an **iOS-only** key — macOS silently ignores
+it, so `Font.custom("Fredoka-Bold", ...)` / `Font.custom("Fredoka-Regular", ...)` (`Support/Theme.swift`)
+fell back to the system font on the macOS build, even though the `.ttf` files were correctly bundled
+(confirmed present at `World.app/Contents/Resources/Fredoka-{Bold,Regular}.ttf` — the project's
+file-system-synchronized group already includes `World/World/Fonts/` automatically, so bundling itself
+was never the problem). Also confirmed via `python3`/`fontTools` that both files' internal PostScript
+names (`Fredoka-Bold`, `Fredoka-Regular`) match the `Font.custom` calls exactly, ruling out a name
+mismatch. Fixed by adding `ATSApplicationFontsPath = "."` to `World/World/Info.plist` — the macOS
+equivalent that registers fonts found under a path relative to the bundle's Resources folder at
+process launch; `.` points at Resources' root, matching where the ttfs actually land. `UIAppFonts` was
+left in place (harmless on macOS, still needed since the target's `SUPPORTED_PLATFORMS` build setting
+also lists `iphoneos iphonesimulator`).
+
+**Verified:** `xcodebuild ... -scheme World -destination 'platform=macOS' build` → **BUILD SUCCEEDED**;
+`plutil -p` on the built `Info.plist` confirmed `ATSApplicationFontsPath => "."` was actually present in
+the compiled bundle (not just the source plist); live-launched `World.app` again and `screencapture`
+confirmed the Main Menu button labels now render in the rounded Fredoka Bold face instead of the system
+font.
+
+Files changed (this follow-up): `World/World/Info.plist` (`ATSApplicationFontsPath` added).
+
+## Main Menu label shadow color, and a real Loading screen layout bug
+
+User supplied a second mockup (Loading screen: logo pinned top-left, "Loading…" pinned bottom-left,
+over the same lake/dock art now graded dark/dusk) and asked for the Main Menu button label shadow to
+be `#574420`.
+
+**Button label shadow:** `menuButton(title:action:)` in `MainMenuView.swift` had been switched to a
+plain `Text` (no shadow at all) when the pill-button redesign landed earlier this session. Reverted to
+wrapping the label in the existing `ShadowedLabel` component (`Support/Theme.swift`) with
+`color: Theme.menuButtonText` and `shadowColor: Theme.buttonLabelShadow` — `buttonLabelShadow` was
+already `"574420"`, so no new token was needed, just re-wiring the button to use it. `ShadowedLabel`
+draws two stacked `Text` copies (not a `.shadow()` modifier), so this carries no risk of the
+whole-view-silhouette ghosting bug fixed earlier in this same button.
+
+**Loading screen — real layout bug, not a cosmetic tweak.** Comparing the mockup against a live
+screenshot of the running app (captured by temporarily bumping `RootView`'s
+`Task.sleep(for: .seconds(2))` to `.seconds(30)` so the Loading screen would hold still long enough to
+screenshot reliably, then reverting it back to `2` once confirmed) showed the logo sitting centered
+near the top of the window instead of pinned to the top-left corner. Root cause in
+`LoadingView.swift`: the content `VStack(alignment: .leading, ...)` only aligns its *children* to the
+leading edge of its own bounds — with no `.frame` modifier, the `VStack` itself sizes to fit its
+content and then gets centered by the enclosing `ZStack` (whose default alignment is `.center`), so the
+whole leading-aligned block floated to the middle of the screen. Fixed by adding
+`.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)` to the `VStack`, which
+expands it to fill the screen with content anchored at the actual top-left. Also changed the
+"Loading…" text from `.fredoka(25)` to `.fredokaBold(20)` to match the bold weight shown in the new
+mockup.
+
+**Verified:** `xcodebuild ... -scheme World -destination 'platform=macOS' build` → **BUILD SUCCEEDED**
+after each change. Live-launched `World.app` repeatedly (quitting and reactivating explicitly via
+`osascript` between captures — a plain `open` on an already-running instance reuses the existing
+window rather than restarting, and a bare `screencapture` right after `open` sometimes grabbed whatever
+app/window happened to be frontmost instead of `World`, which surfaced once during this task and that
+capture was deleted unused rather than inspected further) and `screencapture`-confirmed both the
+Main Menu button shadow (crop-verified pixel-level, clean emboss with no double-text artifact) and the
+Loading screen's logo/label now sitting at the screen's actual top-left/bottom-left corners, matching
+the new mockup.
+
+Files changed: `World/World/Views/MainMenuView.swift` (`ShadowedLabel` restored in `menuButton`),
+`World/World/Views/LoadingView.swift` (`VStack` frame fix, bold loading label).
+
+## Loading screen still clipped after the VStack fix: the window itself was overflowing the screen
+
+User reported the Loading screen was "still got cut out" after the `VStack` frame fix above. Captured
+a fresh screenshot (again via the temporary `RootView` 30-second sleep trick, reverted to `2` again
+immediately after) and zoomed into the bottom-left corner pixel-for-pixel: the window's own rounded
+corner chrome was visible cutting directly through the "Loading…" text mid-glyph. That ruled out a
+SwiftUI layout bug (the previous entry's fix was correct) — the actual `NSWindow` was extending past
+the bottom of the physical screen, so content anchored to its bottom edge rendered off-screen.
+
+Checked for the two usual causes of an oversized restored window — `~/Library/Saved Application
+State/*cjkt*` (no matching entry) and `defaults read com.cjkt.CtSPoC.World` (no domain exists) — both
+absent, ruling out state restoration. Root cause: `WorldApp.swift`'s `WindowGroup` had no explicit
+size at all, so AppKit's default sizing filled (and marginally overflowed) the screen's bounds.
+
+**Fix:** added `.defaultSize(width: 1280, height: 800)` to the `WindowGroup` in
+`World/World/WorldApp.swift`, giving it an explicit, comfortably-on-screen initial size instead of
+relying on fill-to-screen auto-sizing.
+
+**Verified:** `xcodebuild ... -scheme World -destination 'platform=macOS' build` → **BUILD SUCCEEDED**.
+**Not visually re-confirmed after this specific fix** — repeated attempts to screenshot the running app
+this round instead captured other frontmost windows on the user's live desktop (a system app-switcher
+overlay, then an unrelated terminal session with another in-progress, unsubmitted prompt), apparently
+because something on the user's machine (possibly a global-hotkey launcher) was stealing focus between
+`open` and `screencapture`. Each such screenshot was deleted immediately, unread beyond confirming it
+wasn't the target window, and none of their contents were acted on. Asked the user to visually confirm
+the fix themselves rather than continuing to fire blind screenshots at their live desktop.
+
+Files changed: `World/World/WorldApp.swift` (`.defaultSize(width:height:)` added to `WindowGroup`).
+
+## New Tutorial overlay: 6-step onboarding shown over the game scene
+
+User asked for an in-game instruction/tutorial UI matching a supplied mockup: a rounded (radius 15)
+`#3B2818`-at-81%-opacity label with the `FrameIcon` fish mascot overlapping its left edge, holding one
+of six step strings (steps 3 and 5 also show the `HandTutor` gesture sprite). Asked two clarifying
+questions per `AGENTS.md`'s "ask rather than guess architectural decisions" rule before building:
+advance mechanic (tap-anywhere, chosen over an explicit Next button) and whether to wire it into the
+app flow now (yes — Main Menu "Start Fishing" -> Tutorial -> Game — with the caveat that gating it to
+only a player's *first* session via persisted progress is explicitly future work, not this task).
+
+**`World/World/Views/TutorialView.swift` (new):** a private `TutorialStep` array holds the six steps
+(cleaning up a "Gotchaa!!!" that had been pasted mid-sentence into step 3's text in the request — the
+intended step 3 is "Pull back your phone slightly, then flick forward!", and "Gotchaa!!!" is its own
+step 5). The view renders no background of its own — just the label bubble — so it composes as a
+transparent overlay on top of whatever sits behind it. Bubble layout: a `ZStack(alignment: .leading)`
+with the `RoundedRectangle` padded 70pt from the leading edge, the text/illustration `VStack` padded in
+further to clear the fish, and `FrameIcon` drawn last (so it paints on top) at the true leading edge,
+producing the mockup's fish-overlapping-the-box look. Tap anywhere advances `stepIndex`; on the last
+step, tapping calls `onFinished()` instead.
+
+**`World/World/Views/RootView.swift`:** added `showTutorial` state; `MainMenuView`'s `onStartFishing`
+now sets both `screen = .game` and `showTutorial = true`, and the `.game` case wraps `ContentView()`
+and a conditional `TutorialView()` in a `ZStack` so the tutorial floats over the live game scene rather
+than replacing it. Left an inline comment flagging that showing it unconditionally on every "Start
+Fishing" is a deliberate placeholder — per the user, gating this to first-time players via persisted
+state is future work, not implemented here.
+
+**Verified:** `xcodebuild ... -scheme World -destination 'platform=macOS' build` → **BUILD SUCCEEDED**.
+**Not visually verified** — reaching this screen requires clicking through Main Menu to "Start
+Fishing," which needs simulated UI input; macOS Accessibility/UI-scripting permission is not granted
+in this environment (`osascript`'s System Events calls fail with `-1719 execution error: not allowed
+assistive access`), and this session's blind `open`/`screencapture` attempts had already twice grabbed
+unrelated frontmost windows on the user's live desktop by coincidence of timing (a system app-switcher
+overlay, then an unrelated terminal session — both deleted immediately, unread beyond confirming they
+weren't the target window). Given that risk, visual confirmation was explicitly handed back to the
+user rather than attempting further automated screenshots.
+
+Files changed: `World/World/Views/TutorialView.swift` (new), `World/World/Views/RootView.swift`
+(`showTutorial` state and `.game` case `ZStack` wiring).
+
+## Tutorial label sizing/alignment follow-ups, a best-practice cleanup pass, and doc fixes before commit
+
+Two quick follow-up requests on the new Tutorial bubble: fix the label to an exact `w=569` (previously
+capped at 240pt and hugging its own content — replaced with a hard `labelWidth` frame the text wraps to
+fit inside), then center the text (both `multilineTextAlignment` and the surrounding `VStack`/`frame`
+alignment, which had been leading-aligned).
+
+**User then asked for a best-practice pass before committing/pushing/updating docs.** Reviewed every
+Swift file touched this session (`TutorialView`, `MainMenuView`, `LoadingView`, `RootView`, `Theme`,
+`WorldApp`) against `AGENTS.md`'s coding-style rules and fixed three real issues found:
+
+1. `TutorialView`'s private `TutorialStep` conformed to `Identifiable` with an `id: Int`, but the view
+   only ever indexes `tutorialSteps[stepIndex]` directly — nothing iterates it with `ForEach`, so the
+   conformance and field were dead weight. Removed both (YAGNI).
+2. The tap-to-advance hit-testing used `Color.black.opacity(0.0001)` (a "just above zero so default
+   hit-testing kicks in" hack) *combined with* a redundant `.contentShape(Rectangle())` on the same
+   `ZStack` — the two were doing overlapping jobs. Replaced with the standard idiom: `Color.clear` +
+   an explicit `.contentShape(Rectangle()).onTapGesture` (contentShape alone makes a fully-transparent
+   view hit-testable, no opacity hack needed), and added `.allowsHitTesting(false)` to the bubble layer
+   so taps landing on the label itself still fall through to the same handler underneath — preserving
+   the original "tap anywhere, including on the label" behavior with no dead code.
+3. `MainMenuView.menuButton`'s chained modifiers (`.padding`/`.background`) after `ShadowedLabel(...)`
+   were indented one extra level versus the base expression — cosmetic, but inconsistent with the rest
+   of the codebase's formatting. Re-indented to match.
+
+**Doc fixes** (`CLAUDE.md` had gone stale against the actual repo, unrelated to this session's own
+edits):
+- The `## Verification` Shared-compile command hardcoded a file list (`Models/RodAction.swift`,
+  `Models/SpatialState.swift`, etc.) from before `Shared/Sources/Shared/Models/` was split into
+  `Device/`, `Gameplay/`, `Rod/`, `Spatial/` subfolders — running it as written now fails with "No such
+  file". Replaced with `cd Shared && swift build`, which reads `Package.swift` and can't go stale the
+  same way.
+- The `## Project Structure` tree hadn't been touched since before this branch's whole front-end slice
+  landed — added `Support/`, `Fonts/`, and the `Views/` front-end files (`RootView`, `LoadingView`,
+  `MainMenuView`, `CreditsView`, `TutorialView`) alongside the existing gameplay-HUD views, and noted
+  the `ATSApplicationFontsPath`/`UIAppFonts` dual-registration requirement from an earlier entry in this
+  log. Also flagged that `Architecture/` is actually `Architecture ` (a literal trailing space in the
+  directory name) — this tripped a plain `ls Architecture/` during this session (silent "No such file
+  or directory"); noting it in the doc so a future agent doesn't lose time on the same thing.
+
+**Repo hygiene:** added a root `.gitignore` (`xcuserdata/`, `*.xcuserstate`, `DerivedData/`, `.build/`,
+`.swiftpm/`, `.DS_Store`) — none of this existed before, so every prior contributor's local Xcode state
+was one `git add -A` away from landing in a commit (one such directory, `cindyram.xcuserdatad`, is
+already tracked from before this session; left it alone since removing already-tracked files is a
+separate cleanup decision, not part of this task — the `.gitignore` only stops *new* local state from
+being added going forward).
+
+**Verified:** `xcodebuild -workspace CtSPoC.xcworkspace -scheme World -destination 'platform=macOS'
+build` → **BUILD SUCCEEDED**; `xcodebuild ... -scheme Rod -destination 'generic/platform=iOS
+Simulator' build` → **BUILD SUCCEEDED**; `cd Shared && swift build` → **Build complete!** (this also
+doubles as confirmation the corrected `CLAUDE.md` verification command actually works); `git diff
+--check` clean. Tutorial label width/centering changes are code-reviewed and build-verified but, like
+the rest of this branch's Tutorial work, not yet visually confirmed live — same standing limitation
+(no Accessibility/UI-scripting permission to simulate the Main Menu → Start Fishing tap in this
+environment).
+
+Files changed: `World/World/Views/TutorialView.swift` (fixed `labelWidth`, centered text, `Identifiable`
+removed, tap-hit-testing idiom cleanup), `World/World/Views/MainMenuView.swift` (indentation only),
+`CLAUDE.md` (`## Verification` command, `## Project Structure` tree), `.gitignore` (new).
 ## Merge feat/asset-integration into dev
 
 Date: 2026-07-18.
@@ -8201,3 +8458,114 @@ ordinary gameplay (casting, waiting for a bite) completely silent — which read
 - Not run: any live session. This exact fix path (ADR-084's original change) was only caught after
   one live playtest already, so — same as that entry's own Status — unverified live until played
   again.
+
+## Merge PR #7 (feat/ui-slice) into main
+
+Date: 2026-07-21.
+
+Requested directly: "ada 2 pr ke main, tolong di merge dan resolve conflictnya sekalian" (there are
+2 PRs into main, please merge them and resolve the conflicts too). PR #20 (this session's own work)
+merged cleanly first. PR #7 (`feat/ui-slice`, by Radiit/Raditya Aydin, opened 2026-07-18) did not —
+investigating before touching anything found it wasn't a simple textual conflict: it independently
+built a full competing Main Menu/loading/navigation system (`RootView.swift`'s own screen router,
+pill-shaped buttons, a Fredoka-font `Theme.swift`) that directly collides with this session's own
+ADR-081/082 Main Menu/loading-screen redesign and `WorldViewModel.Screen`-driven overlay model.
+Surfaced this to the user rather than picking a side unilaterally — confirmed: keep main's Main
+Menu/loading/navigation entirely, port `feat/ui-slice`'s genuinely new, non-overlapping features
+(`CreditsView.swift`, `TutorialView.swift`) onto main's kept navigation model instead of discarding
+them outright.
+
+### Investigation
+
+`git merge-tree` against the merge-base (`7f47d557`, 2026-07-18 — `feat/ui-slice` never rebased
+after) found real conflicts in six files: `CHECKPOINT.md`, `CLAUDE.md`,
+`World/World/Assets.xcassets/AppIcon.appiconset/Contents.json`, `World/World/Info.plist`,
+`World/World/Reality/EnvironmentSceneBuilder.swift`, `World/World/WorldApp.swift` — plus an add/add
+conflict on `World/World/Views/MainMenuView.swift` (both branches created it independently after
+the merge-base, with entirely different content). Read each side's actual diff before deciding
+anything: `EnvironmentSceneBuilder.swift` and `CLAUDE.md` on `feat/ui-slice`'s side were stale
+July-18 snapshots relative to main's much-since-evolved versions (`CLAUDE.md` still described
+MultipeerConnectivity, pre-ADR-041 audio, etc.); `AppIcon.appiconset/Contents.json` on their side
+would have regressed the app icon to one incomplete iOS-only entry, silently dropping the working
+macOS multi-size icon set (confirmed the actual `CTS-Logo_*.png` files were all still present in
+the tree, so this was a manifest regression, not a missing-asset situation).
+
+### Resolution
+
+- **`World/World/Views/MainMenuView.swift`**: kept main's (ADR-081) entirely, discarded
+  `feat/ui-slice`'s pill-button version. Added a "Credits" button (`StackedMenuButtonStyle
+  (isProminent: false)`, matching "How to Play") that presents the ported `CreditsView` via local
+  `@State private var isShowingCredits`, not a new `WorldViewModel.Screen` case — Credits has no
+  bearing on session/gameplay state, unlike every case that enum already models.
+- **`World/World/WorldApp.swift`**: kept main's (`ContentView()` + the ADR-086 fullscreen delegate)
+  — the auto-merge had silently kept `feat/ui-slice`'s `RootView()`/`.defaultSize(...)` without
+  flagging a conflict (both sides' diffs landed in non-overlapping line ranges), caught only by
+  actually reading the resolved file rather than trusting a clean `git merge` exit.
+- **`World/World/Assets.xcassets/AppIcon.appiconset/Contents.json`**: same silent-wrong-auto-merge
+  pattern — `git status` reported no conflict, but the auto-merged result was `feat/ui-slice`'s
+  regressed single-entry manifest. Restored main's full multi-size version explicitly via `git show
+  origin/main:... > ...`, not trusted from the auto-merge.
+- **`World/World/Reality/EnvironmentSceneBuilder.swift`**: kept main's evolved version entirely.
+- **`World/World/Info.plist`**: combined — kept main's (near-empty, `NSBonjourServices` already
+  intentionally removed as MultipeerConnectivity-era dead config, confirmed unreferenced anywhere
+  via `grep`) as the base, added `feat/ui-slice`'s `UIAppFonts`/`ATSApplicationFontsPath` keys
+  (needed for `Theme.swift`'s Fredoka font). Did not resurrect `NSBonjourServices`.
+- **`CLAUDE.md`**: kept main's content for all three conflicting sections (project structure tree,
+  tech stack, verification command — the last one's `feat/ui-slice` side, `cd Shared && swift
+  build`, was actually taken instead of main's stale hardcoded per-file list, since it's what the
+  file's own unchanged surrounding prose already argues for). Added small project-structure notes
+  for `Support/Theme.swift`, `Fonts/`, `CreditsView.swift`, `TutorialView.swift`, and the
+  `ATSApplicationFontsPath`/`UIAppFonts` dual-registration requirement.
+- **`CHECKPOINT.md`**: kept main's content as the continuation; `feat/ui-slice`'s own ~245-line
+  history section (Main Menu pill-button redesign, Loading screen fixes, the original Tutorial
+  overlay work, a `CLAUDE.md`/`.gitignore` cleanup pass) preserved verbatim underneath an editorial
+  note explaining what was/wasn't ultimately adopted — per this project's "never delete previous
+  checkpoint entries" rule, not summarized or dropped even though the Main Menu/Loading design it
+  describes wasn't shipped.
+- **Dropped entirely**: `World/World/Views/RootView.swift`, `LoadingView.swift`, and their
+  Main-Menu/Loading-specific asset catalog entries (`Assets.xcassets/Image/LoadingScreen.imageset`,
+  `landingImage.imageset`, `logo.imageset`) — superseded by main's ADR-081/082 work, no longer
+  referenced by anything once `MainMenuView.swift`/`WorldApp.swift` were resolved to main's side.
+- **Ported as new additions**: `World/World/Views/CreditsView.swift` (unchanged — self-contained,
+  only needs `Theme.swift`), `World/World/Views/TutorialView.swift` (unchanged aside from one doc
+  comment correcting its "composed by `RootView`" claim), `World/World/Support/Theme.swift`
+  (trimmed — the `overlay`/`menuButtonFace`/`menuButtonEdge`/`menuButtonText` tokens existed solely
+  for the dropped pill-button `MainMenuView`, so removed as dead weight; kept `buttonFill`/
+  `buttonLabel`/`buttonLabelShadow`/`Color(hex:)`/`Font.fredoka`/`fredokaBold`/`ShadowedLabel`,
+  which `CreditsView`/`TutorialView` actually use), `World/World/Fonts/Fredoka-{Bold,Regular}.ttf`,
+  `Assets.xcassets/Image/{FrameIcon,HandTutor}.imageset` (referenced by `TutorialView`), and a root
+  `.gitignore` (xcuserdata/build-artifact excludes — harmless, doesn't retroactively untrack
+  anything already committed).
+- **`World/World/ViewModels/WorldViewModel.swift`**: added `isShowingTutorial: Bool` (set `true`
+  alongside `screen = .playing` in `handleState(_:)`, matching `feat/ui-slice`'s own "shown
+  unconditionally on every Start Fishing" behavior — persisted first-session-only gating was
+  explicitly flagged as future work on the original branch and is inherited as-is, not implemented
+  here either) and `dismissTutorial()`; reset alongside the other overlay flags in `returnToMenu()`.
+- **`World/World/ContentView.swift`**: added `TutorialView(onFinished: viewModel.dismissTutorial)`
+  to the overlay `ZStack`, shown while `screen == .playing && isShowingTutorial` — same composition
+  pattern (`ContentView` + a transparent overlay on top) `RootView` originally used, just reached
+  through this screen's own overlay stack instead of a separate top-level router.
+
+### Verification
+
+- Confirmed via `git write-tree` + `git ls-tree` diff against `origin/main` that the final result is
+  *exactly* `origin/main` plus the deliberate additions listed above — nothing else differs,
+  confirming no unintended regression slipped through anywhere in the six-file conflict resolution.
+- Rebuilt `Shared` for both `arm64-apple-macosx26.0` and `arm64-apple-ios17.0-simulator` — exit code
+  0, no errors on either.
+- `xcrun swiftc -typecheck` against the full `World/World` and `Rod/Rod` Swift file lists — exit
+  code 0, no errors on either.
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`; confirmed via the compiler's own file
+  list that `TutorialView.swift`/`MainMenuView.swift`/`LoadingScreenView.swift` compiled and
+  `RootView.swift`/`LoadingView.swift` did not (i.e. actually gone, not just untracked).
+- Launched the built `.app` and confirmed via `ps` it ran without crashing.
+- Repo-wide `grep` confirmed zero remaining code references to `RootView`/`LoadingView`/
+  `menuButtonFace`/`menuButtonEdge`/`menuButtonText`/`Theme.overlay` (only historical doc-comment
+  mentions of `RootView` remain, describing where `TutorialView`'s composition pattern came from).
+- `git diff --check` clean.
+- Not run: any live session — Credits/Tutorial are newly rewired onto a navigation model neither
+  was originally built against, and `TutorialView` in particular was never visually confirmed live
+  even on its origin branch (no Accessibility/UI-scripting permission there either, per that
+  branch's own CHECKPOINT history above) — worth an explicit playtest of both before considering
+  this fully settled.

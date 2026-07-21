@@ -25,6 +25,11 @@ import SwiftUI
 /// — matching a supplied reference design. Both images are loose bundled resources, loaded via the
 /// shared `bundleImage(_:)` (see `BundleImage.swift` for why the plain `Image("name")` initializer
 /// isn't used here).
+///
+/// **Credits (ADR-087).** Ported from the `feat/ui-slice` branch's `CreditsView` — ownership of
+/// showing/dismissing it is purely local `@State` here (a full-screen `.overlay`, not a new
+/// `WorldViewModel.Screen` case), since Credits has no bearing on session/gameplay state, unlike
+/// every case that enum already models.
 struct MainMenuView: View {
     let connectionState: ConnectionState
     let pairedDeviceName: String?
@@ -34,6 +39,8 @@ struct MainMenuView: View {
     let onResetProgression: () -> Void
     let onRetryConnection: () -> Void
     let onShowOnboarding: () -> Void
+
+    @State private var isShowingCredits = false
 
     private var isRodReady: Bool {
         connectionState == .ready || connectionState == .streaming
@@ -90,6 +97,8 @@ struct MainMenuView: View {
                     // only actionable button left on this screen.
                     Button("How to Play", action: onShowOnboarding)
                         .buttonStyle(StackedMenuButtonStyle(isProminent: isRodReady))
+                    Button("Credits") { isShowingCredits = true }
+                        .buttonStyle(StackedMenuButtonStyle(isProminent: false))
                     pairedDeviceRow
                     Button("Reset Progress", role: .destructive, action: onResetProgression)
                         .font(.caption.bold())
@@ -99,6 +108,10 @@ struct MainMenuView: View {
                 .padding(.bottom, 56)
             }
             .padding(.horizontal, 32)
+
+            if isShowingCredits {
+                CreditsView(onBack: { isShowingCredits = false })
+            }
         }
     }
 

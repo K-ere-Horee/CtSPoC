@@ -18,7 +18,8 @@ CtSPoC/
 ├── Shared/
 │   ├── Package.swift
 │   └── Sources/Shared/
-│       ├── Models/      # RodState, CastSolution, HookPhase, FishSpecies, network contracts
+│       ├── Models/      # Device/, Gameplay/, Rod/, Spatial/ subfolders — RodState,
+│       │                # CastSolution, HookPhase, FishSpecies, network contracts
 │       ├── Gameplay/    # MotionProfile, RodMotionInterpreter, CastResolver
 │       ├── Debug/       # motion decisions, samples, recorder
 │       ├── Protocols/   # Transport protocol
@@ -36,11 +37,18 @@ CtSPoC/
     ├── Gameplay/        # FishFightController, FishCatalog, FishCatchResult, FishRecordStore
     ├── Audio/           # SoundManager, FishingSounds (ADR-040) — World-only SFX, mirrors Rod's Haptics
     ├── Transport/       # CoreBluetooth host (World = BLE central)
-    ├── Views/CastMeterView.swift, LineTensionView.swift, ResultView.swift
+    ├── Support/         # Theme.swift — shared color/font tokens, ShadowedLabel (ADR-087)
+    ├── Fonts/           # Fredoka-Regular.ttf, Fredoka-Bold.ttf (see ATSApplicationFontsPath below)
+    ├── Views/CastMeterView.swift, LineTensionView.swift, ResultView.swift, CreditsView.swift,
+    │   TutorialView.swift (tap-to-advance overlay shown over ContentView on first "Start Fishing")
     └── Assets/Rod.usdz, Assets/SFX/ (ui_click.wav, cast_throw.wav, hook_splash.wav,
         fish_interested_loop.wav, fish_bite.wav, reel_loop.wav, catch_splash.wav, ambience_lake.mp3,
         idle.wav, reel_fight.wav)
 ```
+
+Custom fonts (`Theme.fredoka`/`fredokaBold`, ADR-087) are registered via both `UIAppFonts` (iOS) and
+`ATSApplicationFontsPath` (macOS) in `World/World/Info.plist` — macOS silently ignores `UIAppFonts`,
+so both keys are required for a font bundled the same way on every platform this target supports.
 
 ## Tech Stack
 
@@ -135,20 +143,13 @@ structure.
 ## Verification
 
 ```sh
-cd Shared
-swiftc -parse-as-library -target arm64-apple-macosx14.0 \
-  -emit-module -module-name SharedMotion \
-  Sources/Shared/Models/Rod/RodAction.swift \
-  Sources/Shared/Models/Spatial/SpatialState.swift \
-  Sources/Shared/Models/Gameplay/HookPhase.swift \
-  Sources/Shared/Models/Rod/RodState.swift \
-  Sources/Shared/Debug/MotionDebugDecision.swift \
-  Sources/Shared/Gameplay/MotionProfile.swift \
-  Sources/Shared/Gameplay/CastResolver.swift \
-  Sources/Shared/Gameplay/RodMotionInterpreter.swift \
-  -o /tmp/SharedMotion.swiftmodule
+cd Shared && swift build
 git diff --check
 ```
+
+`Shared`'s sources are organized into `Models/{Device,Gameplay,Rod,Spatial}/`, `Gameplay/`, `Debug/`,
+`Protocols/`, and `Spatial/` — use `swift build` (reads `Package.swift`) rather than hardcoding a file
+list here, since individual model files have moved between subfolders as the package grew.
 
 Full Xcode/device validation may be blocked by local SourcePackages,
 Observation plugins, simulator, signing, or hardware availability.

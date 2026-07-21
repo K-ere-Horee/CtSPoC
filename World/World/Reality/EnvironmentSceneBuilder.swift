@@ -2,34 +2,25 @@
 //  EnvironmentSceneBuilder.swift
 //  World
 //
-//  Created by Calzy Akmal Indyramdhani on 17/07/26.
-//
 
 import RealityKit
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 import ImageIO
 import simd
-import Foundation
 
-// `DirectionalLightComponent.Color` and `PhysicallyBasedMaterial.BaseColor.tint` are both type
-// aliases for the platform's native color type (`NSColor` on macOS, `UIColor` on iOS/iPadOS) —
-// not `CGColor`, which satisfies neither. `PlatformColor`/`srgbColor(_:_:_:_:)` below build the
-// right concrete type per platform so this file compiles on both without picking one over the
-// other.
-#if canImport(AppKit)
-import AppKit
-typealias PlatformColor = NSColor
-#elseif canImport(UIKit)
-import UIKit
-typealias PlatformColor = UIColor
-#endif
-
-private func srgbColor(_ red: Float, _ green: Float, _ blue: Float, _ alpha: Float = 1.0) -> PlatformColor {
-    #if canImport(AppKit)
-    return NSColor(srgbRed: CGFloat(red), green: CGFloat(green), blue: CGFloat(blue), alpha: CGFloat(alpha))
-    #elseif canImport(UIKit)
-    return UIColor(red: CGFloat(red), green: CGFloat(green), blue: CGFloat(blue), alpha: CGFloat(alpha))
-    #endif
+#if canImport(UIKit)
+private func platformColor(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) -> UIColor {
+    UIColor(red: red, green: green, blue: blue, alpha: alpha)
 }
+#elseif canImport(AppKit)
+private func platformColor(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) -> NSColor {
+    NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
+}
+#endif
 
 /// Assembles the stocked-lake environment from the individually-authored USDZ assets
 /// shipped by the asset repo. The core assets (dock, water, terrain, sky, horizon ring)
@@ -45,7 +36,7 @@ enum EnvironmentSceneBuilder {
     /// 135° azimuth (behind-left of the player), warm ~3200-4000K.
     private static let sunElevationDegrees: Float = 15
     private static let sunAzimuthDegrees: Float = 135
-    private static let sunColor = srgbColor(1.0, 0.82, 0.62)
+    private static let sunColor = platformColor(red: 1.0, green: 0.82, blue: 0.62, alpha: 1.0)
     private static let sunDistance: Float = 200
 
     private static let coreAssetNames = [
@@ -606,7 +597,7 @@ enum EnvironmentSceneBuilder {
         guard var materials = model.model?.materials else { return }
         for i in materials.indices {
             guard var pbm = materials[i] as? PhysicallyBasedMaterial else { continue }
-            pbm.baseColor.tint = srgbColor(0.65, 1.0, 0.6)
+            pbm.baseColor.tint = platformColor(red: 0.65, green: 1.0, blue: 0.6, alpha: 1.0)
             materials[i] = pbm
         }
         model.model?.materials = materials

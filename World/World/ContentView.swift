@@ -67,6 +67,14 @@ struct ContentView: View {
                     fishFight.dismissLevelUpAnnouncement()
                 }
             }
+
+            // ADR-087: ported from `feat/ui-slice`'s `RootView`, which showed this directly over
+            // `ContentView()` the instant "Start Fishing" was first pressed — same trigger here
+            // (`isShowingTutorial` flips true alongside `screen = .playing` in `handleState(_:)`),
+            // just reachable through this screen's own overlay `ZStack` instead of a separate router.
+            if viewModel.screen == .playing, viewModel.isShowingTutorial {
+                TutorialView(onFinished: viewModel.dismissTutorial)
+            }
         }
     }
 
