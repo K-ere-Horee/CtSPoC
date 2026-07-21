@@ -11,6 +11,77 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-068 --- Fight Direction Replaced by a Randomized Flick QTE
+
+## Decision
+
+`FishFightController.FightDirection`/`fightDirection` (ADR-053's lean-left/right rod-roll counter,
+plus `WorldViewModel.updateFightDirectionDrift(deltaTime:)`'s purely-visual sideways hook nudge)
+are removed entirely and replaced by a randomized flick quick-time-event: while a fish is hooked,
+prompts spawn at random intervals, and the player must flick the rod forward — the identical
+physical gesture as a cast release, not a new one to learn — before a short reaction window
+expires.
+
+**World owns the QTE lifecycle.** `FishFightController` gains `isQTEActive: Bool` and
+`qteProgress: Float` (`1.0` at spawn, ticking to `0.0` as the reaction window elapses — normalized
+so the HUD doesn't need its own copy of the window duration). Two private timers
+(`qteSpawnTimer`/`qteReactionTimer`) drive a private `updateQTE(deltaTime:)`, called from
+`updateFight(...)` every tick: while no prompt is active, count down to the next spawn; while one
+is active, count down the reaction window and resolve as a miss (instant `lineTension +=
+qteFailurePenalty`) if it expires. `handleQTEFlick()` — called externally by `WorldViewModel` the
+instant Rod reports a flick — resolves a hit instead (instant `lineTension -= qteSuccessRelief`),
+a no-op if no prompt is currently active. Both success and failure are one-time adjustments, not
+per-second rates like the base tug-of-war formula, since a QTE is a discrete hit or miss. Same sign
+convention as ADR-053's mechanic: a hit relieves tension, a miss spikes it — both framed as
+snap-risk management (the fish's sudden effort going answered or not), not escape-risk.
+`FishFightConfig` gains five fields (`qteSpawnMinInterval`/`qteSpawnMaxInterval` = 4.0/8.0,
+`qteReactionWindow` = 1.5, `qteSuccessRelief`/`qteFailurePenalty` = 0.15/0.15), replacing the seven
+`fightDirection*` fields this supersedes.
+
+**The flick is detected Rod-side, reusing the calibrated cast-release threshold — and reported
+over a `FishingEvent` case Rod itself sends, the first one ever to flow that direction.**
+`FishingEvent` gains `qtePrompt` (World -> Rod, unchanged direction) and `qteFlick` (**Rod ->
+World** — every other case in this enum has only ever flowed World -> Rod; `NetworkMessage.
+fishingEvent`'s wire format is already direction-agnostic, `WorldViewModel.handle(_:)` just never
+had a receiving arm for it before now). `RodViewModel.detectFightFlick()` checks `motion.
+accelerationZ * profile.castAccelerationSign >= profile.castAcceleration` — the exact same
+threshold `RodMotionInterpreter` already uses for cast-release detection — independently of the
+interpreter/`isCastingArmed` entirely, gated only to `hookPhase == .fishOnHook || .reeling`.
+Edge-detected (`wasFightFlicking`) so a sustained flick reports once, not once per frame. Casting
+can never be armed during a fight anyway (`HookPhase.allowsCasting` is only `.idle`), so the two
+detectors — cast-release and fight-flick — can never both fire for the same physical gesture.
+
+`WorldViewModel.handle(_ message: NetworkMessage)` widens from a `guard case let .state(state) =
+message else { return }` to a full `switch`, adding a `case .fishingEvent(.qteFlick):` arm that
+calls `fishFight.handleQTEFlick()` (a `default: break` covers every other inbound case, none of
+which World needs to receive). A new `syncQTE()` (mirroring `syncTensionBand()`'s rising-edge
+pattern) sends `FishingEvent.qtePrompt` the instant `fishFight.isQTEActive` flips `true`, so Rod
+can alert the player even if they're not looking at World's screen — `FishingHaptics` gains a
+`.qtePrompt` case calling a new `HapticManager.qtePrompt()` pattern (a sharp, fast double-tap,
+deliberately distinct from `fishBite()`'s slower 4-pulse rhythm so the two can't be confused).
+
+**HUD.** `LineTensionView` drops the `fightDirection: FishFightController.FightDirection?`
+parameter (and its "Fish pulling ←/→" / "Lean rod →/←" row) for `isQTEActive: Bool`/`qteProgress:
+Float` and a "FLICK ROD NOW!" banner with a shrinking progress bar.
+
+## Rationale
+
+Requested directly: "daripada fish pull dan lean rod, mending diganti jadi QTE yang randomized
+spawn ketika fishInHook. QTE nya adalah, flick device aja ke depan (atau sesuai arah cast)" —
+replace, not supplement, the existing mechanic. Reusing the cast-release gesture/threshold rather
+than inventing a new one was a direct reading of "(atau sesuai arah cast)" (or matching the cast
+direction) and meant zero new calibration was needed — the QTE flick and cast flick are literally
+the same physical motion, differentiated only by which `HookPhase` is currently active.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against `Shared`
+(both `arm64-apple-ios17.0-simulator` and `arm64-apple-macosx26.0` targets) and the full
+`Rod`/`World` file lists against each; not yet played on physical devices. In particular
+unverified: whether a 1.5s reaction window is fair given real BLE round-trip latency between Rod
+detecting a flick and World actually resolving it, and whether 4-8s between prompts reads as
+"randomized" rather than either too frequent or too rare during a typical fight's duration.
+
+------------------------------------------------------------------------
+
 # ADR-067 --- fish_catched SFX, Tension-Slacking Eased 30%, Idle-Loop Coverage Confirmed
 
 ## Decision
@@ -786,6 +857,12 @@ are hand-picked/hand-derived, not measured on a live device.
 ------------------------------------------------------------------------
 
 # ADR-053 --- Fight Direction: a Timed Left/Right Juking Sub-Phase Requiring a Rod Counter
+
+**Superseded by ADR-068**: replaced entirely by a randomized flick QTE ("daripada fish pull dan
+lean rod, mending diganti jadi QTE") — every type/field/method this entry describes
+(`FightDirection`, `fightDirection`, the seven `fightDirection*` `FishFightConfig` fields,
+`updateFightDirectionDrift(deltaTime:)`) was removed from the codebase, not just deprecated. Kept
+below as an accurate record of what shipped and why, at the time.
 
 ## Decision
 

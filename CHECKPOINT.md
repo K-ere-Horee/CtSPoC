@@ -6703,3 +6703,106 @@ revision. No code change made; confirmed to the user instead of blindly re-editi
 - `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
 - `git diff --check` clean.
 - Not run: any live session — same standing caveat as every feel-tuning/SFX change in this project.
+
+## Feature: Fight Direction Replaced by a Randomized Flick QTE (ADR-068)
+
+Date: 2026-07-21.
+
+Requested directly: "daripada fish pull dan lean rod, mending diganti jadi QTE yang randomized
+spawn ketika fishInHook. QTE nya adalah, flick device aja ke depan (atau sesuai arah cast)."
+Recorded as ADR-068 — a full replacement of ADR-053's lean-left/right mechanic, not an addition.
+
+### Shared: FishingEvent, FishFightConfig
+
+- `Shared/Sources/Shared/Models/Gameplay/FishingEvent.swift`: added `qtePrompt` (World -> Rod) and
+  `qteFlick` — the first `FishingEvent` case Rod itself ever constructs and sends; every other
+  case in this enum has only ever flowed World -> Rod.
+- `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: removed the entire "Fight direction
+  (lateral juke)" `MARK` section (`fightDirectionMinDuration`/`MaxDuration`,
+  `fightDirectionSwitchMinInterval`/`MaxInterval`, `fightDirectionRollThreshold`,
+  `fightDirectionCounterRelief`, `fightDirectionPenalty` — seven fields). Replaced with "Fight QTE
+  (flick prompt)": `qteSpawnMinInterval`/`qteSpawnMaxInterval` (4.0/8.0), `qteReactionWindow`
+  (1.5), `qteSuccessRelief`/`qteFailurePenalty` (0.15/0.15).
+
+### World: FishFightController
+
+- Removed `FightDirection` enum, `fightDirection` published property,
+  `fightDirectionRemainingDuration`/`fightDirectionSwitchTimer`, `updateFightDirection
+  (deltaTime:rodRoll:)`.
+- Added `isQTEActive: Bool`, `qteProgress: Float` (normalized `1.0 -> 0.0` countdown),
+  `qteSpawnTimer`/`qteReactionTimer` (private), a private `updateQTE(deltaTime:)` (spawn/reaction
+  timers, resolves a miss as an instant `lineTension += qteFailurePenalty`), and a new
+  `handleQTEFlick() -> Bool` (resolves a hit as an instant `lineTension -= qteSuccessRelief`,
+  no-op if no prompt active).
+- `updateFight(deltaTime:isReeling:reelSpeed:hookDistance:)`: dropped the now-unused `rodRoll`
+  parameter; calls `updateQTE(deltaTime:)` in place of the old `updateFightDirection(...)` call.
+  The main tension formula's `+ directionDelta` term is gone — QTE resolution is now a separate
+  instant adjustment, not folded into the per-second rate.
+- `updateSearching(deltaTime:)`'s bite branch seeds `qteSpawnTimer` (a random delay before the
+  *first* prompt, not instant) instead of `fightDirection`.
+- `resetForNewCast(castDistance:)` and `resolve(outcome:)` both clear the new QTE state instead of
+  the old `fightDirection` state.
+
+### World: WorldViewModel
+
+- Removed `fightDirectionLateralSpeed`/`fightDirectionMaxLateralOffset` constants and
+  `updateFightDirectionDrift(deltaTime:)` entirely (no QTE equivalent was requested).
+- `tick(deltaTime:)`: `fishFight.updateFight(...)` call site drops the `rodRoll: rodState.roll`
+  argument; added `syncQTE()` alongside the existing `syncTensionBand()`.
+- Added `lastQTEActive: Bool` (mirrors `lastSentTensionBand`'s rising-edge pattern) and `syncQTE()`
+  — sends `FishingEvent.qtePrompt` the instant `fishFight.isQTEActive` flips `true`.
+- `handle(_ message: NetworkMessage)` widened from `guard case let .state(state) = message else {
+  return }` to a full `switch`/`handleState(_:)` split, adding `case .fishingEvent(.qteFlick):
+  fishFight.handleQTEFlick()` — the first inbound (Rod -> World) `FishingEvent` this app has ever
+  needed to receive.
+
+### World: LineTensionView / ContentView
+
+- `LineTensionView`: `fightDirection: FishFightController.FightDirection?` parameter and its
+  "Fish pulling ←/→" / "Lean rod →/←" row replaced with `isQTEActive: Bool`/`qteProgress: Float`
+  and a "FLICK ROD NOW!" banner with a shrinking progress capsule.
+- `ContentView.swift`'s `LineTensionView(...)` call site updated to match.
+
+### World: FishingSounds
+
+- `handle(_:)`'s switch gained `case .qtePrompt, .qteFlick: break` (exhaustiveness) — deliberately
+  no dedicated sound; the visual banner and Rod's haptic alert already cover the cue, and no
+  existing sound fit without risking confusion with what it already means elsewhere (e.g.
+  `fishBite`'s own pattern, which already plays at the *start* of a fight).
+
+### Rod: RodViewModel, FishingHaptics, HapticManager
+
+- `RodViewModel`: added `wasFightFlicking: Bool` (edge-detection state) and
+  `detectFightFlick()`, called at the end of `updateAction()`. Checks `motion.accelerationZ *
+  motionInterpreter.profile.castAccelerationSign >= motionInterpreter.profile.castAcceleration` —
+  the identical threshold `RodMotionInterpreter` uses for cast-release detection — but entirely
+  independent of the interpreter/`isCastingArmed`, gated to `hookPhase == .fishOnHook || .reeling`.
+  Sends `.qteFlick` on the rising edge only.
+- `FishingHaptics.handle(_:)`: added `case .qtePrompt: haptics.qtePrompt()` and `case .qteFlick:
+  break` (Rod -> World only, Rod itself never receives this case, but the switch must stay
+  exhaustive).
+- `HapticManager`: added `qtePrompt()` — a sharp, fast double-tap (two pulses, 0.08s apart, both
+  intensity 1.0/sharpness 0.85), deliberately quicker/crisper than `fishBite()`'s slower 4-pulse
+  pattern so the two read as different things.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-068; added a one-line "Superseded by ADR-068" pointer at
+  the top of ADR-053's own entry, keeping the rest of that entry as an untouched historical record.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: replaced the "Fight direction (ADR-053)" paragraph with a
+  full description of the new QTE mechanic under ADR-068.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-ios17.0-simulator` and an `arm64-apple-macosx26.0`
+  module (`-emit-module -emit-library`) directly from `find Sources/Shared -name "*.swift"` — no
+  errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `Rod/Rod` file list (iOS 17 simulator)
+  and the full `World/World` file list (macOS 26) — both exit code 0, no errors.
+- Grepped the whole `World`/`Shared`/`Rod` tree for `fightDirection`/`FightDirection` after every
+  edit — zero remaining references, confirming a complete removal rather than a partial one.
+- `git diff --check` clean.
+- Not run: any live session on physical devices. Unverified in particular: whether the 1.5s
+  reaction window accounts for real BLE round-trip latency between Rod's flick detection and
+  World's resolution, and whether the 4-8s spawn interval feels appropriately "randomized" during
+  a real fight.

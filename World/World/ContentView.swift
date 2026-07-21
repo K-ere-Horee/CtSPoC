@@ -136,7 +136,8 @@ struct ContentView: View {
                 LineTensionView(
                     isFighting: fishFight.hasFishOnHook,
                     tension: fishFight.lineTension,
-                    fightDirection: fishFight.fightDirection
+                    isQTEActive: fishFight.isQTEActive,
+                    qteProgress: fishFight.qteProgress
                 )
 
                 GroupBox {

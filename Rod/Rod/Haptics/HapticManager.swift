@@ -72,6 +72,17 @@ final class HapticManager {
         playTransient(intensity: 1.0, sharpness: 0.2)
     }
 
+    /// A sharp, fast double-tap alerting the player to flick now (ADR-068's QTE mechanic) —
+    /// deliberately quicker and crisper than `fishBite()`'s slower 4-pulse pattern (0.18s+ between
+    /// taps) so the two can't be confused: this needs to read as "act immediately," not "something
+    /// happened."
+    func qtePrompt() {
+        playPattern([
+            (1.0, 0.85, 0),
+            (1.0, 0.85, 0.08)
+        ])
+    }
+
     /// One tap of the continuous fight rhythm (ADR-039); repeated externally by
     /// `FishingHaptics.fightPulse(now:)` at the active tension band's interval, with the band
     /// deciding intensity/sharpness — `HapticManager` stays band-agnostic.

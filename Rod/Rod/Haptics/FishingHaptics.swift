@@ -88,6 +88,16 @@ final class FishingHaptics {
         case .reelTensionHigh:
             isFishInterested = false
             fightBand = .high
+        case .qtePrompt:
+            // ADR-068: a sharp, distinct alert telling the player to flick now — deliberately not
+            // reusing `fishBite()`'s pattern (which already means something different: the start
+            // of a fight, not a mid-fight prompt) or the continuous `fightTick` rhythm (which
+            // keeps running underneath this regardless).
+            haptics.qtePrompt()
+        case .qteFlick:
+            // Rod -> World only; Rod itself never receives this case. Exhaustive switch requires
+            // a branch anyway.
+            break
         }
     }
 

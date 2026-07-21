@@ -758,26 +758,55 @@ through `.flying`, `.fishOnHook`, and `.reeling` — the whole cast and
 fight are watched up close — snapping back to the fixed player pose in
 every other phase.
 
-**Fight direction: a timed left/right juking sub-phase (ADR-053).** The instant a fish bites,
-`fishFight.fightDirection` (`.left`/`.right`) starts a random 5-10s window (config-driven), flipping
-to the opposite side every random 0.6-1.8s — layered *on top of* the tension formula above, not a
-separate failure mode. `updateFight` takes `RodState.roll` and applies a tension delta each tick:
+**Fight QTE: a randomized flick prompt (ADR-068, replaces ADR-053's lean-left/right juke).**
+Requested directly: "daripada fish pull dan lean rod, mending diganti jadi QTE yang randomized
+spawn ketika fishInHook. QTE nya adalah, flick device aja ke depan (atau sesuai arah cast)."
+`FishFightController.isQTEActive`/`qteProgress` replace `fightDirection` entirely — no rod tilt is
+read anymore, only a rod *flick*, the same physical gesture as a cast release.
 
 ```text
-correctly countering (.left needs rodRoll >= threshold, .right needs rodRoll <= -threshold)
-  -> tension -= fightDirectionCounterRelief per second
-not countering
-  -> tension += fightDirectionPenalty per second
+On bite: qteSpawnTimer = random(qteSpawnMinInterval...qteSpawnMaxInterval)   // first prompt isn't instant
+
+Each updateFight tick, while no prompt is active:
+  qteSpawnTimer -= deltaTime
+  at 0: isQTEActive = true, qteReactionTimer = qteReactionWindow
+
+While a prompt is active:
+  qteReactionTimer -= deltaTime
+  qteProgress = qteReactionTimer / qteReactionWindow   // 1.0 -> 0.0, drives the HUD's shrinking bar
+  at 0 (missed): tension += qteFailurePenalty (instant, not a rate), re-seed qteSpawnTimer
+
+On a flick arriving from Rod while isQTEActive (handleQTEFlick()):
+  tension -= qteSuccessRelief (instant, not a rate), re-seed qteSpawnTimer
 ```
 
-A fish pulling `.left` requires a positive rod roll (leaning the rod right) to counter, matching
-real-fishing "rod-side pressure" — keeping the rod angled opposite a fish's sideways run. Purely
-visual, separate concern: `WorldViewModel.updateFightDirectionDrift(deltaTime:)` nudges the hook's
-world-X position toward the current direction (clamped near the rod's own X) so the fish visibly
-darts side to side; this never feeds back into the tension check above, which reads `RodState.roll`
-directly. Surfaced on `LineTensionView` (World HUD, not Rod) as a "Fish pulling ←/→" / "Lean rod
-→/←" row — Rod has no way to convey a left/right cue haptically, and World already owns gameplay
-HUD. All seven new numbers live in `FishFightConfig` alongside the rest of the fight tuning.
+Success/failure are instant `lineTension` adjustments (unlike the base tug-of-war formula's
+per-second rates), since a QTE is a discrete hit or miss, not a held state — same sign convention
+ADR-053 used (a hit relieves tension, a miss spikes it, both read as snap-risk management, not
+escape-risk).
+
+**The flick itself is detected Rod-side, reusing the calibrated cast-release threshold, and
+reported over a new `FishingEvent` Rod actually sends (previously every case flowed World -> Rod
+only).** `RodViewModel.detectFightFlick()` checks `motion.accelerationZ * profile.
+castAccelerationSign >= profile.castAcceleration` — the identical check `RodMotionInterpreter`
+already used for cast-release detection — but independently of `RodMotionInterpreter`/
+`isCastingArmed` entirely, gated only to `hookPhase == .fishOnHook || .reeling`. Edge-detected
+(`wasFightFlicking`) so one flick reports once. On detecting a flick it sends `.qteFlick`
+(`FishingEvent`, reliable delivery) to World, whose `handle(_:)` (widened from a `guard case
+.state` to a full `switch`) forwards it to `fishFight.handleQTEFlick()` — a no-op whenever no
+prompt is active, so a stray/late/unprompted flick never has any effect. World also gains
+`syncQTE()` (same rising-edge pattern as `syncTensionBand()`): the instant `isQTEActive` flips
+true, it sends `FishingEvent.qtePrompt` (World -> Rod) so `HapticManager.qtePrompt()` (a sharp,
+fast double-tap, deliberately distinct from `fishBite()`'s slower pattern) alerts the player to
+flick *now* — otherwise a player watching Rod rather than World's screen would have no cue a
+prompt even exists.
+
+Surfaced on `LineTensionView` (World HUD, not Rod — Rod still owns no gameplay HUD) as a "FLICK ROD
+NOW!" banner with a shrinking progress bar (`qteProgress`) while `isQTEActive`. All five new
+`FishFightConfig` numbers (`qteSpawnMinInterval`/`qteSpawnMaxInterval`/`qteReactionWindow`/
+`qteSuccessRelief`/`qteFailurePenalty`) replace the seven `fightDirection*` fields ADR-053 added;
+`updateFightDirectionDrift(deltaTime:)`'s purely-visual sideways hook nudge was removed outright
+along with them, since it had no QTE equivalent requested.
 
 `resistance` itself (ADR-030) is not read straight off the species — it is
 scaled by how big *this* catch rolled within the species' own range, so two
