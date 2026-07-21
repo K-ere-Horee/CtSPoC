@@ -5629,3 +5629,249 @@ ADR-055 in `ARCHITECTURE_DECISIONS.md`.
   `World/World` file list — exit code 0, no errors.
 - `git diff --check` clean on every file this entry touched.
 - Not run: any live session.
+
+## Fix: Cast Hold Timer Reset on Classification Flicker (ADR-054 correction)
+
+Date: 2026-07-20.
+
+Reported directly after playing ADR-054's cast timer change: "cast mechanism nge bug." Investigated
+by re-reading `RodMotionInterpreter.interpret(_:isCastingArmed:)` line by line rather than guessing,
+before writing any fix.
+
+### Root cause
+
+`castHoldStartTimestamp` reset whenever `previousClassification != .cast` — i.e. on every frame
+classification freshly became `.cast`. `distances(from:).minimum` picks whichever of idle/cast/reel
+reads closest *this exact frame*, with no hysteresis. While the player holds still to charge,
+ordinary sensor jitter can make the pose read fractionally closer to `idlePose` than `castPose` for
+one single frame, flipping classification to `.idle` and back to `.cast` the very next frame — which
+looked identical to a genuine fresh backswing entry, silently zeroing the hold timer and discarding
+however long the player had already charged. This would read exactly as "the cast never charges no
+matter how long I hold it."
+
+A second, related gap: `castHoldStartTimestamp` was only cleared from inside the
+`case .cast where !isCastingArmed:` branch — reached only when the pose is *also* still
+cast-classified while disarmed. If, between two cast attempts, the pose swung all the way back to a
+genuinely idle classification instead of lingering near the idle/cast boundary, execution never
+passed through that branch, leaving a stale timestamp from the *previous* attempt sitting unreset
+for the next one to pick up.
+
+### Shared: RodMotionInterpreter
+
+- Added a top-level guard, run every frame before the classification `switch` regardless of which
+  branch executes: `if !isCastingArmed { castHoldStartTimestamp = nil }`. This is now the only
+  place the timer is cleared from cast-arming state (plus `updateProfile(_:)`/`setIdlePose(_:)`'s
+  existing full resets) — no longer tied to which classification branch happens to run.
+- `case .cast:` now starts the timer only `if castHoldStartTimestamp == nil`, instead of on every
+  classification transition — immune to a single flicker frame, since the timestamp simply isn't
+  touched unless it's actually unset.
+- Renamed the classification-transition variable used by the release-trigger's OR-condition from
+  `enteredCast` to `isFreshCastEntry`, to make clear it's now unrelated to the timer (kept for the
+  edge case of a release firing on the very first frame of an attempt that's already
+  forward-accelerating) — its own logic is otherwise unchanged.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: amended ADR-054's cast-timer section in place with a
+  "Live-tested correction, same day" paragraph, matching this project's existing precedent for
+  same-session fixes (e.g. ADR-034/039).
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session. The fix is reasoned from re-reading the exact code path rather than
+  reproduced on a device — whether classification flicker was in fact the specific symptom the
+  player hit (vs. some other cast issue) is not independently confirmed; if the cast still feels
+  wrong after this, that distinction is the first thing to check next.
+
+## Cast Power Drops Flick Entirely; Live Timer Shown in World (ADR-056)
+
+Date: 2026-07-20.
+
+Requested directly, right after an explanation of how cast/reel currently work: "bisa ga instead of
+pake 'flick' aja, gimana kalo timer aja yang ditampilin di World, berapa lama kita nahan hp
+kebelakang? jadi remove flick totally. Tampilin juga cast meter power yang nge charge di World view
+nya. Gimana? Jadi ketika user nge flick, baru jarak hook akan ke register, sesuai power yang udah di
+tahan tadi." Recorded as ADR-056 in `ARCHITECTURE_DECISIONS.md`.
+
+### Shared: CastResolver / RodMotionInterpreter
+
+- `CastResolver.resolve(_:)`: dropped the `flickPower` term entirely — `normalizedPower = holdPower`
+  directly, no more `* (0.7 + 0.3 * flickPower)` blend.
+- Removed `CastSnapshot.angularVelocity: CastVector3` and `CastConfig.minimumCastVelocity`/
+  `maximumCastVelocity` — confirmed via `grep` first that nothing else read them.
+- `RodMotionInterpreter.interpret(_:isCastingArmed:)`'s `.cast` case: removed the `flickPower`
+  calculation, `castPower` is now the hold-duration ratio directly.
+- Added `castHoldDuration: TimeInterval` to `RodMotionInterpretation` (and the `result(...)` helper
+  that builds it) — the live raw seconds-held value, threaded through both the charging-phase and
+  release returns. Added `releasedHoldDuration` (mirrors the existing `releasedCastPower`) so the
+  `followThrough` early-return replays the frozen final hold time instead of resetting it.
+- Removed `RodMotionInput.rotationRateX/Y/Z` — the only consumer anywhere in the repo was building
+  the now-deleted `angularVelocity`; `rotationRateMagnitude` (still used for reel speed) is
+  unaffected.
+- `snapshot(input:orientation:holdDuration:)` no longer builds an `angularVelocity` vector.
+
+### Rod: MotionManager / RodViewModel
+
+- `MotionManager.swift`: removed `rotationRateX/Y/Z` from `MotionSample` and its construction in
+  `start()` — CoreMotion's per-axis rotation rate is no longer read at all past computing the
+  aggregate `rotationRateMagnitude`.
+- `RodViewModel.swift`: removed `rotationRateX/Y/Z` from the initial `MotionSample` default and the
+  `motionInput` computed property. Threaded `castHoldDuration` into all three `RodState(...)`
+  construction sites — carried forward from `rodState.castHoldDuration` in `publishState()`, fresh
+  from `interpretation.castHoldDuration` in `updateAction()` (the `.hookPhase` idle-reset site
+  doesn't specify it, same as it already didn't for `motionPhase`/`castPower` — defaults to 0).
+
+### Shared: RodState
+
+- Added `castHoldDuration: TimeInterval` (default 0), transmitted every `.state` tick alongside the
+  existing `castPower`.
+
+### World: CastMeterView / ContentView
+
+- **Found `CastMeterView`'s call site fully commented out in `World/ContentView.swift`** — the view
+  itself was already correct (ADR-045's own finding held), it simply was never in the render tree.
+  Uncommented it.
+- `CastMeterView.swift`: added a `holdDuration: TimeInterval` parameter, rendered as a
+  `String(format: "Holding %.1fs", holdDuration)` readout next to the "Cast Meter" title, alongside
+  the existing normalized power bar.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-056.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: rewrote the "Cast Resolver Pipeline" section's power formula
+  and surrounding prose to drop the flick blend and describe the removed dead-code chain and the
+  now-uncommented `CastMeterView`; fixed a trailing sentence that had gone stale (previously said
+  `CastMeterView` "needed no changes," no longer true once its call site fix is accounted for).
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `grep` confirmed zero remaining references to `rotationRateX`/`rotationRateY`/`rotationRateZ`/
+  `angularVelocity`/`flickPower`/`minimumCastVelocity`/`maximumCastVelocity` anywhere in the repo
+  after removal.
+- `git diff --check` clean on every file this entry touched.
+- Not run: any live session. Whether pure hold-duration power (zero flick influence) feels good on
+  release, and whether the new "Holding X.Xs" readout is legible/well-timed during a real cast, are
+  both unverified until tried physically.
+
+## Cast Power Becomes an Oscillating Timing Mini-Game (ADR-057)
+
+Date: 2026-07-20.
+
+Requested directly: "gini, ketika user pencet tombol 'Start Casting', maka meteran akan naik turun
+perlahan (kaya di game yang nyari momen pas), baru ketika user nge flick, otomatis bakal ke
+register sebagai cast." Recorded as ADR-057 in `ARCHITECTURE_DECISIONS.md` — a direct redesign of
+ADR-054/056's charge-ramp model into a timing minigame, not a bugfix.
+
+### Shared: CastResolver / RodMotionInterpreter
+
+- `CastConfig`: removed `minimumBackswingHoldDuration`/`maximumBackswingHoldDuration`, added
+  `oscillationPeriod: TimeInterval = 2.0` (seconds for one full 0→1→0 cycle).
+- `CastResolver.resolve(_:)`: replaced the linear ramp-and-cap formula with
+  `power = (1 - cos(backswingHoldDuration * 2π / oscillationPeriod)) / 2` — continuously
+  oscillating for as long as the backswing is held, rather than climbing once and plateauing.
+- `RodMotionInterpreter`: replaced its `minimumBackswingHoldDuration`/`maximumBackswingHoldDuration`
+  private constants with its own `oscillationPeriod` (kept manually in sync with `CastConfig`'s,
+  same duplication pattern this file already used for the bounds it replaces). The `.cast` case's
+  `castPower` calculation now applies the identical oscillation formula to `holdDuration`.
+- Everything else in the pipeline is untouched: `castHoldStartTimestamp` tracking (including the
+  flicker-immunity fix from the ADR-054 correction), the `isCastingArmed` gate, `forwardMotion`'s
+  flick-detection threshold, `CastSnapshot`'s shape, and the transmission path to `RodState`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-057.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: rewrote the "Cast Resolver Pipeline" power-formula
+  paragraph to describe the oscillation curve in place of the ramp.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `grep` confirmed zero remaining references to `minimumBackswingHoldDuration`/
+  `maximumBackswingHoldDuration` anywhere in the repo after removal.
+- `git diff --check` clean.
+- Not run: any live session. `oscillationPeriod` (2.0s) is a hand-picked first guess at "perlahan"
+  — whether a 2-second full cycle gives a comfortably timeable window (vs. too fast to react to, or
+  too slow to feel responsive) is unverified until tried physically.
+
+## Fix: Re-Arming Inherited the Previous Cast's Frozen Power (ADR-057 correction)
+
+Date: 2026-07-20.
+
+Reported directly after playing ADR-057's oscillating meter: "power nya meningkat terlalu cepat,
+sampai sampai ketika aku pencet 'start casting', tiba tiba powernya udah max aja."
+
+### Root cause
+
+`interpret(_:)`'s `followThrough` early-return (`input.timestamp < castEndsAt`, replaying
+`releasedCastPower`/`releasedHoldDuration`) was gated purely on Rod's own local post-release
+cooldown (`profile.castDuration`, ~0.15–0.8s) — entirely independent of `isCastingArmed`. Re-arming
+("Start Casting" again) shortly after a release, well within that short local window, hit this
+guard and kept replaying the *previous* cast's frozen power — which the oscillating meter (ADR-057)
+can easily have released at or near its peak. Read exactly as "the instant I press the button,
+power is already max," when it was really the last cast's leftover freeze-frame bleeding into the
+new attempt.
+
+### Shared: RodMotionInterpreter
+
+- Whenever `isCastingArmed` is true, `castEndsAt` is now reset to the current timestamp *before*
+  the `followThrough` check runs — a fresh arm always wins over any still-ticking cooldown from a
+  previous attempt, so the check never fires while armed, and a genuinely fresh oscillation (from
+  `castHoldStartTimestamp`, already correctly `nil` from the disarmed interval) starts immediately.
+- Also slowed `oscillationPeriod` 2.0s -> 3.5s, responding to the same report's "terlalu cepat" more
+  generally, not just the re-arm bug.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: amended ADR-057 in place with a "Live-tested correction" paragraph,
+  matching this project's precedent for same-session fixes.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the oscillation-period mention (2.0s -> 3.5s) and
+  added a short paragraph describing the re-arm fix.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session. Whether this was the complete explanation for the reported symptom
+  (vs. some other contributing factor), and whether 3.5s now feels appropriately "perlahan," are
+  both unverified until tried physically.
+
+## Session Handoff: WINDOW_2.md
+
+Date: 2026-07-20.
+
+Requested directly: "buatin WINDOW_2.md nya dong untuk handover." Documentation-only — no Swift,
+Xcode project, asset, or runtime structure touched.
+
+Added `WINDOW_2.md` (project root, matching `Archive/WINDOW_1.md`'s original shape and purpose): a
+navigation summary covering ADR-041 through ADR-057 (plus two in-place "live-tested correction"
+amendments, to ADR-054 and ADR-057). Content: an explicit git-state warning up front (uncommitted
+work on top of `dev`'s current tip `68d3f4d`, the mid-session detached-HEAD incident and how it was
+resolved, the pre-existing stashes that aren't this session's), a chronological TL;DR, a full
+ADR table with pointers, the standing "verified via typecheck only, never played" caveat carried
+forward from `WINDOW_1.md`, a known-issues section (including the still-unresolved ADR-030/031
+numbering collision, now flagged a third time across handoff documents), and suggested next steps
+led by "commit the pending work" and "actually play the cast mechanic."
+
+Explicitly recorded rather than glossed over: this window's ADR-044 through ADR-048 are **not**
+this session's own work — they landed via merging in a teammate's parallel `feat/playtest-refine`
+branch, which is also why this session's own four-feature batch needed renumbering from 044-047 to
+049-052 (a real ADR-numbering collision, resolved via `git merge` + manual renumbering + updating
+every cross-reference, documented in its own dated entry earlier in this file).
+
+No verification needed beyond confirming the file exists and reads correctly — pure documentation,
+no code path affected.

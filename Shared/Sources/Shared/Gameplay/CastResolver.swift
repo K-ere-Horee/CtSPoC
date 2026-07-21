@@ -31,52 +31,44 @@ public struct CastVector3: Codable, Sendable, Equatable {
 
 public struct CastSnapshot: Codable, Sendable, Equatable {
     public let orientation: RodOrientation
-    public let angularVelocity: CastVector3
     public let timestamp: TimeInterval
     /// Seconds the pose was held in the backswing/charging zone (since "Start Casting" armed and
-    /// the pose first classified as a cast attempt) before this release. Lets `CastResolver` weigh
-    /// "how long did you hold it back" alongside raw release-moment flick speed, instead of flick
-    /// speed alone — a deliberate "hold to charge" timer, replacing the earlier pull-back-distance
-    /// measurement (ADR-032) with something more legible on the cast meter.
+    /// the pose first classified as a cast attempt) before this release — fed through
+    /// `CastConfig.oscillationPeriod`'s timing-meter curve (ADR-057) to become power. Not a
+    /// monotonic charge: the resulting power rises and falls continuously for as long as the
+    /// backswing is held, so releasing at a different instant gives a different power even for the
+    /// same total hold time. The flick always triggers the release; it never scales the result
+    /// (ADR-056).
     public let backswingHoldDuration: TimeInterval
 
     public init(
         orientation: RodOrientation,
-        angularVelocity: CastVector3,
         timestamp: TimeInterval,
         backswingHoldDuration: TimeInterval = 0
     ) {
         self.orientation = orientation
-        self.angularVelocity = angularVelocity
         self.timestamp = timestamp
         self.backswingHoldDuration = backswingHoldDuration
     }
 }
 
 public struct CastConfig: Codable, Sendable, Equatable {
-    public var minimumCastVelocity: Float
-    public var maximumCastVelocity: Float
     public var minimumLaunchAngle: Float
     public var maximumLaunchAngle: Float
-    /// `backswingHoldDuration` (seconds) below which holding the backswing contributes no power,
-    /// and at/above which it contributes full power.
-    public var minimumBackswingHoldDuration: TimeInterval
-    public var maximumBackswingHoldDuration: TimeInterval
+    /// Seconds for one full oscillation of the timing meter (0 -> 1 -> 0), continuously repeating
+    /// for as long as the backswing is held (ADR-057) — "meteran naik turun perlahan," a classic
+    /// timing-minigame curve rather than a charge-and-cap ramp. The flick locks in whatever power
+    /// the meter reads at that exact instant.
+    public var oscillationPeriod: TimeInterval
 
     public init(
-        minimumCastVelocity: Float = 0.8,
-        maximumCastVelocity: Float = 5.0,
         minimumLaunchAngle: Float = 0.15,
         maximumLaunchAngle: Float = 0.65,
-        minimumBackswingHoldDuration: TimeInterval = 0.15,
-        maximumBackswingHoldDuration: TimeInterval = 1.5
+        oscillationPeriod: TimeInterval = 3.5
     ) {
-        self.minimumCastVelocity = minimumCastVelocity
-        self.maximumCastVelocity = maximumCastVelocity
         self.minimumLaunchAngle = minimumLaunchAngle
         self.maximumLaunchAngle = maximumLaunchAngle
-        self.minimumBackswingHoldDuration = minimumBackswingHoldDuration
-        self.maximumBackswingHoldDuration = maximumBackswingHoldDuration
+        self.oscillationPeriod = oscillationPeriod
     }
 }
 
@@ -132,16 +124,13 @@ public struct CastResolver: Sendable {
         var horizontal = CastVector3(x: forward.x, y: 0, z: forward.z).normalized()
         if horizontal.length == 0 { horizontal = .forward }
 
-        let velocitySpan = max(config.maximumCastVelocity - config.minimumCastVelocity, 0.001)
-        let flickPower = min(1, max(0, (snapshot.angularVelocity.length - config.minimumCastVelocity) / velocitySpan))
-
-        let holdSpan = max(config.maximumBackswingHoldDuration - config.minimumBackswingHoldDuration, 0.001)
-        let holdPower = Float(min(1, max(0, (snapshot.backswingHoldDuration - config.minimumBackswingHoldDuration) / holdSpan)))
-
-        // How long the backswing was held sets the base power; a fast release
-        // flick only adds up to a 30% bonus on top. You can't cast far with
-        // a fast flick alone if you never held the charge for it.
-        let normalizedPower = holdPower * (0.7 + 0.3 * flickPower)
+        // Timing-meter curve (ADR-057): power oscillates continuously between 0 and 1 for as long
+        // as the backswing is held, instead of ramping up and capping. `(1 - cos(t)) / 2` starts at
+        // 0, peaks at 1 halfway through `oscillationPeriod`, returns to 0 at the full period, and
+        // repeats — the flick (never this formula) decides when to lock in whatever it reads.
+        let period = max(config.oscillationPeriod, 0.001)
+        let phase = snapshot.backswingHoldDuration * 2 * Double.pi / period
+        let normalizedPower = Float((1 - cos(phase)) / 2)
         let launchAngle = config.minimumLaunchAngle
             + ((config.maximumLaunchAngle - config.minimumLaunchAngle) * normalizedPower)
 

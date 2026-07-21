@@ -24,6 +24,9 @@ public struct RodState: Codable, Sendable, Equatable {
     public let castSolution: CastSolution?
     public let motionPhase: RodMotionPhase
     public let castPower: Float
+    /// Live seconds held in the current backswing/charging attempt — lets World show the actual
+    /// charging timer alongside the normalized `castPower` bar (ADR-056).
+    public let castHoldDuration: TimeInterval
     /// Whether the player has pressed "Start Fishing" on Rod. World drives its own Main Menu <->
     /// Playing transition off this field (see ADR-038) instead of a World-side button — Rod is
     /// the sole authority for the session boundary.
@@ -41,6 +44,7 @@ public struct RodState: Codable, Sendable, Equatable {
         castSolution: CastSolution? = nil,
         motionPhase: RodMotionPhase = .invalid,
         castPower: Float = 0,
+        castHoldDuration: TimeInterval = 0,
         isFishing: Bool = false
     ) {
         self.timestamp = timestamp
@@ -57,6 +61,7 @@ public struct RodState: Codable, Sendable, Equatable {
         self.castSolution = castSolution
         self.motionPhase = motionPhase
         self.castPower = castPower
+        self.castHoldDuration = castHoldDuration
         self.isFishing = isFishing
     }
 }

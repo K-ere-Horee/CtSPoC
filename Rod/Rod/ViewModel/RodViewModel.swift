@@ -68,9 +68,6 @@ final class RodViewModel: ObservableObject {
             yaw: 0,
             accelerationZ: 0,
         rotationRateMagnitude: 0
-        , rotationRateX: 0
-        , rotationRateY: 0
-        , rotationRateZ: 0
     )
     private var pose = RodMotionPose(pitch: 0, roll: 2, yaw: 0)
     private var orientation = RodOrientation.identity
@@ -303,6 +300,7 @@ final class RodViewModel: ObservableObject {
             castSolution: rodState.castSolution,
             motionPhase: rodState.motionPhase,
             castPower: rodState.castPower,
+            castHoldDuration: rodState.castHoldDuration,
             isFishing: isFishing
         )
         guard connectionState == .ready || connectionState == .streaming else { return }
@@ -362,6 +360,7 @@ final class RodViewModel: ObservableObject {
             castSolution: resolvedCastSolution,
             motionPhase: motionPhase,
             castPower: interpretation.castPower,
+            castHoldDuration: interpretation.castHoldDuration,
             isFishing: isFishing
         )
 
@@ -383,9 +382,6 @@ final class RodViewModel: ObservableObject {
             yaw: motion.yaw,
             rotationRateMagnitude: motion.rotationRateMagnitude,
             accelerationZ: motion.accelerationZ
-            , rotationRateX: motion.rotationRateX
-            , rotationRateY: motion.rotationRateY
-            , rotationRateZ: motion.rotationRateZ
         )
     }
 

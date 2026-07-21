@@ -152,13 +152,12 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                /*
                 CastMeterView(
                     castSolution: viewModel.rodState.castSolution,
                     power: viewModel.rodState.castPower,
-                    phase: viewModel.rodState.motionPhase
+                    phase: viewModel.rodState.motionPhase,
+                    holdDuration: viewModel.rodState.castHoldDuration
                 )
-                 */
 
                 if let lastError = viewModel.lastError {
                     Text(lastError).foregroundStyle(.red)

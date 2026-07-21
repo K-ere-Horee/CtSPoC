@@ -260,31 +260,47 @@ RodMotionInterpreter -> CastSnapshot -> RodState -> CastResolver
                     -> CastSolution -> Gameplay/World Physics
 ```
 
-`CastSnapshot` is immutable and contains corrected orientation, angular
-velocity, timestamp, and `backswingHoldDuration` (seconds): how long the
-backswing/charging pose was held before release, tracked by
-`RodMotionInterpreter` and reset whenever a fresh cast gesture begins.
-`CastResolver` computes horizontal direction, launch angle, and normalized
-power. Raw angular velocity is never exposed to gameplay as a balancing
-value on its own — power is a blend where the hold duration is the base
-(zero hold means zero power regardless of flick speed) and release-moment
-flick speed only adds up to a 30% bonus on top:
+`CastSnapshot` is immutable and contains corrected orientation, timestamp, and
+`backswingHoldDuration` (seconds): how long the backswing/charging pose was
+held before release, tracked by `RodMotionInterpreter` and reset whenever a
+fresh cast gesture begins. `CastResolver` computes horizontal direction,
+launch angle, and normalized power — as a continuous **timing-meter
+oscillation**, not a charge ramp (ADR-057):
 
 ```text
-power = holdPower * (0.7 + 0.3 * flickPower)
+phase = backswingHoldDuration * 2π / oscillationPeriod
+power = (1 - cos(phase)) / 2
 ```
 
-**This was originally a pull-back-*distance* measurement (ADR-032), swapped to a hold-*duration*
-timer in ADR-054** — same blend shape and same reasoning (a real rod loads on the backswing and
-releases on the forward snap), just a more legible "hold to charge" mental model for the base term:
-`RodMotionInterpreter` tracks `castHoldStartTimestamp`, set the instant a cast attempt is armed
-(see below) and the pose first reads as a cast attempt; `holdDuration` is the elapsed time since.
-`RodMotionInterpreter`'s live `castPower` (the charging-phase meter) computes the same blend locally
-so the on-screen meter reflects what the eventual release will produce;
-`CastResolver`, driven by `CastConfig`'s `minimum`/`maximumCastVelocity`
-and `minimum`/`maximumBackswingHoldDuration` (0.15/1.5s), remains the single
-authoritative calculation that becomes the transmitted `CastSolution.
-power`.
+Power starts at `0`, rises to `1` at half the period, falls back to `0` at the full period, and
+repeats indefinitely for as long as the backswing is held — a classic "hit the peak" timing-minigame
+curve ("meteran naik turun perlahan"), replacing ADR-054/056's monotonic ramp entirely. The flick
+(`forwardMotion`, an acceleration-threshold check in `RodMotionInterpreter`) still *triggers* the
+release — unchanged since ADR-032 — it just locks in whatever the oscillation reads at that instant
+rather than a value that only ever grew with hold time (it never scaled the result at all, per
+ADR-056). `RodMotionInterpreter` tracks `castHoldStartTimestamp`, set the instant a cast attempt is
+armed (see below) and the pose first reads as a cast attempt; `holdDuration` is the elapsed time
+since, transmitted live as `RodState.castHoldDuration` (not just the normalized `castPower`) so
+World can show the actual timer alongside the oscillating bar. `RodMotionInterpreter`'s live
+`castPower` (the charging-phase meter) applies the identical formula locally (keeping its own
+`oscillationPeriod` constant in sync with `CastConfig`'s) so the on-screen meter always agrees with
+what the eventual release will produce; `CastResolver`, driven by `CastConfig.oscillationPeriod`
+(3.5s), remains the single authoritative calculation that becomes the transmitted
+`CastSolution.power`. `CastSnapshot.angularVelocity`/`CastConfig`'s velocity bounds and the
+per-axis `rotationRateX/Y/Z` plumbing that only ever fed the old flick term were removed outright
+(ADR-056) rather than left dead — confirmed via `grep` that nothing else depended on any of it.
+
+**Re-arming always wins over a stale `followThrough` freeze-frame (ADR-057 correction).** A fresh
+"Start Casting" press resets `castEndsAt` to the current timestamp before the `followThrough`
+early-return is checked, so a still-ticking cooldown from the *previous* cast (a purely local,
+World-round-trip-independent timer) can never leak that cast's frozen `releasedCastPower` into a
+new attempt — without this, re-arming shortly after a release could read as "power is already
+maxed" the instant the button is pressed.
+
+**World's `CastMeterView` is now actually shown (ADR-056).** Its call site in
+`World/ContentView.swift` had been commented out; the view itself was already correct (per ADR-045's
+finding), it just was never in the render tree. Now uncommented, with a `holdDuration` parameter
+rendering a live "Holding X.Xs" readout alongside the existing normalized power bar.
 
 **A cast attempt must be explicitly armed first (ADR-050).**
 `RodMotionInterpreter.interpret(_:isCastingArmed:)` treats a cast-classified
@@ -295,9 +311,10 @@ meter — unless `isCastingArmed` is `true`. Rod's new "Start Casting" button
 actually fires, once `hookPhase` leaves `.idle` for any reason, or on
 `endFishing()`. This adds intent on top of the existing motion math above —
 it does not change how power/direction are computed once a real attempt is
-armed and running. World's `CastMeterView` needed no changes: its visibility
-already follows `RodState.motionPhase` reaching a charging-related phase,
-which now only happens once armed.
+armed and running. `CastMeterView`'s visibility logic itself needed no
+changes for this: it already follows `RodState.motionPhase` reaching a
+charging-related phase, which now only happens once armed (the view's call
+site being commented out, unrelated to arming, was fixed separately above).
 
 Definition of Done for each sprint:
 

@@ -11,6 +11,147 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-057 --- Cast Power Becomes a Timing Mini-Game, Not a Charge Ramp
+
+## Decision
+
+Replaced ADR-054/056's monotonic hold-duration ramp (`castPower` rises linearly with hold time,
+capping at `maximumBackswingHoldDuration`) with a **continuously oscillating** power curve:
+
+```text
+phase = backswingHoldDuration * 2π / oscillationPeriod
+power = (1 - cos(phase)) / 2
+```
+
+Starting at `0` the instant "Start Casting" arms and the pose first reads as a cast attempt, power
+rises smoothly to `1` at half the period, falls back to `0` at the full period, and repeats
+indefinitely for as long as the backswing is held — a classic timing-minigame curve ("meteran naik
+turun perlahan," a golf-swing-meter/fishing-bobber-game shape), not a charge-and-cap ramp. The flick
+(`forwardMotion`, unchanged) still triggers the release exactly as before; it now locks in whatever
+the oscillating value happens to be at that exact instant, rather than a value that only ever grew
+with hold time.
+
+`CastConfig.minimumBackswingHoldDuration`/`maximumBackswingHoldDuration` (ADR-054/056) are removed
+— replaced by a single `oscillationPeriod: TimeInterval` (2.0s: one full 0→1→0 cycle). Both
+`RodMotionInterpreter`'s live meter and `CastResolver.resolve(_:)`'s authoritative calculation apply
+the identical formula to the same `backswingHoldDuration` value (transmitted unchanged via
+`CastSnapshot`, per ADR-056), so the live meter always agrees with what a release actually produces
+— `RodMotionInterpreter` keeps its own `oscillationPeriod` constant in sync with `CastConfig`'s,
+the same duplication pattern this file already used for the bounds it just replaced.
+
+No other part of the pipeline changed: arming (`isCastingArmed`), the pose-classification gate, the
+flick-detection threshold, `CastMeterView`'s display (its existing power-bar offset now simply
+sweeps back and forth instead of climbing once), and the World transmission path are all untouched.
+
+**Live-tested correction, same day: re-arming inherited the previous cast's frozen power.**
+Reported directly: "power nya meningkat terlalu cepat, sampai sampai ketika aku pencet 'start
+casting', tiba tiba powernya udah max aja" (the power ramps up too fast — to the point that the
+instant I press "Start Casting," the power is already maxed). Root cause: `interpret(_:)`'s
+`followThrough` early-return (`input.timestamp < castEndsAt`, replaying `releasedCastPower`/
+`releasedHoldDuration`) is gated purely on Rod's own local post-release cooldown timer
+(`profile.castDuration`, ~0.15–0.8s), completely independent of `isCastingArmed` — pressing "Start
+Casting" again shortly after a release (well within that short local window, since Rod's cooldown
+and the World round-trip that eventually flips `HookPhase` away from `.idle` are two unrelated
+clocks) hit this guard and kept replaying the *previous* cast's frozen values, which the oscillating
+meter can easily have released at or near its peak. That read exactly as "the instant I press the
+button, power is already max," when it was really the last cast's leftover freeze-frame bleeding
+into the new attempt. Fixed by having a fresh arm unconditionally win over any still-ticking
+cooldown: whenever `isCastingArmed` is true, `castEndsAt` is reset to the current timestamp before
+the `followThrough` check runs, so the check never fires while armed and a genuinely fresh
+oscillation (from a `castHoldStartTimestamp` already correctly cleared during the disarmed
+interval) starts immediately instead.
+
+Also **slowed `oscillationPeriod` from 2.0s to 3.5s**, responding to the same report's "terlalu
+cepat" (too fast) more generally, not just the re-arm bug — a full cycle in 2 seconds may simply
+have been too quick to time deliberately even once the freeze-frame bug is fixed. Still a
+hand-picked guess, not tuned against a live session with the bug actually fixed.
+
+## Rationale
+
+Requested directly: "ketika user pencet tombol 'Start Casting', maka meteran akan naik turun
+perlahan (kaya di game yang nyari momen pas), baru ketika user nge flick, otomatis bakal ke
+register sebagai cast" (when the player presses "Start Casting," the meter should slowly go up and
+down — like games where you look for the right moment — then when the player flicks, it
+automatically registers as the cast). This is a direct, literal description of a timing-meter
+mechanic (the "hit the peak" pattern from golf-swing/fishing minigames), distinct from — and
+superseding — ADR-054/056's "hold longer for more power" charge model.
+
+Reusing the exact same `backswingHoldDuration` plumbing (arm timestamp, hold tracking, flicker
+immunity from the ADR-054 correction, transmission via `CastSnapshot`) rather than introducing a
+new timer was a direct fit: everything about *how* hold time is measured was already correct and
+unaffected by this change — only the *function applied to it* needed to change, from a linear ramp
+to a periodic oscillation.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
+played. `oscillationPeriod` (now 3.5s) is hand-picked, not tuned against a live session — whether a
+full cycle in 3.5 seconds reads as "perlahan" (slow enough to time deliberately) or still too
+fast/slow, now that the re-arm freeze-frame bug is fixed, is unverified until tried physically.
+
+------------------------------------------------------------------------
+
+# ADR-056 --- Cast Power Drops the Flick Bonus Entirely; Live Timer Shown in World
+
+## Decision
+
+**Flick speed no longer contributes to cast power at all.** ADR-054's `holdPower * (0.7 + 0.3 *
+flickPower)` blend is now just `holdPower` — power comes *purely* from how long the backswing was
+held. The forward flick (`forwardMotion`, an acceleration-threshold check) is unchanged as the
+*trigger* that ends the hold and releases the cast; it just no longer scales the outcome.
+
+This let a real amount of now-dead code come out cleanly, all the way back to the sensor:
+- `CastSnapshot.angularVelocity: CastVector3` (Shared) — removed; nothing else read it.
+- `CastConfig.minimumCastVelocity`/`maximumCastVelocity` (Shared) — removed; only existed to
+  normalize the now-gone flick term.
+- `RodMotionInput.rotationRateX/Y/Z` (Shared), `MotionSample.rotationRateX/Y/Z` (Rod), and the
+  corresponding `MotionManager`/`RodViewModel` plumbing that carried per-axis rotation rate from
+  CoreMotion all the way up — the *only* consumer of the three individual axes (vs. the still-used
+  aggregate `rotationRateMagnitude`, which drives reel speed) was building `angularVelocity`.
+  Confirmed via `grep` before removing: zero other references anywhere in the repo.
+
+**Live hold-duration timer, transmitted and shown in World.** `RodMotionInterpretation`/`RodState`
+gained `castHoldDuration: TimeInterval` — the same raw seconds-held value `castPower` is now
+computed from, sent alongside it every state tick (not reconstructed client-side from the
+normalized power). `releasedHoldDuration` (mirroring the existing `releasedCastPower`) freezes it
+through `followThrough` so the meter doesn't visibly reset before the next cast begins.
+
+**`CastMeterView` — actually shown for the first time.** Its call site in `World/ContentView.swift`
+had been commented out; nothing this ADR touches was ever broken, it just was never on screen. Now
+uncommented, with a new `holdDuration` parameter rendered as a live "Holding X.Xs" readout next to
+the existing normalized power bar.
+
+## Rationale
+
+Requested directly, following up on an explanation of how cast/reel currently work: "bisa ga
+instead of pake 'flick' aja, gimana kalo timer aja yang ditampilin di World, berapa lama kita nahan
+hp kebelakang? jadi remove flick totally. Tampilin juga cast meter power yang nge charge di World
+view nya. Gimana? Jadi ketika user nge flick, baru jarak hook akan ke register, sesuai power yang
+udah di tahan tadi" (instead of relying on "flick," how about just showing a timer in World for how
+long we hold the phone back? Remove flick entirely. Also show the charging cast meter power in
+World's view. So when the user flicks, the hook's distance registers according to the power already
+held). The "flick still triggers release, but doesn't affect the result" framing was taken literally
+— `forwardMotion` (the acceleration check) is unchanged as the release trigger, only its former
+role scaling power is gone.
+
+Removing the now-fully-dead `angularVelocity`/per-axis-rotation-rate chain (rather than leaving the
+fields in place unused) follows this project's own standing convention against half-finished
+cleanups — confirmed via `grep` first that nothing else depended on any part of that chain before
+deleting it, the same discipline used for prior dead-code passes in this repo's history.
+
+Discovering `CastMeterView` was commented out (not merely under-tested) was incidental to
+investigating where the timer should be displayed — worth recording plainly since the player's
+"tampilin cast meter" ask a few turns ago should have already been satisfied by ADR-045's own
+finding that the view "needed no changes," which was true of the view's *logic* but missed that its
+call site wasn't even in the render tree.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
+played. Whether pure hold-duration power (with zero flick influence) reads as satisfying on release,
+and whether the "Holding X.Xs" readout is legible at a glance during a real cast, are both
+unverified until tried physically.
+
+------------------------------------------------------------------------
+
 # ADR-055 --- Reset Progression Button
 
 ## Decision
@@ -51,14 +192,33 @@ ADR-032's distance measurement).** `CastSnapshot.backswingDistance: Float` (radi
 `backswingHoldDuration: TimeInterval` (seconds); `CastConfig.minimumBackswingDistance`/
 `maximumBackswingDistance` are now `minimumBackswingHoldDuration`/`maximumBackswingHoldDuration`
 (0.15/1.5s). `RodMotionInterpreter` replaces `backswingPeakDistance` tracking with
-`castHoldStartTimestamp: TimeInterval?`, set the instant a cast attempt is armed and the pose first
-classifies as `.cast` (`enteredCast`), cleared on every reset path that used to clear the old
-distance tracker. `holdDuration = input.timestamp - castHoldStartTimestamp` feeds the exact same
-`holdPower * (0.7 + 0.3 * flickPower)` blend ADR-032 already established — only the *base* term's
-source changed, from "how far did you pull back" to "how long did you hold it back." `CastResolver`
-(the authoritative, transmitted calculation) mirrors the same swap. World's `CastMeterView` needed
-no changes — same finding as ADR-045: its display already reads generic `power`/`phase` values, not
-distance/duration internals.
+`castHoldStartTimestamp: TimeInterval?`. `holdDuration = input.timestamp - castHoldStartTimestamp`
+feeds the exact same `holdPower * (0.7 + 0.3 * flickPower)` blend ADR-032 already established —
+only the *base* term's source changed, from "how far did you pull back" to "how long did you hold
+it back." `CastResolver` (the authoritative, transmitted calculation) mirrors the same swap.
+World's `CastMeterView` needed no changes — same finding as ADR-045: its display already reads
+generic `power`/`phase` values, not distance/duration internals.
+
+**Live-tested correction, same day: the timer reset on classification flicker.** Originally,
+`castHoldStartTimestamp` was (re-)set whenever `previousClassification != .cast` — i.e. whenever
+the pose classification had just *changed into* `.cast`. Reported directly as "cast mechanism nge
+bug" after playing it. Root cause: `distances(from:).minimum` picks whichever of idle/cast/reel is
+closest *this exact frame* — while the player holds deliberately still to charge, ordinary sensor
+jitter can make the pose read fractionally closer to `idlePose` than `castPose` for a single frame,
+flipping classification to `.idle` and back to `.cast` one frame later. That single flicker frame
+looked identical to a genuine fresh backswing entry, silently resetting the hold timer to zero and
+discarding however long the player had already been charging — reading as "the cast never charges
+no matter how long I hold it." Fixed by decoupling the reset condition from frame-to-frame
+classification change entirely: `castHoldStartTimestamp` now only starts when it's `nil`, and is
+only cleared by the unarmed-guard (added as its own top-level check, run every frame regardless of
+which classification branch executes — the previous code only cleared it from inside the
+`.cast where !isCastingArmed` branch, so a played-out attempt where the pose went all the way back
+to a genuinely idle classification between casts, rather than lingering near the cast/idle
+boundary, could leave a stale timestamp from the *previous* attempt sitting unreset) or by
+`updateProfile(_:)`/`setIdlePose(_:)`'s full resets. The release-trigger logic's own use of "did
+classification just change" (renamed `isFreshCastEntry`, kept for the OR-condition that lets a
+release fire on the very first frame of an attempt that's simultaneously already forward-
+accelerating) is unaffected — only the timer's reset condition changed.
 
 **2. Every Rod haptic pattern got a real intensity increase**, in
 `Rod/Rod/Haptics/HapticManager.swift` and `FishFightConfig`'s tension-band fields:
