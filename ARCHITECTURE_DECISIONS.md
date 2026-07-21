@@ -11,6 +11,911 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-063 --- RodState Gets Short Wire Keys — Every Cast Was Silently Dropped Over BLE
+
+## Decision
+
+`RodState` gains an explicit `CodingKeys: String, CodingKey` enum mapping every property to a
+short wire name (`timestamp` -> `"ts"`, `distance` -> `"d"`, `directionX` -> `"dx"`, `pitch` ->
+`"p"`, `orientation` -> `"o"`, `castSolution` -> `"cs"`, `castHoldDuration` -> `"chd"`,
+`isCastingArmed` -> `"ca"`, etc. — full mapping in the source). Property names, types, and every
+call site are unchanged; this only shrinks the JSON produced on encode and expected on decode.
+
+## Root cause
+
+`TransportClient.sendUnreliable(_:)` (Rod's peripheral-side `.state` notify path) deliberately
+never fragments a message across multiple BLE packets — a message that doesn't fit in one chunk is
+dropped outright, by design (see the function's own long-standing doc comment about avoiding
+desync risk on a channel with no delivery guarantee). Measured directly via new logging added
+while diagnosing a report that the cast meter charged and released correctly on Rod (confirmed via
+console: `phase=release`, `hookPhase=idle`, `allowsCasting=true`) but the hook never launched on
+World, with zero errors anywhere: a `RodState` with a populated `castSolution` — i.e. every single
+`.state` message during and immediately after a real cast's `followThrough` window — reliably
+encoded to **531-542 bytes** against this connection's measured **512-byte one-chunk budget**.
+Every one of those messages was silently dropped, for the entire `followThrough` duration (dozens
+of consecutive frames confirmed in the logs), meaning **a cast could never reach World at all** —
+not an occasional drop, a total, permanent failure for every attempt. An idle `RodState`
+(`castSolution == nil`) stays comfortably small, which is why everything else (button state,
+`isFishing`, the meter's own live oscillation) worked normally and gave no hint the transport layer
+was the actual problem.
+
+This was a latent, pre-existing fragility (the encoded size was apparently already close to the
+budget) that ADR-061's new `isCastingArmed` field tipped over the edge — but the *design* flaw
+(verbose property-name JSON keys against a hard one-chunk ceiling, for the one message type that
+routinely carries a large nested payload) predates that change and would recur with any future
+`RodState` field addition without this fix.
+
+Empirically verified: the exact same populated-`castSolution` payload that measured ~540 bytes
+under default keys encodes to **419 bytes** under the new `CodingKeys` — comfortably under 512
+with real margin, without touching `CastSolution`'s or `RodOrientation`'s own (already short or
+modest) keys at all.
+
+## Rationale
+
+Two alternatives considered and rejected:
+- **Increase the chunk budget.** `chunkBudget()` reflects `CBCentral.maximumUpdateValueLength`,
+  the BLE-negotiated ATT MTU — not fully within the app's control, and not guaranteed to be large
+  on every device/OS combination even if it happened to be 512 here.
+- **Fragment `.state` across multiple chunks.** Directly contradicts the documented reasoning for
+  never fragmenting this path (an unacknowledged channel risks a permanently desynced reassembly
+  stream from one lost chunk) — the original design intent was sound, the payload just needed to
+  actually fit it.
+
+Shrinking the payload preserves the original single-chunk design guarantee while fixing the actual
+bug, and is a fully self-contained change (one file, no protocol/behavior changes, both Rod and
+World read the same `Shared` type so there's no versioning concern).
+
+Also added while diagnosing this (kept as permanent diagnostics, matching ADR-062's precedent of
+logging previously-silent failure paths): `sendUnreliable(_:)` now logs when a `.state` message is
+dropped for exceeding the chunk budget, and when `updateValue` itself returns `false` (send queue
+full) — so a future regression of this exact class shows up immediately instead of silently
+failing again.
+
+Status: Accepted — verified via `swiftc -typecheck` (both `Shared` targets, full `Rod`/`World` file
+lists) and an empirical standalone encode test confirming the byte-count reduction (419 vs. ~540
+bytes for an identical populated-`castSolution` payload). Not yet re-confirmed end-to-end on the
+reporter's own two-device setup that a cast now actually reaches World and launches the hook.
+
+------------------------------------------------------------------------
+
+# ADR-062 --- Rod Gains a "Forget Paired Mac" Recovery Path; Silent Decode Failures Now Logged
+
+## Decision
+
+Two fixes found while diagnosing a report that World stayed stuck on "Press \u{201C}Start
+Fishing\u{201D} on Rod to play" even after Rod's own UI confirmed `isFishing` had flipped true
+(its button relabeled to "End Fishing"):
+
+**1. Decode failures on both transports now log in DEBUG instead of failing silently.**
+`TransportHost.peripheral(_:didUpdateValueFor:)` and `TransportClient.peripheralManager(_:didReceiveWrite:)`
+both decoded incoming `NetworkMessage` data with `try? ... else { continue }` — any decode failure
+(e.g. a schema mismatch from only one side of Rod/World being rebuilt after a `RodState` field
+change) was dropped with zero signal. Both now `do`/`catch` and `print` the error under `#if DEBUG`.
+This ruled out the schema-mismatch hypothesis during diagnosis (no decode errors ever printed) and
+is a permanent diagnostic improvement independent of that.
+
+**2. Rod's UI gains a "Forget Paired Mac" row, wired to the already-implemented
+`RodViewModel.forgetPairedDevice()`.** Root cause, found by reading `TransportClient.swift`'s own
+`didSubscribeTo` comment: Rod (the BLE peripheral) has no CoreBluetooth API to *reject* a
+subscription — a central whose identifier doesn't match `PairedCentralStore`'s saved one still
+subscribes successfully at the protocol level (so World correctly reads `.ready`/`.streaming`), but
+Rod's app layer never sets `subscribedCentral` for it, so `sendTargets` stays empty and Rod
+silently never transmits anything to that Mac — including the very first `.state` message that
+would carry `isFishing`. This reproduces exactly as "looks connected, nothing ever happens, no
+error anywhere." World's own `TransportHost.didDiscover` avoids the equivalent problem by filtering
+*before* ever connecting to a mismatched peripheral, an option not available to a GATT peripheral
+receiving a subscription — Rod's "accept but don't route" behavior is the only implementable
+strategy, so a **recovery path**, not a protocol-level fix, is what was actually missing.
+`RodViewModel.forgetPairedDevice()` -> `TransportClient.forgetPairedDevice()` already existed and
+worked; it simply had no reachable caller, since the Developer Details `DisclosureGroup` containing
+the original "Forget Paired Mac" button is commented out in `Rod/Rod/ContentView.swift` (predates
+this session, left alone per this project's standing precedent of not touching what looks like
+someone else's in-progress work — see `WINDOW_2.md`'s own known-issues note on this exact block).
+Added a small, standalone `pairedDeviceRow` (shown only while `hasPairedDevice`) to Rod's primary
+UI instead of touching that commented-out block — mirrors World's own `MainMenuView.pairedDeviceRow`
+for the same recovery action.
+
+## Rationale
+
+World's "Forget Device" (ADR-049) only ever clears *World's* saved pairing — it has no way to reach
+across and clear Rod's independently-persisted `PairedCentralStore`, and was never meant to; device
+pairing is symmetric infrastructure but each side's stored identifier is its own. Reported directly
+during this diagnosis: after using World's "Forget Device" as a troubleshooting attempt, Rod refused
+to connect at all afterward, surviving even a full Rod app relaunch — consistent with a **stale
+saved pairing on Rod's side that nothing in the app could clear**, since `PairedCentralStore`
+persists to `UserDefaults` independent of process lifetime. Without today's fix this was a true
+dead end recoverable only by clearing Rod's app data/reinstalling — clearly not acceptable for a
+core connectivity path.
+
+Status: Accepted, pending live confirmation that pressing the new "Forget Paired Mac" row on Rod
+actually restores a working connection to World in the reporter's specific stuck state — verified
+here only via `swiftc -typecheck` (iOS 17 simulator target for Rod, both targets for the logging
+change) and code-reading of the `didSubscribeTo`/`sendTargets` path, not a live two-device session.
+
+------------------------------------------------------------------------
+
+# ADR-061 --- Five Playtest Notes: Cast Meter Delay, Hook Float, Cast-Zone Fish Size, Result-Screen Dismissal, Connection Retry
+
+## Decision
+
+Five related fixes, all requested together in one playtest-notes message, each touching a
+different system:
+
+**1. Cast meter now starts the instant "Start Casting" is armed.**
+`RodMotionInterpreter.interpret(_:isCastingArmed:)` previously only ran the charging/oscillation
+logic inside the pose-classification switch's `case .cast:` branch — so the meter stayed pinned at
+0 until the phone's raw orientation also drifted closer to the calibrated `castPose`, reading as an
+unexplained delay between pressing the button and the meter appearing. The armed-charging logic
+(hold-duration tracking, the oscillation formula, backswing/forward-motion phase detection,
+release) now runs unconditionally whenever `isCastingArmed` is `true`, ahead of the classification
+switch entirely; the switch only still matters while *not* armed. Flick detection
+(`accelerationZ` crossing `profile.castAcceleration`) was already independent of pose
+classification, so nothing about how a flick is detected or how power is computed changed — only
+the gate on *entering* the charging branch was removed.
+
+**2. Hook lift/catch resolves instantly within 1m, no scripted climb.**
+`WorldViewModel.reelHook(deltaTime:)`'s near-dock zone (`hookLiftDistance`, 1.0m) previously
+climbed toward `hookLiftTargetPosition` at a fixed `dockLiftSpeed` (3.5 m/s, ADR-044) and only
+resolved the catch/empty-retrieve once within a further 0.15m of the target — a guaranteed climb
+that still left the hook visibly hanging/drifting in the air for a beat before landing. Reported
+directly: the hook "melayang dikit" (floats a bit) near the pier, which should instead be an
+instant lift-and-catch the moment hook-to-rod distance drops under 1m. `reelHook` now snaps
+`hookEntity.position` straight to `hookLiftTargetPosition` and resolves in the same tick
+`horizontalDistance <= hookLiftDistance` first becomes true. `dockLiftSpeed` and the 0.15m 3D
+catch guard are removed outright (dead code, nothing left to gate). The catch cutscene's own jump
+animation (ADR-045/047) still sells the "lift" for a caught fish; an empty line just disappears at
+the same instant.
+
+**3. Cast distance gates fish size in three discrete zones, not a continuous ceiling.**
+Requested directly: "semakin jauh cast, seharusnya ikan yang ditangkap semakin besar (for ex, jika
+user hanya bermain di area hijau dari cast, maka ikan bintang 1-2 saja yang bisa ditangkap ... jika
+kuning, maka bintang 3-4, jika area merah, maka bintang 4-5)" — mapping `CastMeterView`'s existing
+green/yellow/red power-bar thirds directly onto fish-size tiers. `FishFightController` gains
+`castZone` (green/yellow/red, from `currentCastDistance / maxExpectedCastDistance` thirds — the
+same ratio ADR-031's continuous ceiling already used, just bucketed) and `sizeRollWindow`, a hard
+floor+ceiling roll window per zone instead of ADR-031's ceiling-only cap:
+
+```text
+green:  ratio in [0.000, 0.375)  -> stars 1-2 only
+yellow: ratio in [0.375, 0.875)  -> stars 3-4 only
+red:    ratio in [0.625, 1.000]  -> stars 4-5 only
+```
+
+Boundaries derived by inverting `stars(forWeight:in:)`'s own `1 + round(4 * ratio)` formula at each
+star cutoff, so each window exactly covers its advertised tier (yellow/red deliberately overlap at
+`[0.625, 0.875)`, both able to roll a 4-star fish, matching the user's own overlapping wording).
+`biasedRoll(in:floorRatio:ceilingRatio:)` replaces the old ceiling-only `biasedRoll(in:ceilingRatio:)`.
+A short cast can no longer occasionally roll a big fish by chance the way a ceiling-only cap
+allowed — the zone is now a hard guarantee in both directions.
+
+**4. Result screen dismisses via "Start Casting" on Rod, not a World-side button.**
+Requested directly: remove `ResultView`'s "Continue Fishing" button, replace with text like "Press
+start casting to fish again." `RodState` gains `isCastingArmed: Bool` (same always-transmitted
+pattern as `isFishing`, ADR-038). `RodViewModel.startCasting()`'s guard relaxes from
+`hookPhase == .idle` to `hookPhase == .idle || hookPhase == .result`, and the `.hookPhase` handler's
+"clear `isCastingArmed` whenever phase leaves `.idle`" reset gains the same `.result` exception —
+otherwise World's own echoed `.result` phase would immediately clear the arm the player just set
+before World ever sees it. `WorldViewModel.handle(_:)` calls `continueFishing()` the instant it
+sees `state.isCastingArmed` true (idempotent — `continueFishing()`'s own `hookPhase == .result`
+guard makes repeat calls a no-op once already dismissed). `HookPhase.allowsCasting` itself is
+untouched (still only `.idle`), so ADR-029's original race protection — a physical flick can't
+fire an actual cast until World's dismissal round-trip completes — is fully preserved; only
+*arming* is now allowed one phase earlier.
+
+**5. "Retry Connection" button on World's Main Menu.**
+Reported directly: the Rod<->World BLE link occasionally wedges into a state the existing
+automatic reconnection (Rod re-advertising, World re-scanning after disconnect) never recovers
+from, previously only fixable by force-quitting and relaunching World. `WorldViewModel.
+retryConnection()` runs `transport.disconnect()` then `transport.connect()` — the same
+teardown-then-restart sequence a full relaunch would trigger, without losing `screen`/`fishFight`/
+progression state. Surfaced as a "Retry Connection" button on `MainMenuView`, shown only while
+`!isRodReady` (retrying an already-healthy link would just interrupt it).
+
+## Rationale
+
+All five came from one round of hands-on playtesting notes, each identifying a place where the
+implemented behavior read as unintentional (a delay, a float, an inconsistent size gate) or where
+a two-step flow (view result -> tap World -> arm on Rod) was more friction than the one-step
+version the player actually wanted (view result -> arm on Rod, done). None of the five change what
+a *correct* cast/catch/fight looks like at the physics or fight-tuning level — they're presentation
+and flow fixes on top of already-shipped systems (ADR-031, ADR-044, ADR-050, prior Main Menu work),
+which is why each is a targeted change to existing code rather than a new subsystem.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against `Shared`
+(macOS 26 and iOS 17 simulator targets) and the full `World`/`Rod` file lists on top of it; not yet
+played on physical devices. In particular unverified: whether the cast-zone star tiers (item 3)
+feel right in practice now that they're a hard window instead of a soft ceiling, and whether
+`retryConnection()` (item 5) actually recovers from the specific wedged states that prompted the
+request — CoreBluetooth's own internal state is not something this environment can observe or
+reproduce directly.
+
+------------------------------------------------------------------------
+
+# ADR-060 --- Every Rod Haptic Pattern Maxed to CoreHaptics' Intensity Ceiling
+
+## Decision
+
+Every `hapticIntensity` value fed to `CHHapticEventParameter` across Rod's haptic layer is now
+`1.0` — the largest value CoreHaptics accepts for that parameter (the API defines intensity as a
+normalized `0...1` range; the OS clamps anything above `1.0`, so `1.0` is the literal ceiling "the
+phone supports," not an arbitrary round number). Changed in two places:
+
+- `Rod/Rod/Haptics/HapticManager.swift`: every pattern's intensity raised to `1.0` — `cast()`
+  (was 0.75), `splash()` (0.45), `reelTick()` (0.4), `fishBite()`'s four-pulse pattern (0.85/0.75/
+  0.75/0.85), `catchFish()`'s second pulse (0.6 — its first pulse was already 1.0),
+  `fishEscaped()`'s three-pulse pattern (0.7/0.55/0.35), and `fishInterested()` (0.35).
+  `lineBreak()` was already 1.0. `sharpness` values are all untouched.
+- `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: `lowBandIntensity`/
+  `mediumBandIntensity`/`highBandIntensity` defaults raised from ADR-054's 0.50/0.70/0.95 to
+  1.0/1.0/1.0 — these feed `FishingHaptics.fightPulse(now:)`'s continuous fight-tension rhythm via
+  `HapticManager.fightTick(intensity:sharpness:)`, the one haptic call site whose intensity isn't a
+  `HapticManager`-internal constant.
+
+`sharpness` was deliberately left alone at every call site — it controls the felt *timbre* (crisp
+tap vs. dull thud), not strength, and the tension-band rhythm still differentiates low/medium/high
+through tap interval and sharpness even with intensity now identical across all three bands. This
+mirrors ADR-054's precedent of leaving sharpness untouched while intensity was raised.
+
+## Rationale
+
+Requested directly: "Increase haptics feedback yang diberikan ke Rod di semua bagian. Multiply it
+to the largest number the phone supports" (increase the haptic feedback given to Rod across every
+part; multiply it to the largest number the phone supports) — a follow-up on the same feel-focused
+thread as ADR-054's "haptic nya kurang kerasa kenceng" (the haptics don't feel strong enough), which
+had already raised values once but stopped short of the ceiling. Rather than guess at another
+intermediate number, this pass goes straight to `1.0` everywhere, since that is the actual maximum
+`CHHapticEventParameter.hapticIntensity` supports — no further "increase" is possible on this
+parameter without a different pattern shape (e.g. `.hapticContinuous` events or layered
+transients), which was not requested here.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`Shared` module and the full `Rod/Rod` file list (iOS simulator target); not yet played on a
+physical device, so how a uniformly maxed intensity across every band actually feels (previously a
+meaningful part of the low/medium/high differentiation) is unverified.
+
+------------------------------------------------------------------------
+
+# ADR-057 --- Cast Power Becomes a Timing Mini-Game, Not a Charge Ramp
+
+## Decision
+
+Replaced ADR-054/056's monotonic hold-duration ramp (`castPower` rises linearly with hold time,
+capping at `maximumBackswingHoldDuration`) with a **continuously oscillating** power curve:
+
+```text
+phase = backswingHoldDuration * 2π / oscillationPeriod
+power = (1 - cos(phase)) / 2
+```
+
+Starting at `0` the instant "Start Casting" arms and the pose first reads as a cast attempt, power
+rises smoothly to `1` at half the period, falls back to `0` at the full period, and repeats
+indefinitely for as long as the backswing is held — a classic timing-minigame curve ("meteran naik
+turun perlahan," a golf-swing-meter/fishing-bobber-game shape), not a charge-and-cap ramp. The flick
+(`forwardMotion`, unchanged) still triggers the release exactly as before; it now locks in whatever
+the oscillating value happens to be at that exact instant, rather than a value that only ever grew
+with hold time.
+
+`CastConfig.minimumBackswingHoldDuration`/`maximumBackswingHoldDuration` (ADR-054/056) are removed
+— replaced by a single `oscillationPeriod: TimeInterval` (2.0s: one full 0→1→0 cycle). Both
+`RodMotionInterpreter`'s live meter and `CastResolver.resolve(_:)`'s authoritative calculation apply
+the identical formula to the same `backswingHoldDuration` value (transmitted unchanged via
+`CastSnapshot`, per ADR-056), so the live meter always agrees with what a release actually produces
+— `RodMotionInterpreter` keeps its own `oscillationPeriod` constant in sync with `CastConfig`'s,
+the same duplication pattern this file already used for the bounds it just replaced.
+
+No other part of the pipeline changed: arming (`isCastingArmed`), the pose-classification gate, the
+flick-detection threshold, `CastMeterView`'s display (its existing power-bar offset now simply
+sweeps back and forth instead of climbing once), and the World transmission path are all untouched.
+
+**Live-tested correction, same day: re-arming inherited the previous cast's frozen power.**
+Reported directly: "power nya meningkat terlalu cepat, sampai sampai ketika aku pencet 'start
+casting', tiba tiba powernya udah max aja" (the power ramps up too fast — to the point that the
+instant I press "Start Casting," the power is already maxed). Root cause: `interpret(_:)`'s
+`followThrough` early-return (`input.timestamp < castEndsAt`, replaying `releasedCastPower`/
+`releasedHoldDuration`) is gated purely on Rod's own local post-release cooldown timer
+(`profile.castDuration`, ~0.15–0.8s), completely independent of `isCastingArmed` — pressing "Start
+Casting" again shortly after a release (well within that short local window, since Rod's cooldown
+and the World round-trip that eventually flips `HookPhase` away from `.idle` are two unrelated
+clocks) hit this guard and kept replaying the *previous* cast's frozen values, which the oscillating
+meter can easily have released at or near its peak. That read exactly as "the instant I press the
+button, power is already max," when it was really the last cast's leftover freeze-frame bleeding
+into the new attempt. Fixed by having a fresh arm unconditionally win over any still-ticking
+cooldown: whenever `isCastingArmed` is true, `castEndsAt` is reset to the current timestamp before
+the `followThrough` check runs, so the check never fires while armed and a genuinely fresh
+oscillation (from a `castHoldStartTimestamp` already correctly cleared during the disarmed
+interval) starts immediately instead.
+
+Also **slowed `oscillationPeriod` from 2.0s to 3.5s**, responding to the same report's "terlalu
+cepat" (too fast) more generally, not just the re-arm bug — a full cycle in 2 seconds may simply
+have been too quick to time deliberately even once the freeze-frame bug is fixed. Still a
+hand-picked guess, not tuned against a live session with the bug actually fixed.
+
+## Rationale
+
+Requested directly: "ketika user pencet tombol 'Start Casting', maka meteran akan naik turun
+perlahan (kaya di game yang nyari momen pas), baru ketika user nge flick, otomatis bakal ke
+register sebagai cast" (when the player presses "Start Casting," the meter should slowly go up and
+down — like games where you look for the right moment — then when the player flicks, it
+automatically registers as the cast). This is a direct, literal description of a timing-meter
+mechanic (the "hit the peak" pattern from golf-swing/fishing minigames), distinct from — and
+superseding — ADR-054/056's "hold longer for more power" charge model.
+
+Reusing the exact same `backswingHoldDuration` plumbing (arm timestamp, hold tracking, flicker
+immunity from the ADR-054 correction, transmission via `CastSnapshot`) rather than introducing a
+new timer was a direct fit: everything about *how* hold time is measured was already correct and
+unaffected by this change — only the *function applied to it* needed to change, from a linear ramp
+to a periodic oscillation.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
+played. `oscillationPeriod` (now 3.5s) is hand-picked, not tuned against a live session — whether a
+full cycle in 3.5 seconds reads as "perlahan" (slow enough to time deliberately) or still too
+fast/slow, now that the re-arm freeze-frame bug is fixed, is unverified until tried physically.
+
+------------------------------------------------------------------------
+
+# ADR-056 --- Cast Power Drops the Flick Bonus Entirely; Live Timer Shown in World
+
+## Decision
+
+**Flick speed no longer contributes to cast power at all.** ADR-054's `holdPower * (0.7 + 0.3 *
+flickPower)` blend is now just `holdPower` — power comes *purely* from how long the backswing was
+held. The forward flick (`forwardMotion`, an acceleration-threshold check) is unchanged as the
+*trigger* that ends the hold and releases the cast; it just no longer scales the outcome.
+
+This let a real amount of now-dead code come out cleanly, all the way back to the sensor:
+- `CastSnapshot.angularVelocity: CastVector3` (Shared) — removed; nothing else read it.
+- `CastConfig.minimumCastVelocity`/`maximumCastVelocity` (Shared) — removed; only existed to
+  normalize the now-gone flick term.
+- `RodMotionInput.rotationRateX/Y/Z` (Shared), `MotionSample.rotationRateX/Y/Z` (Rod), and the
+  corresponding `MotionManager`/`RodViewModel` plumbing that carried per-axis rotation rate from
+  CoreMotion all the way up — the *only* consumer of the three individual axes (vs. the still-used
+  aggregate `rotationRateMagnitude`, which drives reel speed) was building `angularVelocity`.
+  Confirmed via `grep` before removing: zero other references anywhere in the repo.
+
+**Live hold-duration timer, transmitted and shown in World.** `RodMotionInterpretation`/`RodState`
+gained `castHoldDuration: TimeInterval` — the same raw seconds-held value `castPower` is now
+computed from, sent alongside it every state tick (not reconstructed client-side from the
+normalized power). `releasedHoldDuration` (mirroring the existing `releasedCastPower`) freezes it
+through `followThrough` so the meter doesn't visibly reset before the next cast begins.
+
+**`CastMeterView` — actually shown for the first time.** Its call site in `World/ContentView.swift`
+had been commented out; nothing this ADR touches was ever broken, it just was never on screen. Now
+uncommented, with a new `holdDuration` parameter rendered as a live "Holding X.Xs" readout next to
+the existing normalized power bar.
+
+## Rationale
+
+Requested directly, following up on an explanation of how cast/reel currently work: "bisa ga
+instead of pake 'flick' aja, gimana kalo timer aja yang ditampilin di World, berapa lama kita nahan
+hp kebelakang? jadi remove flick totally. Tampilin juga cast meter power yang nge charge di World
+view nya. Gimana? Jadi ketika user nge flick, baru jarak hook akan ke register, sesuai power yang
+udah di tahan tadi" (instead of relying on "flick," how about just showing a timer in World for how
+long we hold the phone back? Remove flick entirely. Also show the charging cast meter power in
+World's view. So when the user flicks, the hook's distance registers according to the power already
+held). The "flick still triggers release, but doesn't affect the result" framing was taken literally
+— `forwardMotion` (the acceleration check) is unchanged as the release trigger, only its former
+role scaling power is gone.
+
+Removing the now-fully-dead `angularVelocity`/per-axis-rotation-rate chain (rather than leaving the
+fields in place unused) follows this project's own standing convention against half-finished
+cleanups — confirmed via `grep` first that nothing else depended on any part of that chain before
+deleting it, the same discipline used for prior dead-code passes in this repo's history.
+
+Discovering `CastMeterView` was commented out (not merely under-tested) was incidental to
+investigating where the timer should be displayed — worth recording plainly since the player's
+"tampilin cast meter" ask a few turns ago should have already been satisfied by ADR-045's own
+finding that the view "needed no changes," which was true of the view's *logic* but missed that its
+call site wasn't even in the render tree.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
+played. Whether pure hold-duration power (with zero flick influence) reads as satisfying on release,
+and whether the "Holding X.Xs" readout is legible at a glance during a real cast, are both
+unverified until tried physically.
+
+------------------------------------------------------------------------
+
+# ADR-055 --- Reset Progression Button
+
+## Decision
+
+Added `ProgressionStore.reset()`: clears every tier's stored catch count back to zero (persisted
+via the same `UserDefaults` mechanism `recordCatch(tier:)` already writes to), dropping `level`
+back to 1 (only `.small` catchable). `FishFightController.resetProgression()` calls it and also
+resets its own `currentLevel` (published, seeded from the store at init and otherwise only updated
+on a catch) and clears any in-flight `levelUpAnnouncement`, so no stale banner survives a reset.
+`WorldViewModel.resetProgression()` is a thin passthrough.
+
+Surfaced as a new "Reset Progress" button on World's `MainMenuView`, alongside the existing
+"Forget Device" button — same `role: .destructive` styling, no confirmation dialog, matching this
+project's own established precedent for this class of admin/debug action in this exact view.
+Visible unconditionally (not gated on `hasPairedDevice` like "Forget Device" is), since progression
+state exists independent of whether a device has ever paired.
+
+## Rationale
+
+Requested directly: "bisa di tambahin button buat reset level ga ke level 1 lagi" (can a button be
+added to reset the level back to Level 1). A debug/utility action, not part of the fishing session
+loop, so it belongs on the Main Menu (unrelated to the ADR-038 session boundary, same reasoning
+already used for "Forget Device") rather than anywhere in the active gameplay HUD.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World`
+(macOS) target (see the matching `CHECKPOINT.md` entry), not yet played.
+
+------------------------------------------------------------------------
+
+# ADR-054 --- Cast Hold Timer, Stronger Haptics, Eased Tier 3/4 Difficulty
+
+## Decision
+
+Three unrelated requests made together in one message; handled as three independent changes.
+
+**1. Cast power now comes from how long the backswing is held, not how far it moved (replaces
+ADR-032's distance measurement).** `CastSnapshot.backswingDistance: Float` (radians) is now
+`backswingHoldDuration: TimeInterval` (seconds); `CastConfig.minimumBackswingDistance`/
+`maximumBackswingDistance` are now `minimumBackswingHoldDuration`/`maximumBackswingHoldDuration`
+(0.15/1.5s). `RodMotionInterpreter` replaces `backswingPeakDistance` tracking with
+`castHoldStartTimestamp: TimeInterval?`. `holdDuration = input.timestamp - castHoldStartTimestamp`
+feeds the exact same `holdPower * (0.7 + 0.3 * flickPower)` blend ADR-032 already established —
+only the *base* term's source changed, from "how far did you pull back" to "how long did you hold
+it back." `CastResolver` (the authoritative, transmitted calculation) mirrors the same swap.
+World's `CastMeterView` needed no changes — same finding as ADR-045: its display already reads
+generic `power`/`phase` values, not distance/duration internals.
+
+**Live-tested correction, same day: the timer reset on classification flicker.** Originally,
+`castHoldStartTimestamp` was (re-)set whenever `previousClassification != .cast` — i.e. whenever
+the pose classification had just *changed into* `.cast`. Reported directly as "cast mechanism nge
+bug" after playing it. Root cause: `distances(from:).minimum` picks whichever of idle/cast/reel is
+closest *this exact frame* — while the player holds deliberately still to charge, ordinary sensor
+jitter can make the pose read fractionally closer to `idlePose` than `castPose` for a single frame,
+flipping classification to `.idle` and back to `.cast` one frame later. That single flicker frame
+looked identical to a genuine fresh backswing entry, silently resetting the hold timer to zero and
+discarding however long the player had already been charging — reading as "the cast never charges
+no matter how long I hold it." Fixed by decoupling the reset condition from frame-to-frame
+classification change entirely: `castHoldStartTimestamp` now only starts when it's `nil`, and is
+only cleared by the unarmed-guard (added as its own top-level check, run every frame regardless of
+which classification branch executes — the previous code only cleared it from inside the
+`.cast where !isCastingArmed` branch, so a played-out attempt where the pose went all the way back
+to a genuinely idle classification between casts, rather than lingering near the cast/idle
+boundary, could leave a stale timestamp from the *previous* attempt sitting unreset) or by
+`updateProfile(_:)`/`setIdlePose(_:)`'s full resets. The release-trigger logic's own use of "did
+classification just change" (renamed `isFreshCastEntry`, kept for the OR-condition that lets a
+release fire on the very first frame of an attempt that's simultaneously already forward-
+accelerating) is unaffected — only the timer's reset condition changed.
+
+**2. Every Rod haptic pattern got a real intensity increase**, in
+`Rod/Rod/Haptics/HapticManager.swift` and `FishFightConfig`'s tension-band fields:
+
+```text
+                  before -> after
+cast              0.55   -> 0.75
+splash            0.32   -> 0.45
+reelTick          0.20   -> 0.40
+fishBite (peaks)  0.65   -> 0.85
+catchFish (peak)  0.95   -> 1.00
+lineBreak         0.90   -> 1.00
+fishEscaped(peak) 0.50   -> 0.70
+fishInterested    0.22   -> 0.35
+low/med/high band 0.30/0.45/0.70 -> 0.50/0.70/0.95  (FishFightConfig, Rod's continuous fight rhythm)
+```
+
+Sharpness was bumped alongside intensity on the tension bands (0.3/0.45/0.6 -> 0.4/0.55/0.75) for a
+crisper, not just louder, feel. `catchFish`/`lineBreak` were already close to the `1.0` ceiling
+(`CHHapticEventParameter.hapticIntensity`'s max) and are now pinned at it — nothing above `1.0` is
+possible on this API, so those two are now maxed rather than merely raised.
+
+**3. `fish_c` (tier 3, big) and `scott` (tier 4, boss)'s `FishSpecies.resistance` were lowered** —
+first to `0.60` and `0.75` (from `0.75`/`0.95`), then tuned further to `0.10` for both (matching
+`fish_b`, also retuned to `0.10`) in `World/World/Gameplay/FishCatalog.swift` — a bigger cut than
+the initial pass, landing all three above-`fish_a` tiers at the same, much lower ceiling. `fish_a`
+alone keeps its original `0.35`.
+
+## Rationale
+
+Requested directly, three asks in one message: "tampilin 'cast meter' nya di UI world. pake timer
+aja gimana? jadi semakin lama user nahan di 'belakang', ketika flick buat nge cast, jaraknya bakal
+semakin jauh tergantung seberapa lama timer nya berlangsung. Haptic nya juga kurang kerasa kenceng,
+bisa ditambah lagi intensitasnya. Sama, mudahin dikit dong ikan level 3 dan 4 nya" (show the cast
+meter in World's UI — how about just using a timer? So the longer the player holds at "the back,"
+the farther the cast goes on the flick, depending on how long the timer ran. Also the haptics don't
+feel strong enough, can the intensity be increased more. Also, ease up fish level 3 and 4 a bit).
+
+**Cast timer**: re-reading `CastMeterView.swift` first confirmed the meter *already* displays
+correctly and is already wired to appear via `RodState.motionPhase` (ADR-045's own finding) — the
+actual gap was the *charging mechanism* underneath it, not the UI. The player's "pake timer aja"
+suggestion was adopted directly rather than debated: a hold-duration timer is a more legible mental
+model ("hold longer = more power," a standard charge-up convention) than the previous "how far did
+you physically pull the phone back" distance measurement, which required the player to intuit an
+unfamiliar-in-a-phone-game relationship between wrist displacement and cast power.
+
+**Haptics**: a direct, literal request ("kurang kerasa kenceng, bisa ditambah lagi intensitasnya")
+— every pattern got a real bump, not just the ones guessed to matter most, since the report was
+general rather than pointing at one specific moment.
+
+**Tier 3/4 easing**: `FishFightConfig`'s resistance multipliers apply globally to every species'
+formula, so they weren't the right lever for a tier-3/4-only ask — retuning them would have also
+changed `fish_a`/`fish_b`, which wasn't requested. `FishSpecies.resistance` (the per-species ceiling
+from ADR-030) is the correct, already-existing lever for "make specifically the harder tiers
+easier" without touching the easier ones. New target values were worked out by hand against the
+same net-tension-rate formula ADR-039 used for its own difficulty corrections (see that ADR's
+"Rationale" for the worked-math method), not picked arbitrarily.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
+played. All tuned numbers here (hold-duration bounds, haptic intensities, the two resistance values)
+are hand-picked/hand-derived, not measured on a live device.
+
+------------------------------------------------------------------------
+
+# ADR-053 --- Fight Direction: a Timed Left/Right Juking Sub-Phase Requiring a Rod Counter
+
+## Decision
+
+Added `FishFightController.FightDirection` (`.left`/`.right`) and a `@Published private(set) var
+fightDirection: FightDirection?` — a new sub-mechanic layered on top of the existing tension
+safe-zone fight (ADR-028/039/042), not a replacement for it. The instant a fish bites
+(`updateSearching`'s `.bite` branch), a juking phase begins: `fightDirection` is set to a random
+side, and a random total duration (`fightDirectionMinDuration...fightDirectionMaxDuration`, default
+5...10s) starts counting down in `updateFight`. While active, `fightDirection` flips to the other
+side after a random interval (`fightDirectionSwitchMinInterval...fightDirectionSwitchMaxInterval`,
+default 0.6...1.8s — the "rapid randomizer") — a genuinely unpredictable side-to-side juke, not a
+slow metronomic swing. Once the total duration elapses, `fightDirection` returns to `nil` and only
+the base tension fight continues for however much longer the fight naturally takes.
+
+**Countering is evaluated from `RodState.roll`, not from anything RealityKit-side** —
+`updateFight` gained a required `rodRoll: Double` parameter, and a new private
+`updateFightDirection(deltaTime:rodRoll:)` (called from inside `updateFight`) returns a tension/sec
+delta folded additively into the existing `(reelPull - effectiveFishPullRate) * deltaTime` formula:
+
+```text
+fightDirection == .left  -> counters correctly when rodRoll >=  fightDirectionRollThreshold
+fightDirection == .right -> counters correctly when rodRoll <= -fightDirectionRollThreshold
+correctly countering -> -fightDirectionCounterRelief  (tension relief, real "rod-side pressure")
+not countering        -> +fightDirectionPenalty        (extra strain, on top of the base pull)
+```
+
+A fish pulling `.left` requires a *positive* rod roll (the player leaning the rod toward their
+right) to counter, and vice versa — the opposite-direction convention real anglers use to keep
+pressure on a fish trying to run sideways. All seven new numbers
+(`fightDirectionMinDuration`/`MaxDuration`/`SwitchMinInterval`/`SwitchMaxInterval`/
+`RollThreshold`/`CounterRelief`/`Penalty`) live in `FishFightConfig` (Shared), following this
+project's existing ADR-039 convention of collecting every fight-tuning number in one hand-editable
+struct rather than scattering constants.
+
+**Visual sell, kept separate from the tension math.** `WorldViewModel.updateFightDirectionDrift
+(deltaTime:)`, called every `.fishOnHook`/`.reeling` tick alongside `reelHook`/`driftHookAway`,
+nudges the hook's world-X position toward the current `fightDirection` at `fightDirectionLateralSpeed`
+(0.35 m/s), clamped within `fightDirectionMaxLateralOffset` (1.0 m) of the rod's own X — purely
+cosmetic (it does not feed back into the counter check above, which reads `RodState.roll` directly)
+so the fish visibly darts side to side without that visual needing to stay perfectly synchronized
+with the tension formula's own timing.
+
+**World HUD, not Rod** (per the project's "Rod owns no gameplay HUD" contract):
+`LineTensionView` gained a `fightDirection` parameter and, whenever it's non-`nil`, a row showing
+"Fish pulling ←/→" and "Lean rod →/←" (the literal opposite arrow) beneath the tension bar. Rod
+itself gained no new UI or haptic for this — the direction can only be communicated visually
+(Core Haptics can't convey "left" vs "right" through a single actuator), and World already owns
+gameplay HUD, so this is the one place it can live.
+
+## Rationale
+
+Requested directly: "aku pengen ikannya ada behavior geser kanan kiri dengan rapid randomizer. jadi
+motion fight juga berlaku. misalnya kalo ikan narik ke kiri, otomatis user harus pull rod ke kanan
+belakang. ini state 'Fight' yang berlangsung selama kurang lebih beberapa detik aja (misal 5-10
+detik) gitu randomizernya" (I want the fish to have left-right shifting behavior with a rapid
+randomizer, so motion applies to the fight too — e.g. if the fish pulls left, the player
+automatically has to pull the rod back-right. This "Fight" state lasts roughly a few seconds, like
+5-10 seconds, randomized).
+
+Scoping the juking phase to a bounded random window per fight (not the whole fight) matches "state
+Fight yang berlangsung selama kurang lebih beberapa detik" literally — after it elapses, the fight
+reverts to being governed by tension/reeling alone, same as before this ADR. Layering the
+direction penalty/relief additively on top of the existing tension formula (rather than replacing
+it, or adding a second, independent failure condition) keeps a single source of truth for "is the
+fight going well" — one bar, one number — instead of forcing the player to track two unrelated
+meters simultaneously.
+
+Using `RodState.roll` (already transmitted, already relative to the calibrated idle pose — no new
+Shared/Rod plumbing needed) as the counter signal was a direct fit with "pull rod ke kanan": roll is
+this project's existing lateral-tilt axis (already driving the rod rig's own lateral bend
+visualization, `RodRigController.applyBend`'s `bendRollScale`), so reusing it for "did the player
+lean the rod the correct way" needed no new sensor plumbing, just a new consumer of a value already
+flowing through `RodState`.
+
+The visual hook drift and the World HUD indicator were both judged necessary, not optional
+additions, even though only the core randomizer/counter mechanic was explicitly requested: without
+*some* indication of which way to counter, the mechanic would be unplayable (the player has no way
+to know which way is currently required), and per this project's own architecture (`GAMEPLAY_ARCHITECTURE_V1.md`,
+"Rod is an input device. World is the game"), that indication has to live on World, not Rod.
+
+All seven new config numbers are hand-picked, not measured against a live session — a first pass at
+the requested feel ("rapid," "a few seconds"), expected to need retuning once actually played.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
+played.
+
+------------------------------------------------------------------------
+
+# ADR-052 --- Floating Bobber: Idle Bob and a Pre-Bite "Interest Dip"
+
+## Decision
+
+`WorldViewModel` never touched `hookEntity.position.y` at all during `.hookInWater` (unless the
+player was reeling in an empty line) — the hook sat perfectly still at `waterHeight` from splash
+until whatever happened next (bite or reel-in), and the bite itself (`FishFightController
+.updateSearching`'s `.bite` case) transitioned straight to `.fishOnHook` with no visual lead-up.
+
+Added `updateBobberFloat(deltaTime:)`, called from `tick()`'s `.hookInWater` case whenever the
+player *isn't* reeling (so it never fights with `reelHook`/the fight mechanics for control of
+`hookEntity.position.y`):
+
+```text
+idleBob     = sin(bobberBobPhase * idleBobFrequency * 2π) * idleBobAmplitude        (0.02 m, 0.5 Hz)
+interestDip = fishFight.isFishInterested
+                ? -abs(sin(bobberBobPhase * interestDipFrequency * 2π)) * interestDipAmplitude
+                : 0                                                                  (0.06 m, 2.0 Hz)
+hookEntity.position.y = waterHeight + idleBob + interestDip
+```
+
+`idleBob` is a small, slow, always-present sine wave — ambient buoyancy realism, not a gameplay
+signal. `interestDip` layers on top only while `fishFight.isFishInterested` (the existing ADR-029
+pre-bite state) is true: sharper, faster, and downward-only (`-abs(sin(...))`), reading as a fish
+visibly nibbling and tugging the float toward the surface before the real bite fires, rather than
+the bite happening with zero visual warning. `bobberBobPhase` resets to `0` on every fresh splash
+(`simulateFlyingHook`) so the pattern doesn't carry an arbitrary phase across casts.
+
+## Rationale
+
+Requested directly: "bobber nya celap celup (just like in real life), karena yang sekarang langsung
+nge bite gitu ikannya, jadi kurang realistis. also, bobber movement masih terlalu static,
+seharusnya bobber itu dinamis naik turun kecil kaya pelampung in real life" (the bobber should dip
+in and out like in real life, because right now the fish bites immediately, which feels
+unrealistic; also, the bobber's movement is still too static — it should dip up and down slightly,
+dynamically, like a real floater).
+
+Reusing the existing `isFishInterested` state (rather than adding new fight-controller state) was a
+direct fit: ADR-029 already models a 0.8-2.0s pre-bite "interested" window specifically so a fish's
+presence can be telegraphed before the strike — it just never had a *visual* consumer on the hook
+itself before this entry, only a haptic pulse (Rod) and a bubble-loop sound (World). Layering the
+dip on top of, rather than replacing, the idle bob means the two complaints compose naturally: an
+idle float always looks alive, and a nibbling float looks *more* alive, in the same direction real
+bobber fishing actually reads (dips get more insistent as a fish investigates, then it goes under).
+
+`idleBobAmplitude`/`idleBobFrequency`/`interestDipAmplitude`/`interestDipFrequency` are all
+hand-picked, not measured against any reference footage or played — a first pass at the requested
+feel, expected to need retuning once actually watched running.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World`
+(macOS) target only (see the matching `CHECKPOINT.md` entry), not yet played.
+
+------------------------------------------------------------------------
+
+# ADR-051 --- Rod Rig Pass: Bend Smoothing, Placeholder Reel Spin, Line-Follow Fix
+
+## Decision
+
+Three related `RodRigController` (World) fixes, requested together as the third of three jobs in
+one message ("benerin rod (rod diem or bend, reel muter, line ngikut)" — fix the rod: stays still
+or bends [correctly], reel spins, line follows):
+
+**Bend smoothing.** `applyBend(pitch:roll:)` became `mutating` and now runs the raw `pitch`/`roll`
+it receives through a one-pole low-pass filter (`bendSmoothing = 0.25`) before computing the
+per-joint bend angles, stored as new `smoothedBendPitch`/`smoothedBendRoll` fields. This does not
+touch the primary whole-rig rotation (`WorldViewModel.updateRodPose()`'s `controllerEntity.orientation
+= RodState.orientation`, still exactly per ADR-016) — only the secondary flex visualization this
+function already owned. Raw per-sample sensor noise fed directly into a per-frame bend computation
+can read as the rod alternating between looking rigid and snapping into an odd flex frame-to-frame;
+this is the same class of visible jitter this project already diagnosed and fixed once for the
+whole-rig rotation itself (`CHECKPOINT.md`'s "Rod Tingling" entry, later superseded when the
+asset-integration merge moved smoothing off the primary orientation per ADR-016/019) — just not yet
+applied to this specific supplementary effect.
+
+**Placeholder reel spin.** Confirmed by extracting and directly inspecting `rod_main.usdz` (not
+assumed): its skeleton has exactly six joints (`Root`, `Handle`, `Rod_01/02/03`, `Tip`) and its mesh
+data is a single `Mesh` prim with two material `GeomSubset`s (`rod06`, `RodThread`) — no reel/spool
+geometry or joint exists anywhere in the asset. A real modeled reel is therefore a follow-up asset
+task in the sibling Blender repo (`AGENTS.md`'s "Asset source repo" convention), not fixable from
+this repo alone. Added a placeholder: a flattened-sphere `ModelEntity` (matching this project's own
+established precedent of primitive shapes standing in for missing assets — the hook and the
+pre-asset-integration rod "arrow" did the same) pinned near the `Handle` joint via the same
+skeletal-pin mechanism `load()` already uses for the tip marker and line attachment. New
+`applyReelSpin(reelSpeed:isReeling:deltaTime:)` rotates it around its local Y axis proportional to
+`RodState.reelSpeed` while `RodState.action == .reeling`, called every tick from
+`WorldViewModel.tick(deltaTime:)` alongside the existing `applyLineTension` call.
+
+**Line-follow fix (a previously known, unfixed issue).** `rod_line.usdz`'s root inherits the rod's
+Tip joint's full *world* orientation (attached via the pin `load()` sets up), so
+`applyLineTension`'s fixed local-X sag axis used to rotate along with whatever roll `applyBend` gave
+the tip — under combined pitch+roll the line visibly forked away from the rod's own bend plane
+instead of drooping toward true down. This is the exact issue flagged as a "Known Remaining Issue"
+in `CHECKPOINT.md`'s "Asset-Integration Environment, First-Person Camera, and Rod Motion Fixes"
+entry and never addressed since. Fixed by reading the tip's current world orientation
+(`tipEntity.orientation(relativeTo: nil)`) and rotating the sag axis by its inverse before building
+each joint's sag rotation, keeping the sag pointed at a stable world-frame direction instead of one
+that rotates along with the rod's own roll. Not a full physical simulation — each line joint
+counters against the *tip's* world orientation specifically, rather than fully compounding through
+the line's own preceding joints' rotations, which is a reasonable approximation given each joint's
+own contribution is small (bounded by the existing `maxLineSagAnglePerJoint`, ~20°).
+
+## Rationale
+
+The three sub-issues map onto three different kinds of problem, handled accordingly rather than
+uniformly:
+
+- "Rod diem or bend" was read as jitter/inconsistency in the secondary flex effect (alternating
+  between looking rigid and snapping into a flex), since nothing in `updateRodPose()`'s primary
+  rotation path showed an obvious functional bug on inspection — smoothing the bend inputs is a
+  low-risk, previously-proven fix for this class of complaint in this exact codebase. This
+  interpretation is flagged explicitly as an inference, not a confirmed diagnosis (no live device
+  was available to observe the actual symptom) — see the `CHECKPOINT.md` entry's own caveat.
+- "Reel muter" surfaced a genuine content gap (no reel geometry exists at all), not a code bug —
+  confirmed by extracting and reading the actual asset before writing anything, per this project's
+  own established discipline of checking the asset directly rather than guessing (the same
+  discipline behind, e.g., the sky-dome/terrain winding fixes). A placeholder was added rather than
+  leaving the ask entirely unaddressed, consistent with this codebase's own precedent of primitive
+  stand-ins for missing assets elsewhere.
+- "Line ngikut" was a rediscovery, not a new find — the project's own history had already root-caused
+  and precisely described this exact bug (down to "the line visually forks away from the rod's bend
+  plane under combined pitch+roll") but left it unfixed pending "the line's droop [needing] to
+  counter-rotate for the parent's current world orientation." This entry implements exactly that
+  previously-proposed fix.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World`
+(macOS) target only (see the matching `CHECKPOINT.md` entry), not yet played. All three fixes are
+first-pass and hand-tuned/approximated where noted above; none have been visually confirmed running.
+
+------------------------------------------------------------------------
+
+# ADR-050 --- Cast Attempts Require an Explicit "Start Casting" Arm
+
+## Decision
+
+`RodMotionInterpreter.interpret(_:)` previously classified a pose as `.cast` (starting backswing
+tracking and the charging phase) purely by proximity to the calibrated `castPose` — no explicit
+intent signal, so any phone movement that happened to read closest to that calibrated pose would
+silently start charging a cast, whether the player meant to or not.
+
+`interpret(_:)` gained a required `isCastingArmed: Bool` parameter. When a pose classifies as
+`.cast` but `isCastingArmed` is `false`, the interpreter now treats it exactly like `.idle` — no
+backswing tracking, no charging phase, no `castPower`, no cast meter — regardless of how close the
+pose actually is to `castPose`. The existing backswing-distance/flick blend (ADR-032) and cast
+resolution (ADR-017) are otherwise completely unchanged; arming only gates *whether* that machinery
+runs at all, not how it computes power once running.
+
+**`RodViewModel.isCastingArmed` (`@Published`)** is the source of truth for the flag, set by a new
+`startCasting()` method (guarded to `isFishing && hookPhase == .idle && !isCastingArmed` — mirrors
+`HookPhase.allowsCasting`, since arming while a cast couldn't possibly complete would just leave the
+button stuck "armed" for nothing) and passed into every `interpret(_:isCastingArmed:)` call in
+`updateAction()`. It clears automatically in three places, so a stale arm can never persist past one
+real attempt or outlive its own preconditions:
+
+- In `updateAction()`, the instant `interpretation.castSnapshot` comes back non-`nil` — a real cast
+  just fired, so the single-use arm is spent.
+- In `handle(_:)`'s `.hookPhase` case, whenever the phase leaves `.idle` for any reason.
+- In `endFishing()`, since arming without an active session makes no sense.
+
+**Rod UI**: a new "Start Casting" button (`Rod/Rod/ContentView.swift`), shown only while
+`isFishing`, disabled whenever `hookPhase != .idle` or already armed (label switches to "Casting
+Armed…"). Extends the V1 controller interface documented in `GAMEPLAY_ARCHITECTURE_V1.md`, updated
+alongside this change.
+
+**World's existing `CastMeterView`** needed no changes at all — its visibility is already driven
+purely by `RodState.motionPhase` being one of the charging-related phases (backswing/charging/
+forwardSwing/release/followThrough). Since those phases can now only ever be reached once armed,
+pressing "Start Casting" causes the meter to appear as a direct consequence of the same existing
+wiring, not a new, separate signal.
+
+## Rationale
+
+Requested directly, as the second of three jobs in one message: "add button 'start casting' di rod,
+terus munculin 'cast meter'. nah, core motion nya, harus narik hp ke belakang (jadi semakin - nilai
+pitch maybe), maka ketika nge flick, akan makin jauh. so maybe detect dari original device, ukur
+seberapa jauh device bergerak, baru 'cast' nya itu ketika nge flick device. langsung disable tombol
+'start casting' kalo kondisi hook nya != idle" (add a "Start Casting" button on Rod, which brings up
+the cast meter. The core motion: pull the phone back — pitch getting more negative, maybe — then
+when flicked, it goes further. So maybe detect from the original device position, measure how far
+the device moved, and the "cast" itself fires on the flick. Disable the "Start Casting" button
+whenever the hook state isn't idle).
+
+The "measure how far it moved from the original pose, then fire on the flick" mechanic itself
+already existed end-to-end (ADR-032's `backswingPeakDistance`/distance-power blend) — re-reading
+`RodMotionInterpreter` confirmed this directly rather than assuming it needed rebuilding from
+scratch, so this ADR adds the missing piece (an explicit arm gate) instead of re-implementing
+already-working motion math. What was genuinely missing was intent: casting was always "live," so
+the player's own framing (an explicit button before the motion counts) reads as a real, previously
+unaddressed usability gap — the calibrated `castPose` proximity check alone can't distinguish
+"about to cast" from "just moved the phone that way incidentally."
+
+Disarming automatically in three places (rather than requiring the player to somehow "cancel") was
+chosen so the flag can never get stuck in a confusing state: a fired cast obviously shouldn't stay
+"armed" for a hook that's now flying, a hook leaving `.idle` for *any* reason (bite/catch/escape
+cycle, or the player ending the session) means casting isn't possible again until back at `.idle`
+regardless of arm state, and ending the session outright shouldn't leave an arm dangling for the
+next one.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
+played. In particular, whether the arm/disarm lifecycle feels natural (vs. e.g. wanting a manual
+cancel, or the button needing to stay visible/disabled differently) is unverified until tried
+physically.
+
+------------------------------------------------------------------------
+
+# ADR-049 --- Device Pairing Allowlist Over CoreBluetooth
+
+## Decision
+
+`TransportHost` (World, BLE central) previously connected to whichever Rod peripheral it
+discovered first advertising the shared service UUID (ADR-035) — with multiple Rods/Worlds in
+Bluetooth range of each other in the same room, any phone could end up paired with any Mac.
+Symmetrically, `TransportClient` (Rod, BLE peripheral) treated whichever central subscribed to its
+`state` characteristic as "the" connection, with no check on which Mac that was.
+
+Added a **first-connection-pairs, then locked** allowlist on both sides, each persisted locally
+via `UserDefaults` (no new `Shared` model — `CBPeripheral`/`CBCentral` are CoreBluetooth types,
+and `Shared` must stay platform-independent per `AGENTS.md`):
+
+- **World**: new `World/World/Transport/PairedDeviceStore.swift` persists the paired Rod's
+  `CBPeripheral.identifier` (and `.name`, for display). `TransportHost.startScanningIfPossible()`
+  tries `centralManager.retrievePeripherals(withIdentifiers:)` for the saved identifier first
+  (CoreBluetooth can hand back a known peripheral without a fresh scan); `didDiscover` ignores any
+  peripheral whose identifier doesn't match once a pairing exists. The first full successful
+  connection (`.ready`, all characteristics subscribed) saves the pairing if none exists yet.
+  `TransportHost.forgetPairedDevice()` clears it and re-enters first-run behavior.
+- **Rod**: new `Rod/Rod/Transport/PairedCentralStore.swift` persists the paired central's
+  `CBCentral.identifier` (no display name — `CBCentral` exposes none). `didSubscribeTo` ignores
+  any central that isn't the saved one once a pairing exists, and the first subscriber is saved as
+  the pairing if none exists yet. Critically, every `updateValue(_:for:onSubscribedCentrals:)` call
+  (`sendUnreliable`, `drainReliableQueue`) now targets `[subscribedCentral]` specifically instead of
+  `nil` — passing `nil` sends to *every* subscribed central regardless of app-level pairing state,
+  so an unpaired Mac that happened to subscribe would otherwise still receive `RodState`/events over
+  the air even though the app never treats it as connected. `TransportClient.forgetPairedDevice()`
+  mirrors World's.
+
+**UI**: World's `MainMenuView` gained a "Paired with `<name>`" line and a "Forget Device" button
+(unrelated to the fishing session boundary that ADR-038 gives to Rod, so it isn't gated by
+`isRodReady`). Rod's Developer Details gained a "Paired Mac" row (short ID only) and a "Forget
+Paired Mac" button, following this project's existing precedent of putting admin/dev-facing
+controls behind Developer Details rather than the minimal V1 primary surface.
+
+Neither side's GATT layout, message framing, or reconnection behavior (ADR-035) changed — this is
+purely an additional identity check layered on top of the existing scan/advertise/connect flow.
+
+## Rationale
+
+Requested directly: "list saved device, biar 1 hp ga konek ke mac lain (setup device pair di awal.
+pake bluetooth connected aja kali ya)" (a list of saved devices, so one phone doesn't connect to a
+different Mac — set up device pairing at the start, maybe just use Bluetooth's own "connected"
+info). "First-connection-pairs" (rather than a dedicated pairing UI/flow with device pickers) was
+chosen as the simplest mechanism satisfying "set up pairing at the start": the very first
+successful connection *is* the setup step, with no extra screen needed, and "Forget Device" is the
+escape hatch if a different phone/Mac needs to pair later.
+
+The fix had to be symmetric, not just on World's side: World is the side that actively *chooses*
+who to connect to (central), but Rod (peripheral) cannot refuse an incoming BLE connection at the
+protocol level, and CoreBluetooth has no "reject a subscription" API — so without Rod's own check,
+a second Mac's `TransportHost` could still discover and subscribe to Rod even after World-side
+filtering was added, and (per the `onSubscribedCentrals: nil` finding above) would have kept
+*receiving real data* from Rod even while Rod's own app state never called it "connected." Fixing
+only the app-level `subscribedCentral` bookkeeping without also restricting the actual
+`updateValue` target list would have been a state-only fix that didn't change what was actually
+transmitted over the air.
+
+A single paired-device slot per app (not a genuine multi-device list with a picker) is a
+deliberate, minimal reading of "list saved device" — matching "setup di awal" (set up once, at the
+start) rather than ongoing multi-device management. If real multi-device support (e.g. a Rod
+choosing between several known Worlds) is wanted later, that's a bigger UX than what was asked for
+here and should be a separate task.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against both the
+`World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
+played with two physical devices.
+
+
+------------------------------------------------------------------------
+
 # ADR-048 --- Catch Cutscene Gains Letterboxing, a Camera Push-In, and a Title Flourish
 
 ## Decision
@@ -288,6 +1193,7 @@ Accepted, pending live confirmation — verified via `swiftc -typecheck` against
 (macOS) and via a `Shared`-only build against the `Rod` (iOS simulator) target's module (see the
 matching `CHECKPOINT.md` entry), not yet played. `dockLiftSpeed = 3.5` is a hand-picked value (faster
 than the player's own max reel speed, `3.0`) rather than one tuned against a live session.
+
 
 ------------------------------------------------------------------------
 
@@ -2350,7 +3256,7 @@ Status: Accepted
 
 ------------------------------------------------------------------------
 
-# ADR-030 --- World Explicitly Authors the First-Person Camera
+# ADR-058 --- World Explicitly Authors the First-Person Camera
 
 ## Decision
 
@@ -2377,7 +3283,7 @@ Status: Accepted
 
 ------------------------------------------------------------------------
 
-# ADR-031 --- Transport Delivery Mode Matches Message Freshness, Not a Blanket Default
+# ADR-059 --- Transport Delivery Mode Matches Message Freshness, Not a Blanket Default
 
 ## Decision
 

@@ -14,6 +14,10 @@ import SwiftUI
 struct LineTensionView: View {
     let isFighting: Bool
     let tension: Float
+    /// Which way the hooked fish is currently pulling, during the juking sub-phase — `nil`
+    /// whenever that phase isn't active. The player must lean the rod the *opposite* way; shown
+    /// here (not on Rod) since Rod owns no gameplay HUD.
+    let fightDirection: FishFightController.FightDirection?
 
     private let dangerLow: Float = 0.15
     private let dangerHigh: Float = 0.85
@@ -70,6 +74,17 @@ struct LineTensionView: View {
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+
+                if let fightDirection {
+                    HStack {
+                        Label("Fish pulling", systemImage: fightDirection == .left ? "arrow.left" : "arrow.right")
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Label("Lean rod", systemImage: fightDirection == .left ? "arrow.right" : "arrow.left")
+                            .foregroundStyle(.cyan)
+                    }
+                    .font(.caption.bold())
+                }
             }
         }
     }

@@ -39,6 +39,7 @@ final class TransportHost: NSObject, TransportProtocol {
     private var centralManager: CBCentralManager!
     private var rodPeripheral: CBPeripheral?
     private var commandCharacteristic: CBCharacteristic?
+    private let pairedDeviceStore = PairedDeviceStore()
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -51,6 +52,11 @@ final class TransportHost: NSObject, TransportProtocol {
     private var commandSendQueue: [QueuedSend] = []
 
     var isConnected: Bool { commandCharacteristic != nil }
+
+    /// The Rod this host is paired with, if a first successful connection has ever completed —
+    /// `nil` means "not paired yet, will pair with the next Rod discovered."
+    var pairedDeviceName: String? { pairedDeviceStore.name }
+    var hasPairedDevice: Bool { pairedDeviceStore.identifier != nil }
 
     var onMessage: ((NetworkMessage) -> Void)?
     var onStateChange: ((ConnectionState) -> Void)?
@@ -82,6 +88,20 @@ final class TransportHost: NSObject, TransportProtocol {
         onStateChange?(.disconnected)
     }
 
+    /// Clears the saved pairing (see `PairedDeviceStore`) and drops any current connection, so the
+    /// next scan pairs fresh with whichever Rod is discovered first — the same first-run behavior
+    /// as before any pairing existed. Does not touch `wantsToScan`, so if a session was already
+    /// active it immediately starts looking for a new device instead of going idle.
+    func forgetPairedDevice() {
+        if let rodPeripheral {
+            centralManager.cancelPeripheralConnection(rodPeripheral)
+        }
+        tearDownConnection()
+        pairedDeviceStore.clear()
+        onStateChange?(.searching)
+        startScanningIfPossible()
+    }
+
     func send(_ message: NetworkMessage) async throws {
         guard let rodPeripheral, let commandCharacteristic else {
             throw HostError.noConnectedPeripheral
@@ -92,9 +112,28 @@ final class TransportHost: NSObject, TransportProtocol {
 
     // MARK: - Scanning / connection lifecycle
 
+    /// If a device is already paired (`PairedDeviceStore`), tries `retrievePeripherals
+    /// (withIdentifiers:)` first — CoreBluetooth can hand back a known peripheral directly without
+    /// a fresh scan if the system still recognizes it (e.g. still bonded/recently seen). Falls
+    /// back to scanning otherwise; `didDiscover` below still only accepts a match for the paired
+    /// identifier once one exists, so an unrelated Rod nearby can't get connected instead.
     private func startScanningIfPossible() {
         guard wantsToScan, centralManager.state == .poweredOn, rodPeripheral == nil else { return }
+
+        if let pairedID = pairedDeviceStore.identifier,
+           let known = centralManager.retrievePeripherals(withIdentifiers: [pairedID]).first {
+            connect(to: known)
+            return
+        }
         centralManager.scanForPeripherals(withServices: [serviceUUID])
+    }
+
+    private func connect(to peripheral: CBPeripheral) {
+        rodPeripheral = peripheral
+        peripheral.delegate = self
+        centralManager.stopScan()
+        onStateChange?(.connecting)
+        centralManager.connect(peripheral)
     }
 
     private func tearDownConnection() {
@@ -178,14 +217,19 @@ extension TransportHost: @preconcurrency CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
         guard rodPeripheral == nil else { return }
+        // Once a device is paired, ignore every other Rod advertising the same service — several
+        // Rods/Worlds can be in range of each other in the same room, and without this filter
+        // World would happily connect to whichever one it discovered first.
+        if let pairedID = pairedDeviceStore.identifier, peripheral.identifier != pairedID {
+            #if DEBUG
+            print("[HOST] Ignoring unpaired peripheral: \(peripheral.identifier)")
+            #endif
+            return
+        }
         #if DEBUG
         print("[HOST] Discovered peripheral: \(peripheral.identifier)")
         #endif
-        rodPeripheral = peripheral
-        peripheral.delegate = self
-        central.stopScan()
-        onStateChange?(.connecting)
-        central.connect(peripheral)
+        connect(to: peripheral)
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -254,6 +298,12 @@ extension TransportHost: @preconcurrency CBPeripheralDelegate {
         if characteristic.uuid == stateUUID { isStateSubscribed = true }
         if characteristic.uuid == reliableOutUUID { isReliableInSubscribed = true }
         if isStateSubscribed, isReliableInSubscribed, commandCharacteristic != nil {
+            // First full success ever pairs World to this specific Rod (see `PairedDeviceStore`);
+            // once paired, `didDiscover` above won't connect to a different one anyway, so this is
+            // a no-op confirming the same identifier on every later reconnect.
+            if pairedDeviceStore.identifier == nil {
+                pairedDeviceStore.save(identifier: peripheral.identifier, name: peripheral.name)
+            }
             onStateChange?(.ready)
         }
     }
@@ -272,8 +322,17 @@ extension TransportHost: @preconcurrency CBPeripheralDelegate {
         }
 
         for messageData in messages {
-            guard let message = try? decoder.decode(NetworkMessage.self, from: messageData) else { continue }
-            onMessage?(message)
+            do {
+                let message = try decoder.decode(NetworkMessage.self, from: messageData)
+                onMessage?(message)
+            } catch {
+                // Was a silent `try?` — a schema mismatch (e.g. only one of Rod/World rebuilt
+                // after a `RodState`/`NetworkMessage` field change) previously dropped every
+                // message with zero signal, reading as "connected but nothing ever happens."
+                #if DEBUG
+                print("[HOST] Failed to decode incoming message (\(messageData.count) bytes): \(error)")
+                #endif
+            }
         }
     }
 

@@ -24,7 +24,14 @@ struct ContentView: View {
             content
 
             if viewModel.screen == .mainMenu {
-                MainMenuView(connectionState: viewModel.connectionState)
+                MainMenuView(
+                    connectionState: viewModel.connectionState,
+                    pairedDeviceName: viewModel.pairedDeviceName,
+                    hasPairedDevice: viewModel.hasPairedDevice,
+                    onForgetDevice: viewModel.forgetPairedDevice,
+                    onResetProgression: viewModel.resetProgression,
+                    onRetryConnection: viewModel.retryConnection
+                )
             }
 
             if viewModel.screen == .playing, viewModel.isShowingCatchCutscene {
@@ -33,10 +40,7 @@ struct ContentView: View {
 
             if viewModel.screen == .playing, viewModel.hookPhase == .result,
                 !viewModel.isShowingCatchCutscene, let result = fishFight.lastCatchResult {
-                ResultView(result: result) {
-                    viewModel.sounds.uiClick()
-                    viewModel.continueFishing()
-                }
+                ResultView(result: result)
             }
 
             if viewModel.screen == .playing, let announcement = fishFight.levelUpAnnouncement {
@@ -102,7 +106,8 @@ struct ContentView: View {
             Group {
                 LineTensionView(
                     isFighting: fishFight.hasFishOnHook,
-                    tension: fishFight.lineTension
+                    tension: fishFight.lineTension,
+                    fightDirection: fishFight.fightDirection
                 )
 
                 GroupBox {
@@ -145,13 +150,12 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                /*
                 CastMeterView(
                     castSolution: viewModel.rodState.castSolution,
                     power: viewModel.rodState.castPower,
-                    phase: viewModel.rodState.motionPhase
+                    phase: viewModel.rodState.motionPhase,
+                    holdDuration: viewModel.rodState.castHoldDuration
                 )
-                 */
 
                 if let lastError = viewModel.lastError {
                     Text(lastError).foregroundStyle(.red)

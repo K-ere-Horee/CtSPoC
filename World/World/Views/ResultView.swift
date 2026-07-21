@@ -7,16 +7,17 @@
 
 import SwiftUI
 
-/// Shown when `WorldViewModel.hookPhase == .result`, after a successful
-/// catch. Blocks the scene until the player taps "Continue Fishing".
+/// Shown when `WorldViewModel.hookPhase == .result`, after a successful catch. Blocks the scene
+/// until the player presses "Start Casting" on Rod, which both dismisses this and arms the next
+/// attempt (`WorldViewModel.handle(_:)` reacts to `RodState.isCastingArmed`, ADR-061) — there's
+/// no dismiss button here, only an instruction label pointing back at Rod.
 ///
-/// No "Return to Menu" here (ADR-038) — Rod's own "End Fishing" button is now the sole way to
-/// end a session (`WorldViewModel` reacts to `RodState.isFishing` going false), so a World-side
+/// No "Return to Menu" here either (ADR-038) — Rod's own "End Fishing" button is now the sole way
+/// to end a session (`WorldViewModel` reacts to `RodState.isFishing` going false), so a World-side
 /// button making the same call would just get overridden back to `.playing` by the next state
 /// update while Rod still thought it was fishing.
 struct ResultView: View {
     let result: FishCatchResult
-    let onContinue: () -> Void
 
     var body: some View {
         ZStack {
@@ -57,8 +58,9 @@ struct ResultView: View {
                     .foregroundStyle(.orange)
             }
 
-            Button("Continue Fishing", action: onContinue)
-                .buttonStyle(.borderedProminent)
+            Text("Press \u{201C}Start Casting\u{201D} on Rod to fish again")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
                 .padding(.top, 10)
         }
         .padding(28)
