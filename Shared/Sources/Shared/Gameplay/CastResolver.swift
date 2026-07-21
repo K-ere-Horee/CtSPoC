@@ -1,3 +1,10 @@
+//
+//  CastResolver.swift
+//  Shared
+//
+//  Created by Calzy Akmal Indyramdhani on 17/07/26.
+//
+
 import Foundation
 
 public struct CastVector3: Codable, Sendable, Equatable {
@@ -24,32 +31,44 @@ public struct CastVector3: Codable, Sendable, Equatable {
 
 public struct CastSnapshot: Codable, Sendable, Equatable {
     public let orientation: RodOrientation
-    public let angularVelocity: CastVector3
     public let timestamp: TimeInterval
+    /// Seconds the pose was held in the backswing/charging zone (since "Start Casting" armed and
+    /// the pose first classified as a cast attempt) before this release — fed through
+    /// `CastConfig.oscillationPeriod`'s timing-meter curve (ADR-057) to become power. Not a
+    /// monotonic charge: the resulting power rises and falls continuously for as long as the
+    /// backswing is held, so releasing at a different instant gives a different power even for the
+    /// same total hold time. The flick always triggers the release; it never scales the result
+    /// (ADR-056).
+    public let backswingHoldDuration: TimeInterval
 
-    public init(orientation: RodOrientation, angularVelocity: CastVector3, timestamp: TimeInterval) {
+    public init(
+        orientation: RodOrientation,
+        timestamp: TimeInterval,
+        backswingHoldDuration: TimeInterval = 0
+    ) {
         self.orientation = orientation
-        self.angularVelocity = angularVelocity
         self.timestamp = timestamp
+        self.backswingHoldDuration = backswingHoldDuration
     }
 }
 
 public struct CastConfig: Codable, Sendable, Equatable {
-    public var minimumCastVelocity: Float
-    public var maximumCastVelocity: Float
     public var minimumLaunchAngle: Float
     public var maximumLaunchAngle: Float
+    /// Seconds for one full oscillation of the timing meter (0 -> 1 -> 0), continuously repeating
+    /// for as long as the backswing is held (ADR-057) — "meteran naik turun perlahan," a classic
+    /// timing-minigame curve rather than a charge-and-cap ramp. The flick locks in whatever power
+    /// the meter reads at that exact instant.
+    public var oscillationPeriod: TimeInterval
 
     public init(
-        minimumCastVelocity: Float = 0.8,
-        maximumCastVelocity: Float = 5.0,
         minimumLaunchAngle: Float = 0.15,
-        maximumLaunchAngle: Float = 0.65
+        maximumLaunchAngle: Float = 0.65,
+        oscillationPeriod: TimeInterval = 3.5
     ) {
-        self.minimumCastVelocity = minimumCastVelocity
-        self.maximumCastVelocity = maximumCastVelocity
         self.minimumLaunchAngle = minimumLaunchAngle
         self.maximumLaunchAngle = maximumLaunchAngle
+        self.oscillationPeriod = oscillationPeriod
     }
 }
 
@@ -105,9 +124,13 @@ public struct CastResolver: Sendable {
         var horizontal = CastVector3(x: forward.x, y: 0, z: forward.z).normalized()
         if horizontal.length == 0 { horizontal = .forward }
 
-        let speed = snapshot.angularVelocity.length
-        let span = max(config.maximumCastVelocity - config.minimumCastVelocity, 0.001)
-        let normalizedPower = min(1, max(0, (speed - config.minimumCastVelocity) / span))
+        // Timing-meter curve (ADR-057): power oscillates continuously between 0 and 1 for as long
+        // as the backswing is held, instead of ramping up and capping. `(1 - cos(t)) / 2` starts at
+        // 0, peaks at 1 halfway through `oscillationPeriod`, returns to 0 at the full period, and
+        // repeats — the flick (never this formula) decides when to lock in whatever it reads.
+        let period = max(config.oscillationPeriod, 0.001)
+        let phase = snapshot.backswingHoldDuration * 2 * Double.pi / period
+        let normalizedPower = Float((1 - cos(phase)) / 2)
         let launchAngle = config.minimumLaunchAngle
             + ((config.maximumLaunchAngle - config.minimumLaunchAngle) * normalizedPower)
 

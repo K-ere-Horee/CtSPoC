@@ -279,11 +279,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = RFMZH4RJ7G;
+				DEVELOPMENT_TEAM = 4YB3365JZ9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Rod/Info.plist;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Rod uses local network to connect into other device.";
+				INFOPLIST_KEY_CFBundleDisplayName = "Catch The Scott: Rod";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.simulation-games";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Rod uses Bluetooth to connect to World and stream controller input.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Rod uses motion sensors to report controller orientation.";
 				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "Rod uses Nearby Interaction to measure its position relative to World.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -297,7 +299,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.cjkt.CtSPoC.Rod;
+				PRODUCT_BUNDLE_IDENTIFIER = "it-is.c4-gebyur";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -316,11 +318,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = RFMZH4RJ7G;
+				DEVELOPMENT_TEAM = 4YB3365JZ9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Rod/Info.plist;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Rod uses local network to connect into other device.";
+				INFOPLIST_KEY_CFBundleDisplayName = "Catch The Scott: Rod";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.simulation-games";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Rod uses Bluetooth to connect to World and stream controller input.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Rod uses motion sensors to report controller orientation.";
 				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "Rod uses Nearby Interaction to measure its position relative to World.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -334,7 +338,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.cjkt.CtSPoC.Rod;
+				PRODUCT_BUNDLE_IDENTIFIER = "it-is.c4-gebyur";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;

@@ -23,35 +23,98 @@ struct ContentView: View {
         ZStack {
             content
 
-            if viewModel.hookPhase == .result, let result = fishFight.lastCatchResult {
-                ResultView(result: result) {
-                    viewModel.continueFishing()
+            if viewModel.screen == .loading {
+                LoadingScreenView()
+            }
+
+            if viewModel.screen == .onboarding {
+                OnboardingView(onComplete: viewModel.completeOnboarding)
+            }
+
+            if viewModel.screen == .mainMenu {
+                MainMenuView(
+                    connectionState: viewModel.connectionState,
+                    pairedDeviceName: viewModel.pairedDeviceName,
+                    hasPairedDevice: viewModel.hasPairedDevice,
+                    calibrationStep: viewModel.rodState.calibrationStep,
+                    onForgetDevice: viewModel.forgetPairedDevice,
+                    onResetProgression: viewModel.resetProgression,
+                    onRetryConnection: viewModel.retryConnection,
+                    onShowOnboarding: viewModel.showOnboarding
+                )
+            }
+
+            // ADR-064: recalibration is now possible mid-session (any tick `hookPhase == .idle`),
+            // not only from the Main Menu before the first "Start Fishing" — this overlay covers
+            // that case with the same live guidance `MainMenuView` shows for the first pass.
+            if viewModel.screen == .playing, viewModel.hookPhase == .idle,
+                viewModel.rodState.calibrationStep != .complete {
+                recalibrationOverlay
+            }
+
+            if viewModel.screen == .playing, viewModel.isShowingCatchCutscene {
+                CatchCutsceneView()
+            }
+
+            if viewModel.screen == .playing, viewModel.hookPhase == .result,
+                !viewModel.isShowingCatchCutscene, let result = fishFight.lastCatchResult {
+                ResultView(result: result)
+            }
+
+            if viewModel.screen == .playing, let announcement = fishFight.levelUpAnnouncement {
+                LevelUpBannerView(message: announcement) {
+                    viewModel.sounds.uiClick()
+                    fishFight.dismissLevelUpAnnouncement()
                 }
             }
+
+            // ADR-087: ported from `feat/ui-slice`'s `RootView`, which showed this directly over
+            // `ContentView()` the instant "Start Fishing" was first pressed — same trigger here
+            // (`isShowingTutorial` flips true alongside `screen = .playing` in `handleState(_:)`),
+            // just reachable through this screen's own overlay `ZStack` instead of a separate router.
+            if viewModel.screen == .playing, viewModel.isShowingTutorial {
+                TutorialView(onFinished: viewModel.dismissTutorial)
+            }
+        }
+    }
+
+    /// Scrim + centered card, matching `ResultView`'s own treatment — the player deliberately
+    /// chose to recalibrate mid-session, so a focused overlay avoids any ambiguity about game
+    /// state during the walkthrough (casting/reeling are already impossible while `hookPhase ==
+    /// .idle` requires no fish/hook in flight to begin with).
+    private var recalibrationOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+
+            CalibrationGuidanceView(step: viewModel.rodState.calibrationStep)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+                .shadow(radius: 24)
         }
     }
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("World")
-                    .font(.title)
-                Spacer()
-                Text(viewModel.connectionState.rawValue.capitalized)
-                    .foregroundStyle(viewModel.connectionState == .streaming ? .green : .secondary)
-            }
 
             RealityView { content in
                 content.camera = .virtual
                 let rod = await viewModel.makeSceneEntity()
                 content.add(rod)
                 viewModel.attachFrameLoop(to: content)
+                await viewModel.sceneDidFinishLoading()
             }
             .frame(minHeight: 320)
             .overlay(alignment: .topLeading) {
-                fpsIndicator
+                VStack {
+                    fpsIndicator
+                    
+                    Text(viewModel.connectionState.rawValue.capitalized)
+                        .foregroundStyle(viewModel.connectionState == .streaming ? .green : .secondary)
+                }
             }
-
+            
+            // MARK: - Debug purpose only. Can ignore
+            /*
             GroupBox("Controller State") {
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
                     row("State", viewModel.connectionState.rawValue)
@@ -59,6 +122,7 @@ struct ContentView: View {
                     row("Hook", viewModel.hookPhase.rawValue)
                     row("Reel Speed", format(viewModel.rodState.reelSpeed))
                     row("Distance", format(viewModel.rodState.distance, suffix: " m"))
+                    row("Last Cast Distance", String(format: "%.2f m", fishFight.lastCastDistance))
                     row("Direction", formatDirection(viewModel.rodState))
                     row("Pitch", format(viewModel.rodState.pitch))
                     row("Roll", format(viewModel.rodState.roll))
@@ -67,49 +131,81 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            LineTensionView(
-                isFighting: fishFight.hasFishOnHook,
-                tension: fishFight.lineTension
-            )
-
-            GroupBox("Catch Results") {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Caught")
-                        Spacer()
-                        Text("\(fishFight.caughtCount)")
-                            .bold()
-                    }
-
-                    if let result = fishFight.lastCatchResult {
-                        HStack {
-                            Text(result.outcome.rawValue)
-                                .foregroundStyle(result.outcome == .caught ? .green : .secondary)
-                            Spacer()
-                            Text(String(format: "%@ \u{2022} %.1f kg \u{2022} %.0f cm", result.speciesName, result.weight, result.length))
-                                .foregroundStyle(.secondary)
-                        }
-                        .font(.caption)
-                    } else {
-                        Text("No catch attempts yet")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+            GroupBox("Cast Direction Debug") {
+                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
+                    row("Player Facing", formatXZ(viewModel.debugPlayerFacingCoordinate))
+                    row("Cast Landed", formatXZ(viewModel.debugCastLandingCoordinate))
+                    row("Raw Aim Angle", formatDegrees(viewModel.debugRawAimDegrees))
+                    row("Corrected Aim Angle", formatDegrees(viewModel.debugCorrectedAimDegrees))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            */
 
-            /*
-            CastMeterView(
-                castSolution: viewModel.rodState.castSolution,
-                power: viewModel.rodState.castPower,
-                phase: viewModel.rodState.motionPhase
-            )
-             */
+            // Hidden during the catch cutscene (ADR-048) so the routine gameplay HUD doesn't
+            // compete with the dramatic "CATCH!" moment — RealityView/its fps+connection overlay
+            // above stays visible, only this stat block fades.
+            Group {
+                LineTensionView(
+                    isFighting: fishFight.hasFishOnHook,
+                    tension: fishFight.lineTension,
+                    isQTEActive: fishFight.isQTEActive,
+                    qteProgress: fishFight.qteProgress
+                )
 
-            if let lastError = viewModel.lastError {
-                Text(lastError).foregroundStyle(.red)
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Caught")
+                            Spacer()
+                            Text("\(fishFight.caughtCount)")
+                                .bold()
+                        }
+
+                        HStack {
+                            Text("Level \(fishFight.currentLevel)")
+                            Spacer()
+                            if let progress = fishFight.progressTowardNextLevel {
+                                Text("\(progress.caught)/\(progress.needed) to next tier")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("All tiers unlocked")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .font(.caption)
+
+                        if let result = fishFight.lastCatchResult {
+                            HStack {
+                                Text(result.outcome.rawValue)
+                                    .foregroundStyle(result.outcome == .caught ? .green : .secondary)
+                                Spacer()
+                                Text(String(format: "%@ \u{2022} %.1f kg \u{2022} %.0f cm", result.speciesName, result.weight, result.length))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .font(.caption)
+                        } else {
+                            Text("No catch attempts yet")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                CastMeterView(
+                    castSolution: viewModel.rodState.castSolution,
+                    power: viewModel.rodState.castPower,
+                    phase: viewModel.rodState.motionPhase,
+                    holdDuration: viewModel.rodState.castHoldDuration
+                )
+
+                if let lastError = viewModel.lastError {
+                    Text(lastError).foregroundStyle(.red)
+                }
             }
+            .opacity(viewModel.isShowingCatchCutscene ? 0 : 1)
+            .animation(.easeOut(duration: 0.2), value: viewModel.isShowingCatchCutscene)
         }
         .padding(20)
         .onAppear { viewModel.start() }
@@ -150,5 +246,15 @@ struct ContentView: View {
     private func formatDirection(_ state: RodState) -> String {
         guard let x = state.directionX, let y = state.directionY, let z = state.directionZ else { return "--" }
         return String(format: "%.2f, %.2f, %.2f", x, y, z)
+    }
+
+    private func formatXZ(_ point: SIMD3<Float>?) -> String {
+        guard let point else { return "--" }
+        return String(format: "(%.2f, %.2f)", point.x, point.z)
+    }
+
+    private func formatDegrees(_ degrees: Float?) -> String {
+        guard let degrees else { return "--" }
+        return String(format: "%.1f°", degrees)
     }
 }

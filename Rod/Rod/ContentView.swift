@@ -32,38 +32,13 @@ struct ContentView: View {
                         .foregroundStyle(viewModel.connectionState == .streaming ? .green : .secondary)
                 }
 
-                VStack(spacing: 12) {
-                    Button {
-                        viewModel.startFishing()
-                    } label: {
-                        Label("Start Fishing", systemImage: "play.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(viewModel.isFishing || viewModel.calibrationStep != .complete)
+                fishingButton
+                    .padding(.horizontal, 32)
 
-                    Button {
-                        viewModel.calibrateMotion()
-                    } label: {
-                        Label(calibrationButtonTitle, systemImage: "scope")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .disabled(!viewModel.hasMotionSample || viewModel.isFishing)
-
-                    Button {
-                        viewModel.endFishing()
-                    } label: {
-                        Label("End Fishing", systemImage: "stop.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .disabled(!viewModel.isFishing)
+                if viewModel.isFishing {
+                    startCastingButton
+                        .padding(.horizontal, 32)
                 }
-                .padding(.horizontal, 32)
 
                 if viewModel.calibrationStep != .complete {
                     Text(calibrationInstruction)
@@ -81,18 +56,115 @@ struct ContentView: View {
                         .padding(.horizontal, 40)
                 }
 
-                Spacer()
+                if viewModel.hasPairedDevice {
+                    pairedDeviceRow
+                }
 
+                Spacer()
+                
+                /*
                 DisclosureGroup("Developer Details", isExpanded: $showDeveloperDetails) {
                     developerDetails
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 12)
+                 */
             }
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        viewModel.calibrateMotion()
+                    } label: {
+                        Label(calibrationButtonTitle, systemImage: "scope")
+                    }
+                    // ADR-064: recalibration is now available any time the hook itself isn't
+                    // mid-cast/fight (hookPhase == .idle), not just before ever pressing "Start
+                    // Fishing" — matches `RodViewModel.calibrateMotion()`'s own relaxed guard.
+                    .disabled(!viewModel.hasMotionSample || viewModel.hookPhase != .idle)
+                }
+            }
         }
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
+    }
+
+    /// Standalone, non-debug pairing-recovery affordance (ADR-062) — deliberately separate from
+    /// the commented-out Developer Details `DisclosureGroup` below, which predates this and is
+    /// left alone per this project's standing precedent of not touching what looks like someone
+    /// else's in-progress work. `TransportClient.didSubscribeTo` silently ignores any central
+    /// whose identifier doesn't match `PairedCentralStore`'s saved one — the subscription still
+    /// succeeds at the BLE protocol level (so World can read `.ready`/`.streaming` as if
+    /// everything's fine), but Rod never actually sends it anything. Without this row, a stale
+    /// saved pairing (e.g. after World's own "Forget Device" only clears World's side, or after
+    /// reinstalling/testing against a different Mac) was permanently unrecoverable from Rod's UI —
+    /// `RodViewModel.forgetPairedDevice()` already existed and worked, it simply had no visible
+    /// caller. Mirrors World's own `MainMenuView.pairedDeviceRow` for the same recovery action.
+    private var pairedDeviceRow: some View {
+        VStack(spacing: 4) {
+            Text("Paired with \(viewModel.pairedDeviceShortID ?? "Mac")")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Forget Paired Mac", role: .destructive) {
+                viewModel.forgetPairedDevice()
+            }
+            .font(.caption)
+            .buttonStyle(.plain)
+            .foregroundStyle(.red.opacity(0.8))
+        }
+    }
+
+    /// Single button whose label/action swaps with `isFishing`, rather than two always-present
+    /// Start/End buttons — matches the player's own framing: "bukan start fishing atau end
+    /// fishing [sekaligus], tapi start fishing, terus ketika mancing ada button end fishing" (not
+    /// both Start and End Fishing at once, just Start Fishing, then an End Fishing button once
+    /// actually fishing).
+    @ViewBuilder
+    private var fishingButton: some View {
+        if viewModel.isFishing {
+            Button {
+                viewModel.endFishing()
+            } label: {
+                Label("End Fishing", systemImage: "stop.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+        } else {
+            Button {
+                viewModel.startFishing()
+            } label: {
+                Label("Start Fishing", systemImage: "play.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(viewModel.calibrationStep != .complete)
+        }
+    }
+
+    /// Arms one cast attempt (see `RodViewModel.startCasting()`/`RodMotionInterpreter`'s own doc
+    /// comment) rather than casting always being live off ordinary phone motion. Disabled once
+    /// `hookPhase` is neither `.idle` nor `.result` (per `HookPhase.allowsCasting` plus the
+    /// ADR-061 exception that also allows arming from `.result`, doubling as World's old
+    /// "Continue Fishing" tap), once already armed, or while mid-recalibration (ADR-064 —
+    /// recalibrating resets `profile.isComplete` to `false`, which already makes a cast attempt a
+    /// silent no-op at the interpreter level; disabling here just keeps the button's own state
+    /// honest instead of reading "Start Casting" for an attempt that can't do anything yet).
+    private var startCastingButton: some View {
+        Button {
+            viewModel.startCasting()
+        } label: {
+            Label(viewModel.isCastingArmed ? "Casting Armed\u{2026}" : "Start Casting", systemImage: "arrow.up.forward")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+        .disabled(
+            (viewModel.hookPhase != .idle && viewModel.hookPhase != .result)
+                || viewModel.isCastingArmed
+                || viewModel.calibrationStep != .complete
+        )
     }
 
     private var developerDetails: some View {
@@ -106,6 +178,13 @@ struct ContentView: View {
                 statusRow("Motion Phase", value: viewModel.motionPhase.rawValue)
                 statusRow("Hook Phase", value: viewModel.hookPhase.rawValue)
                 statusRow("Fishing", value: viewModel.isFishing ? "active" : "inactive")
+                if viewModel.hasPairedDevice {
+                    statusRow("Paired Mac", value: viewModel.pairedDeviceShortID ?? "--")
+                    Button("Forget Paired Mac", role: .destructive) {
+                        viewModel.forgetPairedDevice()
+                    }
+                    .font(.caption)
+                }
             }
 
             Group {
@@ -118,6 +197,10 @@ struct ContentView: View {
                 Text("Rod State").font(.caption.bold()).foregroundStyle(.secondary)
                 valueRow("Action", value: viewModel.action.rawValue)
                 valueRow("Reel Speed", value: format(viewModel.reelSpeed))
+                valueRow(
+                    "Reel Calibration Range",
+                    value: "\(format(viewModel.reelCalibrationRange.min)) - \(format(viewModel.reelCalibrationRange.max)) rad/s"
+                )
                 valueRow("Distance", value: format(viewModel.rodState.distance, suffix: " m"))
                 valueRow("Direction", value: formatDirection(viewModel.rodState))
                 valueRow("Pitch", value: format(viewModel.rodState.pitch))

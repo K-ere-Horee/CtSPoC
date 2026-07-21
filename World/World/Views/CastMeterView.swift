@@ -12,6 +12,9 @@ struct CastMeterView: View {
     let castSolution: CastSolution?
     let power: Float
     let phase: RodMotionPhase
+    /// Live seconds held in the backswing/charging zone this attempt (ADR-056) — shown as a raw
+    /// timer alongside the normalized power bar, since power is now purely a function of this.
+    let holdDuration: TimeInterval
 
     private var isVisible: Bool {
         phase == .backswing || phase == .charging || phase == .forwardSwing
@@ -22,8 +25,14 @@ struct CastMeterView: View {
         Group {
             if isVisible {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Cast Meter")
-                        .font(.headline)
+                    HStack {
+                        Text("Cast Meter")
+                            .font(.headline)
+                        Spacer()
+                        Text(String(format: "Holding %.1fs", holdDuration))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
 
                     GeometryReader { geometry in
                         ZStack(alignment: .leading) {
