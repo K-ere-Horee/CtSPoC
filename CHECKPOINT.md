@@ -6645,3 +6645,68 @@ need no update.
 - Not run: any live session. The peak-alignment math is exact given the stated assumptions, but
   whether a ~2.29x base playback speed (during the non-dilated thrash phase) looks appropriately
   violent or too fast/blurry is an open question only a live session can answer.
+
+## Merge: origin/main into feat/playtest-refine — ADR-049/050/051/052 Numbering Collision Resolved (-> ADR-064/065/066/067)
+
+Date: 2026-07-21.
+
+"pull main, resolve conflict." `feat/playtest-refine`'s prior tip (`a2ae594`) was already an ancestor
+of `origin/main` (merged via PR #14/#15), but `main` had since advanced substantially through `dev`
+— device pairing allowlist, an explicit "Start Casting" arm gate, a rod-rig pass, a floating bobber,
+the cast-power timing mini-game rewrite, maxed Rod haptics, five playtest fixes, pairing recovery,
+and an `RodState` wire-key fix (short JSON keys — casts were being silently dropped over BLE at the
+old key length) — and, critically, **reused ADR numbers 049 through 052 for those four unrelated
+decisions**, directly colliding with this session's own ADR-049 through ADR-052 (the fish-cutscene
+work: real animated fish, orientation, slow-motion, new "Caught" clip integration). This project has
+hit this exact collision pattern twice before (`8b03ce2 docs: resolve ADR-030/031 numbering
+collision`, and a `dev`-merge note referencing an earlier "ADR-044 numbering collision") — same root
+cause each time: independent branches numbering forward from the same branch-point without
+coordinating.
+
+### Sequence
+
+1. Committed this session's uncommitted work (`5b021b6`) as a clean checkpoint before merging, so
+   nothing was at risk during conflict resolution.
+2. `git merge origin/main --no-edit`. Two real conflicts (`ARCHITECTURE_DECISIONS.md`,
+   `CHECKPOINT.md`); everything else — including `World/World/ViewModels/WorldViewModel.swift`
+   itself, despite both branches modifying it heavily — auto-merged cleanly with no conflict markers.
+3. **`ARCHITECTURE_DECISIONS.md`**: kept `origin/main`'s ADR-063 down through ADR-049 unchanged (the
+   canonical, already-shipped continuation), then appended this session's four ADRs immediately after,
+   renumbered ADR-064–067 (052->067, 051->066, 050->065, 049->064) to sit right before the ADR-048
+   section both sides already shared identically. Verified no duplicate `# ADR-NNN` headers remain
+   anywhere in the file afterward.
+4. **`CHECKPOINT.md`**: same principle — `origin/main`'s new entries (chronologically already part of
+   the shipped history) placed first, this session's four entries appended after with the same
+   renumbering applied throughout (headers and inline body references both).
+5. **`SOFTWARE_ARCHITECTURE_DOCUMENT.md`** and **`World/World/ViewModels/WorldViewModel.swift`** both
+   auto-merged without conflict markers but ended up containing a genuine *mix* of `main`'s legitimate
+   ADR-049–052 references (device pairing, cast arming, rod rig, floating bobber) and this session's —
+   read every single occurrence in context line-by-line in both files (not a blind find-replace) to
+   classify which was which before renaming only this session's own, leaving every one of `main`'s
+   references at its original, correct number.
+6. Repo-wide `grep` afterward confirmed no ambiguous/stray old-numbered references remained anywhere
+   (`GAMEPLAY_ARCHITECTURE_V1.md`'s single `ADR-050` hit is `main`'s "Start Casting" arm reference —
+   confirmed correctly left untouched, not mine).
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-macosx26.0` and `arm64-apple-ios17.0-simulator` — exit code
+  0, no errors (confirms the merged `Shared` changes from `main` — `RodState`'s new `CodingKeys`,
+  `CastResolver`/`FishFightConfig`/`RodMotionInterpreter` changes — compile clean).
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` Swift file list against the iOS-simulator
+  `Shared` module — exit code 0, no errors.
+- `git diff --check` clean; no duplicate `private func`/`private var`/`private let` declarations in
+  `WorldViewModel.swift` (checked directly, since a clean auto-merge can still interleave logic
+  incorrectly without tripping a textual conflict).
+- Read `tick(deltaTime:)` directly post-merge to confirm `main`'s new branches (reel-spin, bobber
+  float, fight-direction drift) and this session's `.result`/catch-cutscene branch sit in genuinely
+  separate, non-overlapping cases — not just "compiles," but logically sound.
+- Excluded the same files this entire session has consistently excluded from every commit:
+  `Rod/Rod.xcodeproj/project.pbxproj` and `World/World.xcodeproj/project.pbxproj` (local
+  code-signing team diffs) and this machine's own `xcuserdata` — both remain unstaged/untracked,
+  matching every prior commit in this session.
+- Not run: any live session, and specifically not re-verified that `main`'s new features (casting
+  arm gate, floating bobber, rod rig bend/reel-spin) and this session's catch-cutscene/fish-orientation
+  work behave correctly *together* at runtime — only that the merged source compiles and reads
+  logically consistent from static inspection.
