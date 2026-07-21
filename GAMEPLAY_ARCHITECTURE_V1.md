@@ -209,9 +209,15 @@ distinct, designed moment that casting already has (Hook Flying/Splash) —
 while a "CATCH!" title appears. The hold at the peak is deliberate: a jump
 that immediately came back down read as too quick to register as a real
 cutscene moment. The cutscene ends on its own after a short, fixed duration —
-no player input dismisses it. The current hook visual is a placeholder; the
-cutscene is built so a real fish mesh/leap animation can drop in later
-without changing when, why, or how the camera frames it.
+no player input dismisses it. A real animated fish (Mekong Giant Catfish,
+sourced from the asset repo, scaled to the actual rolled catch length) now
+plays instead of the placeholder sphere used in earlier passes — every catch
+currently shows this same species regardless of which tier was actually
+caught; showing a different, matching species per tier is a future content
+decision, not built yet. The fish faces the rod/line as it's pulled up rather
+than sitting in a fixed default rotation, and its struggle animation plays at
+a brisker tempo than authored so it reads as actively fighting the line, not
+calmly floating.
 
 The camera itself pushes in slowly over the cutscene rather than holding a
 single static shot, letterbox bars slide in from top and bottom, a soft glow
@@ -219,6 +225,19 @@ frames the title, and the routine gameplay HUD (catch count, level, line
 tension) fades out for the duration — all deliberate choices to make the
 moment read as a real cutscene rather than a label popping up over an
 otherwise-unchanged screen.
+
+The hold at the peak now dips into genuine slow-motion partway through —
+easing down to about a third of normal speed through the middle of the hold,
+then back up to normal, rather than an instant jump into and out of
+bullet-time. The fish's own struggle animation slows and speeds back up in
+lockstep with the world around it, not just the position/camera. This
+stretches the cutscene's total length noticeably (roughly a second and a
+half longer than before) in exchange for a more deliberate, dramatic pause on
+the catch. The struggle animation itself has since been re-authored (a real
+thrash-then-arch-then-ease motion, not the original gentle placeholder), and
+its playback speed is tuned so the animation's own most dramatic pose lands
+right in the middle of the slow-motion hold — the two are designed to line
+up, not just coincidentally overlap.
 
 ## Catch Result and Continue
 

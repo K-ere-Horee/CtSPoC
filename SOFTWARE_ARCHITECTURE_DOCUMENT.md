@@ -609,6 +609,91 @@ place before any of this cutscene work — `reelHook`'s `emit(.catchFish)`
 plays `catch_splash.wav` at the exact moment the cutscene begins — so no
 audio changes were needed.
 
+**The cutscene now shows a real animated fish instead of the placeholder
+sphere (ADR-049).** `caughtFishEntity`, loaded once in `makeSceneEntity()`
+via `Entity(named: "mekong_catfish_caught")` (same pattern
+`EnvironmentSceneBuilder` uses for every bundled asset), replaces `hookEntity`
+as what the cutscene actually shows: `beginCatchCutscene(from:)` disables
+`hookEntity`, enables `caughtFishEntity`, scales it to the actual rolled catch
+length (`fishFight.lastCatchResult.length` against the asset's authored 2.0 m
+body length, clamped to a 0.35 minimum), and plays its one baked animation
+(`availableAnimations.first` — a struggle→calm→showcase "Caught" clip). The
+ADR-047 rise/freeze/settle height math was factored into a shared
+`catchCutsceneHeight(elapsed:)`, used by both `updateCatchCutscene` (moves
+`caughtFishEntity`, or `hookEntity` as a fallback if the asset failed to
+load) and `updateCameraFollow`'s ADR-048 push-in (now computed from
+`cutscene.origin` directly rather than a hidden, stale `hookEntity.position`).
+Sourced from a sibling asset repo (`~/repos/new-blender-project`) that ships
+ten fish species with four baked animation states each (`Cruise`/`Bite`/
+`Caught`/`Preview`); only Mekong Giant Catfish was used here — that repo's own
+`APP_TEAM_HANDOFF.md` documents known orientation/normals/UV export defects
+on five of the other species (confirmed via on-device testing on this app's
+separate, since-shelved AR fish-preview feature) and names Mekong Giant
+Catfish the actual reference other species should be fixed to match. Mapping
+`FishCatalog`'s four abstract tiers to distinct real species is an open
+content decision, not attempted here — every catch currently shows the same
+species regardless of tier. The asset is **CC-BY 4.0** (Sketchfab, "Ikan
+Patin") and requires attribution; this branch has no credits screen yet to
+host it (see ADR-049's own note).
+
+**The fish orients toward the rod and its struggle plays faster (ADR-050).**
+Reported directly after a live look: the fish sat at identity rotation the
+whole cutscene (never set before this fix), making a technically-playing
+struggle animation still read as passive/"preview-like." Added
+`fishOrientation(facing:)` and `catchCutsceneFishOrientation(at:)`, called
+from both `beginCatchCutscene(from:)` and `updateCatchCutscene(deltaTime:)` so
+the fish keeps facing `rodRig.tipEntity`'s live position as it rises. The
+asset's local axes (body length along Y, dorsal-ventral along Z) were
+confirmed by reading `mekong_catfish_caught.usdz`'s own `Skeleton
+.bindTransforms` directly (`unzip`+`usdcat`), not assumed from the source
+repo's pre-export Blender notes — this file's `upAxis = "Z"` means it kept
+Blender's native convention rather than the Y-up axis swap the sibling glTF
+exporter performs, so the two could plausibly have disagreed. Orientation is
+built in two steps (shortest-arc align, then a roll correction so the dorsal
+fin faces up) to avoid an arbitrary sideways/upside-down roll. Separately,
+`beginCatchCutscene` now sets `.speed = 1.4` on the played clip's
+`AnimationPlaybackController` — a tempo-only change; the asset repo's own
+`Source_Log.md` documents this species' authored motion as deliberately
+gentler/slower-cadence than other fish, which a playback-rate change cannot
+add amplitude to, only speed up.
+
+**The freeze phase gained an in-code slow-motion envelope (ADR-051).**
+`updateCatchCutscene`'s `cutscene.elapsed` — the single story clock
+`catchCutsceneHeight(elapsed:)` and the ADR-048 camera dolly both already
+read — now advances at `deltaTime * catchCutsceneTimeDilation(elapsed:)`
+instead of raw `deltaTime`. `catchCutsceneTimeDilation(elapsed:)` is `1`
+outside the freeze phase and, inside it, eases from `1` down to
+`catchCutsceneSlowMotionFactor` (`0.3`) over the first 20% of the freeze
+window, holds at `0.3` through the middle 60%, then eases back to `1` over
+the last 20% — avoiding an abrupt jump-cut into/out of bullet-time at the
+freeze's own boundaries. Because position and camera already derive
+everything from `cutscene.elapsed`, slowing that one value automatically
+slows both together; `caughtFishAnimationController` (kept from
+`beginCatchCutscene`'s `playAnimation(_:)` call) is separately retargeted to
+`catchCutsceneFishAnimationSpeed * dilation` every frame so the fish's own
+struggle visibly slows and speeds back up in lockstep too, not just the
+world-space motion around it. Real wall-clock time to get through the
+freeze's nominal 0.9 s "story" duration is now considerably longer while
+dilated (~2.3–2.4 s at current constants) — total cutscene runtime is now
+roughly 3 s, up from ~1.6 s.
+
+**The new "Caught" clip lands its peak beat inside the slow-motion dip by
+construction (ADR-052).** The `Caught` clip itself was re-authored in
+Blender per the ADR-051 handoff and re-copied in (same model/rig — verified
+byte-identical `bindTransforms` to the previous file — only the animation
+replaced; 90 frames/3.75 s, up from 72 frames/3.0 s). `catchCutsceneFishAnimationSpeed`
+changed from a hardcoded `1.4` (ADR-050, tuned for the *old* clip's
+deliberately gentle tempo) to a computed property:
+`caughtFishAnimationPeakTime / (catchCutsceneRiseDuration +
+catchCutsceneFreezeDuration / 2)` — since both `cutscene.elapsed` and the
+animation controller's `.speed` are scaled by the identical per-frame
+dilation value each tick, clip-time consumed per unit of *story* time
+reduces to a plain constant independent of dilation, so this formula
+guarantees the clip's reported peak frame (44, ≈1.83 s in) lands exactly at
+the freeze phase's story-time midpoint — always the dip's deepest point,
+regardless of its specific factor/ease shape. No other cutscene constant
+changed.
+
 `resistance`'s contribution to `effectiveFishPullRate`/`fishPullSpeed`/
 the escape allowance is scaled by its own multiplier per formula
 (`pullRateResistanceMultiplier`/`pullSpeedResistanceMultiplier`/

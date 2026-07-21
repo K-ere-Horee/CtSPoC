@@ -192,8 +192,49 @@ final class WorldViewModel: ObservableObject {
     private let catchCutsceneCameraStartOffset: SIMD3<Float> = [0, 1.2, 2.4]
     private let catchCutsceneCameraEndOffset: SIMD3<Float> = [0, 0.9, 1.6]
 
-    /// Single source for the cutscene's total run time — `updateCameraFollow`'s dolly and
-    /// `updateCatchCutscene`'s phase math must agree on when the cutscene ends.
+    /// Where the new "Caught" clip's single most dramatic beat (a full-body arch, authored per the
+    /// ADR-051/052 handoff) lands in the clip's own timeline — frame 44 of a 90-frame/24fps clip, per
+    /// the Blender session's own report after re-authoring it. Independently re-confirmed (not just
+    /// trusted from that report): the exported `.usdz`'s stage metadata is `endTimeCode = 89`,
+    /// `timeCodesPerSecond = 24` (90 frames / 24fps = 3.75 s total, up from the old clip's 3.0 s).
+    private let caughtFishAnimationPeakTime: Float = 1.83
+
+    /// Playback speed for `caughtFishEntity`'s clip (ADR-052) — **derived**, not hand-picked, so
+    /// `caughtFishAnimationPeakTime` lands exactly at the freeze phase's story-time midpoint
+    /// (`catchCutsceneRiseDuration + catchCutsceneFreezeDuration / 2`), which is always the deepest,
+    /// most sustained point of the ADR-051 slow-motion dip regardless of the dip's specific
+    /// `catchCutsceneSlowMotionFactor`/`catchCutsceneSlowMotionEaseFraction` shape — a symmetric
+    /// envelope's center is its deepest point no matter how steep the envelope is. Computed rather
+    /// than stored specifically so a future rise/freeze retune (or another new clip) doesn't silently
+    /// leave a stale hardcoded speed behind — see ADR-052 for the full derivation, including why
+    /// dilation cancels out of this calculation entirely (both `cutscene.elapsed` and the animation's
+    /// own playback rate are scaled by the identical per-frame dilation factor, so clip-time consumed
+    /// per unit of *story* time reduces to a plain constant, independent of dilation). Supersedes
+    /// ADR-050's hardcoded `1.4` — that value compensated for the *old* clip's deliberately gentle,
+    /// slower-authored motion, which no longer exists now that the clip itself was replaced.
+    private var catchCutsceneFishAnimationSpeed: Float {
+        caughtFishAnimationPeakTime / (catchCutsceneRiseDuration + catchCutsceneFreezeDuration / 2)
+    }
+
+    /// Time-dilation factor (ADR-051) applied at the deepest point of the freeze phase's slow-motion
+    /// envelope — `catchCutsceneTimeDilation(elapsed:)` eases between `1` (normal speed) and this
+    /// value and back over the freeze window, rather than an abrupt on/off. `0.3` means the slowest
+    /// point advances `cutscene.elapsed` (and the fish's own animation) at 30% of real time — the
+    /// freeze's nominal `catchCutsceneFreezeDuration` (0.9 s of "story" time) actually takes
+    /// noticeably longer in real wall-clock time while dilated, which is the intended effect: a
+    /// genuine bullet-time hang on the catch, not just a longer hold at normal speed.
+    private let catchCutsceneSlowMotionFactor: Float = 0.3
+
+    /// Fraction of the freeze phase spent easing into/out of the slow-motion dip on each side (see
+    /// `catchCutsceneTimeDilation(elapsed:)`) — `0.2` means the first and last 20% of the freeze
+    /// window ramp between normal speed and `catchCutsceneSlowMotionFactor`, with the middle 60% held
+    /// at the fully-dilated slowest point.
+    private let catchCutsceneSlowMotionEaseFraction: Float = 0.2
+
+    /// Single source for the cutscene's total run time (in "story" time — see
+    /// `catchCutsceneTimeDilation(elapsed:)`; real wall-clock duration is longer while dilated) —
+    /// `updateCameraFollow`'s dolly and `updateCatchCutscene`'s phase math must agree on when the
+    /// cutscene ends.
     private var catchCutsceneTotalDuration: Float {
         catchCutsceneRiseDuration + catchCutsceneFreezeDuration + catchCutsceneSettleDuration
     }
@@ -207,9 +248,24 @@ final class WorldViewModel: ObservableObject {
     }
     private var catchCutscene: CatchCutscene?
 
+    /// Authored body length (m) of `mekong_catfish_caught.usdz` — `new-blender-project`'s
+    /// `Fish06_MekongGiantCatfish/Documentation/Source_Log.md` step 4: "scaled to 2.0 m." Used only
+    /// to derive `caughtFishEntity`'s cutscene display scale (ADR-049) from the actual rolled catch
+    /// length, not to place/scale anything else.
+    private let caughtFishAuthoredLength: Float = 2.0
+
     private var rodRig: RodRigController?
     private var controllerEntity: Entity?
     private var hookEntity: ModelEntity?
+    /// The real animated fish shown during the catch cutscene (ADR-049) — currently always
+    /// `mekong_catfish_caught.usdz` regardless of which `FishSpecies` tier was actually caught (see
+    /// `beginCatchCutscene`'s doc comment for why). `nil` if the asset failed to load, in which case
+    /// the cutscene silently falls back to animating `hookEntity` instead (its pre-ADR-049 behavior).
+    private var caughtFishEntity: Entity?
+    /// The controller for `caughtFishEntity`'s currently-playing clip (ADR-051) — kept so
+    /// `updateCatchCutscene` can retarget `.speed` every frame as the slow-motion envelope moves
+    /// through the freeze phase, instead of only setting it once at the start.
+    private var caughtFishAnimationController: AnimationPlaybackController?
     private var playerCamera: Entity?
     private var hookVelocity = SIMD3<Float>.zero
     private var castLaunchPosition = SIMD3<Float>.zero
@@ -337,6 +393,14 @@ final class WorldViewModel: ObservableObject {
         hookEntity = hook
         root.addChild(hook)
 
+        // ADR-049: loaded once up front like every other scene entity, not lazily on first catch —
+        // `Entity(named:)` is async and this avoids a load stall on the player's very first catch.
+        if let fish = try? await Entity(named: "mekong_catfish_caught") {
+            fish.isEnabled = false
+            caughtFishEntity = fish
+            root.addChild(fish)
+        }
+
         // root.addChild(makeDebugForwardRay())
 
         return root
@@ -410,9 +474,14 @@ final class WorldViewModel: ObservableObject {
             let eased = t * t * (3 - 2 * t)
             let offset = catchCutsceneCameraStartOffset
                 + (catchCutsceneCameraEndOffset - catchCutsceneCameraStartOffset) * eased
+            // Reads position from `cutscene.origin` + the shared height curve (ADR-049) rather than
+            // `hookEntity.position` — `hookEntity` is hidden for the whole cutscene now that
+            // `caughtFishEntity` plays it instead, so its position is stale/irrelevant here.
+            let focusPosition = cutscene.origin
+                + SIMD3<Float>(0, catchCutsceneHeight(elapsed: cutscene.elapsed), 0)
             playerCamera.look(
-                at: hookEntity.position,
-                from: hookEntity.position + offset,
+                at: focusPosition,
+                from: focusPosition + offset,
                 relativeTo: nil
             )
             return
@@ -450,6 +519,8 @@ final class WorldViewModel: ObservableObject {
         guard screen != .mainMenu else { return }
         hookVelocity = .zero
         hookEntity?.isEnabled = false
+        caughtFishEntity?.isEnabled = false
+        caughtFishAnimationController = nil
         catchCutscene = nil
         isShowingCatchCutscene = false
         fishFight.resetForNewCast()
@@ -814,47 +885,168 @@ final class WorldViewModel: ObservableObject {
     /// brief "jump" moment and a "CATCH!" title, instead of the hook/fish just vanishing the instant
     /// it arrives at the dock. `hookPhase` is already `.result` by the time this is called (set by
     /// `reelHook`'s caller), so casting/reeling are locked for the whole cutscene exactly as before.
+    ///
+    /// ADR-049: hides `hookEntity` and shows `caughtFishEntity` (a real animated fish,
+    /// `mekong_catfish_caught.usdz`) in its place, playing that asset's baked "Caught" clip. Always
+    /// the same species regardless of which `FishSpecies` tier (`fish_a`/`fish_b`/`fish_c`/`scott`)
+    /// was actually rolled — `FishCatalog`'s four tiers are still placeholder data with no asset
+    /// reference of their own (see its own doc comment), and only one species out of the asset
+    /// repo's ten has a fully verified-good export/orientation (see `caughtFishEntity`'s doc
+    /// comment). Mapping specific tiers to specific species is a content decision left for later,
+    /// once more species are vetted. `caughtFishEntity`'s *display scale* does still vary with the
+    /// actual rolled catch length, so the size at least tracks what `ResultView` shows next.
     private func beginCatchCutscene(from position: SIMD3<Float>) {
+        hookEntity?.isEnabled = false
+
+        if let caughtFishEntity {
+            caughtFishEntity.isEnabled = true
+            caughtFishEntity.position = position
+            caughtFishEntity.orientation = catchCutsceneFishOrientation(at: position)
+            let lengthMeters = Float((fishFight.lastCatchResult?.length ?? 100) / 100)
+            let scale = max(lengthMeters / caughtFishAuthoredLength, 0.35)
+            caughtFishEntity.scale = SIMD3<Float>(repeating: scale)
+            if let clip = caughtFishEntity.availableAnimations.first {
+                // Speed is derived, not artistic (ADR-052 — see `catchCutsceneFishAnimationSpeed`'s
+                // own doc comment): this clip was re-authored in Blender (ADR-051/052 handoff) to
+                // already be violent/"ngamuk" on its own terms, so the playback rate here exists
+                // purely to land its authored peak beat inside the slow-motion dip, not to
+                // compensate for a gentle source clip the way ADR-050's old `1.4` did. Kept as
+                // `caughtFishAnimationController` so `updateCatchCutscene` can retarget `.speed`
+                // again once the slow-motion envelope (ADR-051) starts moving through the freeze
+                // phase.
+                let controller = caughtFishEntity.playAnimation(clip)
+                controller.speed = catchCutsceneFishAnimationSpeed
+                caughtFishAnimationController = controller
+            }
+        }
+
         catchCutscene = CatchCutscene(origin: position)
         isShowingCatchCutscene = true
     }
 
-    /// Placeholder jump trajectory for the catch cutscene (ADR-045/047) — `hookEntity` is still a
-    /// placeholder sphere (see its declaration), so this is a simple three-phase vertical motion at
-    /// the XZ it already arrived at, not a real leap animation: ease up to `catchCutsceneJumpHeight`
-    /// over `catchCutsceneRiseDuration`, hold there for `catchCutsceneFreezeDuration` (ADR-047 — a
+    /// Height above `cutscene.origin` at `elapsed` seconds into the catch cutscene (ADR-045/047) —
+    /// shared by `updateCatchCutscene` (moves whichever entity is playing the cutscene) and
+    /// `updateCameraFollow`'s cutscene branch (ADR-048's push-in needs the same focus point), so the
+    /// two can't drift out of sync. Three phases: ease up to `catchCutsceneJumpHeight` over
+    /// `catchCutsceneRiseDuration`, hold there for `catchCutsceneFreezeDuration` (ADR-047 — a
     /// continuous up-then-down arc alone read as too quick a blip to register as a deliberate
-    /// "cutscene" moment), then ease back down over `catchCutsceneSettleDuration`. Expected to be
-    /// replaced once a real fish mesh/animation lands; this exists so the cutscene's *timing and
-    /// trigger* can be built and reviewed now, independent of that asset work.
-    private func updateCatchCutscene(deltaTime: Float) {
-        guard let hookEntity, var cutscene = catchCutscene else { return }
-
-        cutscene.elapsed += deltaTime
-
+    /// "cutscene" moment), then ease back down over `catchCutsceneSettleDuration`.
+    private func catchCutsceneHeight(elapsed: Float) -> Float {
         let riseEnd = catchCutsceneRiseDuration
         let freezeEnd = riseEnd + catchCutsceneFreezeDuration
-        let settleEnd = freezeEnd + catchCutsceneSettleDuration
 
-        let height: Float
-        if cutscene.elapsed < riseEnd {
-            let t = cutscene.elapsed / catchCutsceneRiseDuration
-            height = sin(t * .pi / 2) * catchCutsceneJumpHeight
-        } else if cutscene.elapsed < freezeEnd {
-            height = catchCutsceneJumpHeight
+        if elapsed < riseEnd {
+            let t = elapsed / catchCutsceneRiseDuration
+            return sin(t * .pi / 2) * catchCutsceneJumpHeight
+        } else if elapsed < freezeEnd {
+            return catchCutsceneJumpHeight
         } else {
-            let t = min((cutscene.elapsed - freezeEnd) / catchCutsceneSettleDuration, 1)
-            height = cos(t * .pi / 2) * catchCutsceneJumpHeight
+            let t = min((elapsed - freezeEnd) / catchCutsceneSettleDuration, 1)
+            return max(cos(t * .pi / 2) * catchCutsceneJumpHeight, 0)
         }
-        hookEntity.position = cutscene.origin + SIMD3<Float>(0, max(height, 0), 0)
+    }
 
-        guard cutscene.elapsed >= settleEnd else {
+    /// Where `caughtFishEntity`'s head should point during the cutscene (ADR-050) — the fish is
+    /// hooked and being pulled up the line, so its head faces `rodRig.tipEntity` (falling back to
+    /// `controllerEntity`, the rod's render-anchor root, if the rig isn't loaded), recomputed every
+    /// call since both the fish (rising) and the tip (rod bend) can move during the cutscene.
+    private func catchCutsceneFishOrientation(at position: SIMD3<Float>) -> simd_quatf {
+        let rodPoint = rodRig?.tipEntity?.position(relativeTo: nil) ?? controllerEntity?.position
+        guard let rodPoint else { return simd_quatf(angle: 0, axis: [0, 1, 0]) }
+        return fishOrientation(facing: rodPoint - position)
+    }
+
+    /// Builds the world-space rotation for `mekong_catfish_caught.usdz` given a desired head
+    /// direction (ADR-050 — "orientasi nya ngikuti arah pancing," the fish should face the rod/line
+    /// direction instead of sitting at its identity bind-pose rotation the whole cutscene). The
+    /// asset's local axes were confirmed by reading its `bindTransforms` directly (`unzip`+`usdcat`
+    /// on the copied `.usdz`, not assumed from the source repo's Blender-side notes, which describe
+    /// pre-export space and don't necessarily survive export unchanged): body length runs along
+    /// local Y (head at Y≈−0.6, tail/caudal fin at Y≈+0.75), dorsal-ventral runs along local Z
+    /// (`Dorsal_Fin` at Z≈+0.1, `Anal_Fin` at Z≈−0.1) — this file's `upAxis = "Z"`, i.e. it's a
+    /// direct Blender-convention USD export, not glTF's Y-up-converted axis layout.
+    ///
+    /// Two-step construction rather than a single basis-matrix build, to sidestep handedness
+    /// mistakes: first rotate local head (`-Y`) to `forward` via the shortest-arc rotation
+    /// (`simd_quatf(from:to:)`), which leaves an arbitrary roll around that axis; then correct the
+    /// roll so the dorsal fin (local `+Z`) ends up as close to world-up as geometrically possible,
+    /// instead of whatever roll the shortest-arc step happened to produce — otherwise the fish can
+    /// end up sideways or upside down while still technically "facing" the right direction.
+    private func fishOrientation(facing forward: SIMD3<Float>) -> simd_quatf {
+        guard simd_length(forward) > 0.0001 else { return simd_quatf(angle: 0, axis: [0, 1, 0]) }
+        let forwardDirection = simd_normalize(forward)
+
+        let headAxis = SIMD3<Float>(0, -1, 0)
+        let dorsalAxis = SIMD3<Float>(0, 0, 1)
+        let alignHead = simd_quatf(from: headAxis, to: forwardDirection)
+
+        let rotatedDorsal = alignHead.act(dorsalAxis)
+        let worldUp = SIMD3<Float>(0, 1, 0)
+        let desiredUp = worldUp - forwardDirection * simd_dot(worldUp, forwardDirection)
+        let currentUp = rotatedDorsal - forwardDirection * simd_dot(rotatedDorsal, forwardDirection)
+        guard simd_length(desiredUp) > 0.0001, simd_length(currentUp) > 0.0001 else { return alignHead }
+
+        let d = simd_normalize(desiredUp)
+        let c = simd_normalize(currentUp)
+        let rollAngle = atan2(simd_dot(simd_cross(c, d), forwardDirection), simd_dot(c, d))
+        let roll = simd_quatf(angle: rollAngle, axis: forwardDirection)
+        return roll * alignHead
+    }
+
+    /// Real-time-to-"story"-time dilation factor at `elapsed` seconds of story time into the
+    /// cutscene (ADR-051 — "ada slowmotion ketika di cut scene ketangkep, jadi beneran kaya game
+    /// mancing"). `1` (normal speed) outside the freeze phase entirely; inside it, eases down to
+    /// `catchCutsceneSlowMotionFactor` over the first `catchCutsceneSlowMotionEaseFraction` of the
+    /// freeze window, holds there through the middle, then eases back up to `1` over the same
+    /// fraction at the end — an abrupt on/off at the freeze's own boundaries would read as a jump
+    /// cut in and out of bullet-time rather than a deliberate slow-down/speed-up.
+    private func catchCutsceneTimeDilation(elapsed: Float) -> Float {
+        let riseEnd = catchCutsceneRiseDuration
+        let freezeEnd = riseEnd + catchCutsceneFreezeDuration
+        guard elapsed >= riseEnd, elapsed < freezeEnd else { return 1 }
+
+        let freezeProgress = (elapsed - riseEnd) / catchCutsceneFreezeDuration
+        let rampIn = min(freezeProgress / catchCutsceneSlowMotionEaseFraction, 1)
+        let rampOut = min((1 - freezeProgress) / catchCutsceneSlowMotionEaseFraction, 1)
+        let envelope = min(rampIn, rampOut)
+        return 1 - envelope * (1 - catchCutsceneSlowMotionFactor)
+    }
+
+    /// Drives whichever entity is standing in for the catch cutscene (ADR-045/047/049) through the
+    /// `catchCutsceneHeight(elapsed:)` motion at the XZ it already arrived at. Prefers
+    /// `caughtFishEntity` (the real animated fish, ADR-049); falls back to the placeholder
+    /// `hookEntity` sphere if the asset failed to load, so the cutscene still plays *something*
+    /// rather than nothing. `cutscene.elapsed` (the "story clock") now advances at
+    /// `deltaTime * catchCutsceneTimeDilation(elapsed:)` (ADR-051) rather than raw `deltaTime` — the
+    /// fish's own animation is retargeted to the same dilation each frame, so the position/camera
+    /// motion and the struggle animation all visibly slow down and speed back up together, instead
+    /// of only one of them.
+    private func updateCatchCutscene(deltaTime: Float) {
+        guard var cutscene = catchCutscene else { return }
+
+        let dilation = catchCutsceneTimeDilation(elapsed: cutscene.elapsed)
+        cutscene.elapsed += deltaTime * dilation
+        caughtFishAnimationController?.speed = catchCutsceneFishAnimationSpeed * dilation
+
+        let position = cutscene.origin
+            + SIMD3<Float>(0, catchCutsceneHeight(elapsed: cutscene.elapsed), 0)
+
+        if let caughtFishEntity, caughtFishEntity.isEnabled {
+            caughtFishEntity.position = position
+            caughtFishEntity.orientation = catchCutsceneFishOrientation(at: position)
+        } else {
+            hookEntity?.position = position
+        }
+
+        guard cutscene.elapsed >= catchCutsceneTotalDuration else {
             catchCutscene = cutscene
             return
         }
 
         catchCutscene = nil
-        hookEntity.isEnabled = false
+        hookEntity?.isEnabled = false
+        caughtFishEntity?.isEnabled = false
+        caughtFishAnimationController = nil
         isShowingCatchCutscene = false
     }
 
