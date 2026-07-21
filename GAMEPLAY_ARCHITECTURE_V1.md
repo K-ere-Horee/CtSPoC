@@ -177,8 +177,9 @@ and tension feedback. Rod provides a strong haptic pulse.
 
 ## Fish Fight
 
-The fight is the core gameplay interaction. It is not a quick-time event. It
-combines physical rod movement, reeling, line tension, and haptic feedback.
+The fight is the core gameplay interaction. It combines physical rod
+movement, reeling, line tension, and haptic feedback, punctuated by a
+randomized flick quick-time-event (ADR-078).
 
 ### Line Tension
 
@@ -191,6 +192,14 @@ LOW ---------------- HIGH
 
 The player keeps tension in a safe zone. Sustained tension that is too high or
 too low causes the fish to escape and may snap the line.
+
+### Flick QTE (ADR-078)
+
+While a fish is hooked, a "FLICK ROD NOW!" prompt spawns at a randomized
+interval. The player flicks the rod forward — the same physical gesture as a
+cast release — before a short reaction window expires. A successful flick
+relieves tension; a missed prompt spikes it. This replaces the earlier
+lean-left/right rod-roll counter mechanic (ADR-053, superseded).
 
 ### Haptics
 

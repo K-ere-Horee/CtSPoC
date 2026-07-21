@@ -189,16 +189,6 @@ final class WorldViewModel: ObservableObject {
     private let interestDipFrequency: Float = 2.0
     private var bobberBobPhase: Float = 0
 
-    /// m/s the hook drifts sideways (world X — this scene's fixed camera forward is -Z, so world
-    /// X reads as screen-space left/right, matching `fishFight.fightDirection`'s own left/right
-    /// convention) while `fishFight.fightDirection` is set, in `updateFightDirectionDrift`. Purely
-    /// visual — the actual counter-pull success/failure is evaluated in `FishFightController`
-    /// from `RodState.roll`, not from this drift.
-    private let fightDirectionLateralSpeed: Float = 0.35
-    /// Cap (meters, either side of the rod's own X) on how far the juking drift can push the hook,
-    /// so a long juking phase can't walk it arbitrarily far sideways.
-    private let fightDirectionMaxLateralOffset: Float = 1.0
-
     /// Catch cutscene (ADR-045/047) timing, split into three phases so the hook visibly holds in the
     /// air instead of just arcing up and immediately back down — a single continuous arc read as too
     /// quick a blip to register as a deliberate "cutscene" moment. Total play time before `ResultView`
@@ -330,6 +320,8 @@ final class WorldViewModel: ObservableObject {
     private var pendingCastSolution: CastSolution?
     /// Last tension band sent to Rod (ADR-039); `nil` outside a fight. See `syncTensionBand()`.
     private var lastSentTensionBand: FishFightController.TensionBand?
+    /// Last `fishFight.isQTEActive` value seen (ADR-078). See `syncQTE()`.
+    private var lastQTEActive = false
     private var hasStarted = false
 
     /// Drives the simulation from RealityKit's own per-frame scene update, with a real
@@ -700,14 +692,12 @@ final class WorldViewModel: ObservableObject {
                 driftHookAway(deltaTime: deltaTime)
                 setHookPhase(.fishOnHook)
             }
-            updateFightDirectionDrift(deltaTime: deltaTime)
 
             if let failure = fishFight.updateFight(
                 deltaTime: deltaTime,
                 isReeling: rodState.action == .reeling,
                 reelSpeed: rodState.reelSpeed,
-                hookDistance: hookDistanceFromRod(),
-                rodRoll: rodState.roll
+                hookDistance: hookDistanceFromRod()
             ) {
                 resolveFightFailure(failure)
             }
@@ -717,6 +707,7 @@ final class WorldViewModel: ObservableObject {
         sounds.updateIdleLoop(active: screen == .playing && (hookPhase == .idle || hookPhase == .hookInWater))
         sounds.updateReelFightLoop(active: screen == .playing && (hookPhase == .fishOnHook || hookPhase == .reeling))
         syncTensionBand()
+        syncQTE()
     }
 
     private func hookDistanceFromRod() -> Float {
@@ -740,6 +731,17 @@ final class WorldViewModel: ObservableObject {
         case .high: .reelTensionHigh
         }
         emit(event)
+    }
+
+    /// Sends `FishingEvent.qtePrompt` to Rod on the rising edge of `fishFight.isQTEActive`
+    /// (ADR-078) — a one-shot haptic alert telling the player to flick the rod now. The falling
+    /// edge (prompt resolved, success or timeout) needs no message: Rod never tracked "a prompt is
+    /// active" state to begin with, it just reacts to its own flick locally.
+    private func syncQTE() {
+        guard fishFight.isQTEActive != lastQTEActive else { return }
+        lastQTEActive = fishFight.isQTEActive
+        guard lastQTEActive else { return }
+        emit(.qtePrompt)
     }
 
     /// Both failures now reset the hook to `.idle` (a fresh cast is required) instead of
@@ -821,21 +823,6 @@ final class WorldViewModel: ObservableObject {
             hookEntity.position -= simd_normalize(horizontalOffset) * step
             hookEntity.position.y = waterHeight
         }
-    }
-
-    /// Visually sells the fish's juke (`fishFight.fightDirection`) as a distinct sideways nudge on
-    /// top of whatever `reelHook`/`driftHookAway` already did to the hook's position this tick — a
-    /// small, continuous world-X drift toward the current direction, clamped to stay within
-    /// `fightDirectionMaxLateralOffset` of the rod's own X so a long juking phase can't walk the
-    /// hook arbitrarily far sideways. No-op whenever the juking phase isn't active.
-    private func updateFightDirectionDrift(deltaTime: Float) {
-        guard let hookEntity, let controllerEntity, let direction = fishFight.fightDirection else { return }
-
-        let sign: Float = direction == .left ? -1 : 1
-        let targetX = hookEntity.position.x + sign * fightDirectionLateralSpeed * deltaTime
-        let minX = controllerEntity.position.x - fightDirectionMaxLateralOffset
-        let maxX = controllerEntity.position.x + fightDirectionMaxLateralOffset
-        hookEntity.position.x = max(minX, min(maxX, targetX))
     }
 
     /// Per ADR-018/ADR-019 and the calibration contract in `AGENTS.md`: the rod root stays at a
@@ -1277,7 +1264,20 @@ final class WorldViewModel: ObservableObject {
     }
 
     private func handle(_ message: NetworkMessage) {
-        guard case let .state(state) = message else { return }
+        switch message {
+        case let .state(state):
+            handleState(state)
+        case .fishingEvent(.qteFlick):
+            // ADR-078: the only `FishingEvent` case Rod itself ever constructs and sends — every
+            // other case flows World -> Rod. A no-op whenever no QTE prompt is currently active,
+            // per `FishFightController.handleQTEFlick()`'s own guard.
+            fishFight.handleQTEFlick()
+        default:
+            break
+        }
+    }
+
+    private func handleState(_ state: RodState) {
         let wasFishing = rodState.isFishing
         rodState = state
         if let solution = state.castSolution, state.action == .casting {

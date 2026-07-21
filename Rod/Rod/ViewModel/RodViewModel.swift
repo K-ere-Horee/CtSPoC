@@ -67,6 +67,9 @@ final class RodViewModel: ObservableObject {
     private var orientation = RodOrientation.identity
     private var spatial = SpatialState()
     private var hasStarted = false
+    /// Edge-detection state for `detectFightFlick()` (ADR-078) — `true` while the last-seen sample
+    /// was past the forward-flick threshold, so a sustained flick reports once, not every frame.
+    private var wasFightFlicking = false
     private var calibrationSamples: [RodMotionInput] = []
     /// Guards against unbounded concurrent sends: `publishState()` fires on every motion sample
     /// (up to the CoreMotion update rate), and each one used to spawn its own unstructured `Task`
@@ -387,6 +390,28 @@ final class RodViewModel: ObservableObject {
         }
         fishingHaptics.interestPulse()
         fishingHaptics.fightPulse()
+        detectFightFlick()
+    }
+
+    /// Reports a forward flick to World during a fish fight (ADR-078's QTE mechanic) — reuses the
+    /// exact same calibrated threshold as a cast release (`profile.castAcceleration`/
+    /// `castAccelerationSign`), per the request that the QTE gesture be "flick device aja ke
+    /// depan (atau sesuai arah cast)," not a new gesture to learn. Independent of
+    /// `RodMotionInterpreter`/`isCastingArmed` entirely — casting can never be armed during a
+    /// fight anyway (`HookPhase.allowsCasting` is only `.idle`), so the two detectors can't
+    /// double-fire for the same physical flick. Edge-detected (`wasFightFlicking`) so a single
+    /// flick reports once, not once per frame the acceleration stays past threshold.
+    private func detectFightFlick() {
+        guard hookPhase == .fishOnHook || hookPhase == .reeling else {
+            wasFightFlicking = false
+            return
+        }
+        let profile = motionInterpreter.profile
+        let isFlicking = motion.accelerationZ * profile.castAccelerationSign >= profile.castAcceleration
+        if isFlicking, !wasFightFlicking {
+            Task { await send(.fishingEvent(.qteFlick)) }
+        }
+        wasFightFlicking = isFlicking
     }
 
     private var motionInput: RodMotionInput {

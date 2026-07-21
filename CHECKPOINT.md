@@ -7563,3 +7563,176 @@ resolution, so the "why" (two direct pieces of live feedback) stays traceable on
 - Not run: any live session. The cutscene's current no-line state is a known, explicitly-flagged gap,
   not a final answer — a future pass may revisit using `rod_line.usdz`'s real rig, per the user's
   first message.
+## Feature: Fight Direction Replaced by a Randomized Flick QTE (ADR-078)
+
+Date: 2026-07-21.
+
+Requested directly: "daripada fish pull dan lean rod, mending diganti jadi QTE yang randomized
+spawn ketika fishInHook. QTE nya adalah, flick device aja ke depan (atau sesuai arah cast)."
+Recorded as ADR-078 (renumbered from a colliding ADR-068 — see the merge-collision entry below) —
+a full replacement of ADR-053's lean-left/right mechanic, not an addition.
+
+### Shared: FishingEvent, FishFightConfig
+
+- `Shared/Sources/Shared/Models/Gameplay/FishingEvent.swift`: added `qtePrompt` (World -> Rod) and
+  `qteFlick` — the first `FishingEvent` case Rod itself ever constructs and sends; every other
+  case in this enum has only ever flowed World -> Rod.
+- `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: removed the entire "Fight direction
+  (lateral juke)" `MARK` section (`fightDirectionMinDuration`/`MaxDuration`,
+  `fightDirectionSwitchMinInterval`/`MaxInterval`, `fightDirectionRollThreshold`,
+  `fightDirectionCounterRelief`, `fightDirectionPenalty` — seven fields). Replaced with "Fight QTE
+  (flick prompt)": `qteSpawnMinInterval`/`qteSpawnMaxInterval` (4.0/8.0), `qteReactionWindow`
+  (1.5), `qteSuccessRelief`/`qteFailurePenalty` (0.15/0.15).
+
+### World: FishFightController
+
+- Removed `FightDirection` enum, `fightDirection` published property,
+  `fightDirectionRemainingDuration`/`fightDirectionSwitchTimer`, `updateFightDirection
+  (deltaTime:rodRoll:)`.
+- Added `isQTEActive: Bool`, `qteProgress: Float` (normalized `1.0 -> 0.0` countdown),
+  `qteSpawnTimer`/`qteReactionTimer` (private), a private `updateQTE(deltaTime:)` (spawn/reaction
+  timers, resolves a miss as an instant `lineTension += qteFailurePenalty`), and a new
+  `handleQTEFlick() -> Bool` (resolves a hit as an instant `lineTension -= qteSuccessRelief`,
+  no-op if no prompt active).
+- `updateFight(deltaTime:isReeling:reelSpeed:hookDistance:)`: dropped the now-unused `rodRoll`
+  parameter; calls `updateQTE(deltaTime:)` in place of the old `updateFightDirection(...)` call.
+  The main tension formula's `+ directionDelta` term is gone — QTE resolution is now a separate
+  instant adjustment, not folded into the per-second rate.
+- `updateSearching(deltaTime:)`'s bite branch seeds `qteSpawnTimer` (a random delay before the
+  *first* prompt, not instant) instead of `fightDirection`.
+- `resetForNewCast(castDistance:)` and `resolve(outcome:)` both clear the new QTE state instead of
+  the old `fightDirection` state.
+
+### World: WorldViewModel
+
+- Removed `fightDirectionLateralSpeed`/`fightDirectionMaxLateralOffset` constants and
+  `updateFightDirectionDrift(deltaTime:)` entirely (no QTE equivalent was requested).
+- `tick(deltaTime:)`: `fishFight.updateFight(...)` call site drops the `rodRoll: rodState.roll`
+  argument; added `syncQTE()` alongside the existing `syncTensionBand()`.
+- Added `lastQTEActive: Bool` (mirrors `lastSentTensionBand`'s rising-edge pattern) and `syncQTE()`
+  — sends `FishingEvent.qtePrompt` the instant `fishFight.isQTEActive` flips `true`.
+- `handle(_ message: NetworkMessage)` widened from `guard case let .state(state) = message else {
+  return }` to a full `switch`/`handleState(_:)` split, adding `case .fishingEvent(.qteFlick):
+  fishFight.handleQTEFlick()` — the first inbound (Rod -> World) `FishingEvent` this app has ever
+  needed to receive.
+
+### World: LineTensionView / ContentView
+
+- `LineTensionView`: `fightDirection: FishFightController.FightDirection?` parameter and its
+  "Fish pulling ←/→" / "Lean rod →/←" row replaced with `isQTEActive: Bool`/`qteProgress: Float`
+  and a "FLICK ROD NOW!" banner with a shrinking progress capsule.
+- `ContentView.swift`'s `LineTensionView(...)` call site updated to match.
+
+### World: FishingSounds
+
+- `handle(_:)`'s switch gained `case .qtePrompt, .qteFlick: break` (exhaustiveness) — deliberately
+  no dedicated sound; the visual banner and Rod's haptic alert already cover the cue, and no
+  existing sound fit without risking confusion with what it already means elsewhere (e.g.
+  `fishBite`'s own pattern, which already plays at the *start* of a fight).
+
+### Rod: RodViewModel, FishingHaptics, HapticManager
+
+- `RodViewModel`: added `wasFightFlicking: Bool` (edge-detection state) and
+  `detectFightFlick()`, called at the end of `updateAction()`. Checks `motion.accelerationZ *
+  motionInterpreter.profile.castAccelerationSign >= motionInterpreter.profile.castAcceleration` —
+  the identical threshold `RodMotionInterpreter` uses for cast-release detection — but entirely
+  independent of the interpreter/`isCastingArmed`, gated to `hookPhase == .fishOnHook || .reeling`.
+  Sends `.qteFlick` on the rising edge only.
+- `FishingHaptics.handle(_:)`: added `case .qtePrompt: haptics.qtePrompt()` and `case .qteFlick:
+  break` (Rod -> World only, Rod itself never receives this case, but the switch must stay
+  exhaustive).
+- `HapticManager`: added `qtePrompt()` — a sharp, fast double-tap (two pulses, 0.08s apart, both
+  intensity 1.0/sharpness 0.85), deliberately quicker/crisper than `fishBite()`'s slower 4-pulse
+  pattern so the two read as different things.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-078 (renumbered from a colliding ADR-068 during the
+  `origin/main` merge — see the merge-collision entry below); added a one-line "Superseded by
+  ADR-078" pointer at the top of ADR-053's own entry, keeping the rest of that entry as an
+  untouched historical record.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: replaced the "Fight direction (ADR-053)" paragraph with a
+  full description of the new QTE mechanic under ADR-078.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-ios17.0-simulator` and an `arm64-apple-macosx26.0`
+  module (`-emit-module -emit-library`) directly from `find Sources/Shared -name "*.swift"` — no
+  errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `Rod/Rod` file list (iOS 17 simulator)
+  and the full `World/World` file list (macOS 26) — both exit code 0, no errors.
+- Grepped the whole `World`/`Shared`/`Rod` tree for `fightDirection`/`FightDirection` after every
+  edit — zero remaining references, confirming a complete removal rather than a partial one.
+- `git diff --check` clean.
+- Not run: any live session on physical devices. Unverified in particular: whether the 1.5s
+  reaction window accounts for real BLE round-trip latency between Rod's flick detection and
+  World's resolution, and whether the 4-8s spawn interval feels appropriately "randomized" during
+  a real fight.
+
+## Merge: origin/main into dev — ADR-068 Numbering Collision Resolved (-> ADR-078)
+
+Date: 2026-07-21.
+
+"pull dari main dong dan merge ke dev. sekalian atasin conflictnya." `dev`'s only local commit ahead
+of `origin/main` was `00adf32` (the QTE feature above, including its own debug-disable comment).
+Meanwhile `origin/main` had advanced through PR #18 (`feat/playtest-refine`, merge commit `f24bf05`)
+with a full catch-cutscene-fish arc — real animated fish, orientation fixes, slow-motion timing, a
+cutscene line added then removed — spanning **ADR-068 through ADR-077**, directly colliding with
+this session's own ADR-068 (the flick QTE). Same collision pattern this project has now hit three
+times (`8b03ce2` ADR-030/031, the ADR-044 note, and the ADR-049–052 merge above) — independent
+branches numbering forward from the same branch-point without coordinating.
+
+### Sequence
+
+1. `git status` on session resume found the merge already in progress (`git merge origin/main` had
+   been run, `.git/MERGE_HEAD` present) with two real conflicts (`ARCHITECTURE_DECISIONS.md`,
+   `CHECKPOINT.md`, both `UU`) and four files already auto-merged without conflict markers
+   (`GAMEPLAY_ARCHITECTURE_V1.md`, `SOFTWARE_ARCHITECTURE_DOCUMENT.md`,
+   `World/World/ViewModels/WorldViewModel.swift`, plus the new
+   `World/World/Assets/FishCaught/mekong_catfish_caught.usdz` staged as an addition).
+2. `git log --oneline dev..origin/main` confirmed the exact collision range (fadc215's commit message
+   states "ADR-068 through ADR-072"; the actual file content on `main` runs through ADR-077 —
+   confirmed by reading the headers directly, not trusting the commit message's own count).
+3. **`ARCHITECTURE_DECISIONS.md`**: kept `origin/main`'s ADR-077 down through ADR-072 unchanged (the
+   canonical, already-shipped continuation — `main`'s numbering wins per this project's established
+   precedent), renumbered this session's single colliding entry 068 -> 078 and placed it first (this
+   file orders newest-first), with an explicit note at the top of the renumbered entry recording the
+   collision and its resolution. Also fixed ADR-053's own "Superseded by ADR-068" forward-pointer to
+   "Superseded by ADR-078".
+4. **`CHECKPOINT.md`**: same principle, opposite placement (this file orders chronologically,
+   oldest-first) — `origin/main`'s fourteen dated entries (2026-07-20 through 2026-07-21, ADR-068
+   through ADR-077) kept first, this session's renumbered QTE entry appended after.
+5. **`SOFTWARE_ARCHITECTURE_DOCUMENT.md`** and **`World/World/ViewModels/WorldViewModel.swift`** both
+   auto-merged cleanly but ended up containing a genuine *mix* of `main`'s legitimate ADR-068
+   references (the catch-cutscene fish) and this session's — read every occurrence in context,
+   line-by-line, in both files before renaming only this session's own (`WorldViewModel.swift`:
+   `lastQTEActive`'s doc comment, `syncQTE()`'s doc comment, and the `.qteFlick` handler's inline
+   comment; `SOFTWARE_ARCHITECTURE_DOCUMENT.md`'s single "Fight QTE" paragraph heading), leaving
+   `main`'s eight WorldViewModel.swift references and two SOFTWARE_ARCHITECTURE_DOCUMENT.md
+   references at their original, correct ADR-068.
+6. **`GAMEPLAY_ARCHITECTURE_V1.md`** auto-merged with no `ADR-068`/QTE content at all — this session
+   never touched this file, so everything in it came from `main`. Its "Fish Fight" section still
+   flatly stated "It is not a quick-time event," now false given ADR-078 — updated to describe the
+   flick QTE and note ADR-053's supersession, matching this file's role as the product source of
+   truth (not something the automatic 3-way merge could have caught, since no textual conflict
+   existed).
+7. Repo-wide `grep` for `ADR-068` afterward, classifying every hit: every remaining occurrence either
+   belongs to `main`'s catch-cutscene feature (its correct, canonical number) or is this session's
+   own retrospective note about the renumbering (e.g. "renumbered from a colliding ADR-068"); none
+   stray/unclassified.
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-macosx26.0` and `arm64-apple-ios17.0-simulator`
+  (`-emit-module -emit-library`) — exit code 0, no errors on either.
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list (macOS 26) and the full
+  `Rod/Rod` Swift file list (iOS 17 simulator) — both exit code 0, no errors.
+- `git diff --check` clean.
+- Repo-wide `grep` for `fightDirection`/`FightDirection` across `Shared`/`Rod`/`World` — zero
+  remaining references, confirming `main`'s merge didn't reintroduce anything ADR-078 removed.
+- Repo-wide `grep` for leftover `<<<<<<<`/`=======`/`>>>>>>>` conflict markers — none found.
+- Not run: any live session on physical devices, and specifically not re-verified that `main`'s new
+  catch-cutscene fish work and this session's flick QTE behave correctly *together* at runtime — only
+  that the merged source compiles and every ADR-068 reference resolves to the correct feature.
+- Not yet pushed to `origin/dev` — merge commit only, per this session's standing rule of not pushing
+  without an explicit request.

@@ -73,37 +73,25 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
     /// never shrink it to an unfair sliver.
     public var minEscapeDistanceAllowance: Float
 
-    // MARK: Fight direction (lateral juke)
+    // MARK: Fight QTE (flick prompt, ADR-078 — replaces the ADR-053 lean-left/right juke)
 
-    /// A hooked fish's left/right juking phase lasts a random duration in this range (seconds),
-    /// starting the instant it bites — not the whole fight, just this sub-mechanic. After it
-    /// elapses, `FishFightController.fightDirection` goes back to `nil` and only the base
-    /// tension/tug-of-war fight (above) continues for however much longer the fight naturally
-    /// takes.
-    public var fightDirectionMinDuration: Float
-    public var fightDirectionMaxDuration: Float
-    /// While the juking phase is active, the fish's pull direction flips after a random interval
-    /// in this range (seconds) — "rapid randomizer": short enough that the player has to keep
-    /// reacting, not a single slow left-then-right swing.
-    public var fightDirectionSwitchMinInterval: Float
-    public var fightDirectionSwitchMaxInterval: Float
-    /// Minimum `abs(RodState.roll)` (radians, relative to the calibrated idle pose) for the
-    /// player's current rod tilt to count as actively countering a direction at all — below this,
-    /// the rod reads as roughly upright/neutral, not a deliberate counter-lean either way.
-    public var fightDirectionRollThreshold: Double
-    /// Tension/sec *relief* applied on top of the base fight formula while the player is actively
-    /// countering the fish's current pull direction correctly (rod rolled opposite the fish's
-    /// pull, past `fightDirectionRollThreshold`) — rewards reading the fish's juke and leaning the
-    /// rod the other way, real-fishing "rod-side pressure" style.
-    public var fightDirectionCounterRelief: Float
-    /// Tension/sec *penalty* applied on top of the base fight formula whenever the player isn't
-    /// countering correctly (rod neutral, or rolled the wrong way) while the juking phase is
-    /// active — punishes ignoring the fish's direction, not just its raw pull strength. Halved
-    /// 0.20 -> **0.10**: "kurangin pull dari state ketika 'Fish Pulling' terjadi" ("Fish pulling"
-    /// is `LineTensionView`'s own label for this juking sub-phase) — the fish's own pull during
-    /// this phase read as too punishing relative to the base tug-of-war. `fightDirectionCounterRelief`
-    /// above is unchanged; only the not-countering penalty was reduced.
-    public var fightDirectionPenalty: Float
+    /// Seconds between flick-QTE prompts during a fight — the timer starts the instant a fish
+    /// bites and re-starts after every prompt resolves (success or timeout), so prompts keep
+    /// recurring for however long the fight lasts, not just once. A random duration in this range
+    /// is picked each time, "rapid randomizer" style (same spirit as the mechanic this replaced).
+    public var qteSpawnMinInterval: Float
+    public var qteSpawnMaxInterval: Float
+    /// Seconds the player has to flick the rod forward after a prompt spawns before it counts as
+    /// a miss. Reuses the exact same calibrated forward-flick gesture as a cast release — "flick
+    /// device aja ke depan (atau sesuai arah cast)" — not a new gesture to learn.
+    public var qteReactionWindow: Float
+    /// Instant `lineTension` relief applied the moment the player flicks within the reaction
+    /// window — a one-time reward, not a per-second rate (unlike the base tug-of-war formula),
+    /// since a QTE is a discrete hit, not a held state.
+    public var qteSuccessRelief: Float
+    /// Instant `lineTension` penalty applied the moment a prompt's reaction window expires with no
+    /// flick — same one-time-not-a-rate reasoning as `qteSuccessRelief`.
+    public var qteFailurePenalty: Float
 
     // MARK: Tension-scaled reel pull speed (risk/reward)
 
@@ -154,21 +142,19 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
 
     public init(
         initialTension: Float = 0.5,
-        baseFishPullRate: Float = 0.105,
+        baseFishPullRate: Float = 0.15,
         baseReelTensionRate: Float = 0.6,
         pullRateResistanceMultiplier: Float = 3.0,
-        basePullSpeed: Float = 0.2625,
+        basePullSpeed: Float = 0.25,
         pullSpeedResistanceMultiplier: Float = 1.8,
         escapeDistanceAllowance: Float = 6.0,
         escapeAllowanceResistancePenalty: Float = 3.5,
         minEscapeDistanceAllowance: Float = 2.0,
-        fightDirectionMinDuration: Float = 5.0,
-        fightDirectionMaxDuration: Float = 10.0,
-        fightDirectionSwitchMinInterval: Float = 0.6,
-        fightDirectionSwitchMaxInterval: Float = 1.8,
-        fightDirectionRollThreshold: Double = 0.15,
-        fightDirectionCounterRelief: Float = 0.25,
-        fightDirectionPenalty: Float = 0.10,
+        qteSpawnMinInterval: Float = 4.0,
+        qteSpawnMaxInterval: Float = 8.0,
+        qteReactionWindow: Float = 1.5,
+        qteSuccessRelief: Float = 0.15,
+        qteFailurePenalty: Float = 0.15,
         reelSpeedSafeTension: Float = 0.7,
         reelSpeedDangerTension: Float = 0.85,
         reelPullSpeedSafe: Float = 2.0,
@@ -194,13 +180,11 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
         self.escapeDistanceAllowance = escapeDistanceAllowance
         self.escapeAllowanceResistancePenalty = escapeAllowanceResistancePenalty
         self.minEscapeDistanceAllowance = minEscapeDistanceAllowance
-        self.fightDirectionMinDuration = fightDirectionMinDuration
-        self.fightDirectionMaxDuration = fightDirectionMaxDuration
-        self.fightDirectionSwitchMinInterval = fightDirectionSwitchMinInterval
-        self.fightDirectionSwitchMaxInterval = fightDirectionSwitchMaxInterval
-        self.fightDirectionRollThreshold = fightDirectionRollThreshold
-        self.fightDirectionCounterRelief = fightDirectionCounterRelief
-        self.fightDirectionPenalty = fightDirectionPenalty
+        self.qteSpawnMinInterval = qteSpawnMinInterval
+        self.qteSpawnMaxInterval = qteSpawnMaxInterval
+        self.qteReactionWindow = qteReactionWindow
+        self.qteSuccessRelief = qteSuccessRelief
+        self.qteFailurePenalty = qteFailurePenalty
         self.reelSpeedSafeTension = reelSpeedSafeTension
         self.reelSpeedDangerTension = reelSpeedDangerTension
         self.reelPullSpeedSafe = reelPullSpeedSafe

@@ -42,22 +42,17 @@ final class FishFightController: ObservableObject {
         case bite
     }
 
-    /// Which way a hooked fish is currently pulling, during the juking sub-phase (see
-    /// `fightDirection`'s own doc comment). The player must roll the rod the *opposite* way to
-    /// counter it — real-fishing "rod-side pressure" — matching this project's own left/right
-    /// convention (world/screen space, not rod-relative): `.left` means the fish pulls toward
-    /// the player's left, so the player must roll the rod toward their right.
-    enum FightDirection {
-        case left
-        case right
-    }
-
     @Published private(set) var hasFishOnHook = false
-    /// Which way a hooked fish is currently pulling, or `nil` when the juking sub-phase isn't
-    /// active (either the fight hasn't started, or `fightDirectionRemainingDuration` ran out).
-    /// World reads this to both drift the hook visually and show the player which way to counter
-    /// (Rod owns no gameplay HUD, so this can't be communicated on the controller itself).
-    @Published private(set) var fightDirection: FightDirection?
+    /// Whether a flick-QTE prompt is currently active (ADR-078, replacing the ADR-053 lean-left/
+    /// right juke) — the player has `qteReactionWindow` seconds to flick the rod forward before
+    /// it counts as a miss. World reads this to show a HUD prompt and to fire a one-shot Rod
+    /// haptic alert on the rising edge (Rod owns no gameplay HUD, so this can't be communicated
+    /// on the controller itself).
+    @Published private(set) var isQTEActive = false
+    /// `1.0` the instant a prompt spawns, ticking down to `0.0` as `qteReactionWindow` elapses —
+    /// normalized (not raw seconds) so `LineTensionView` doesn't need its own copy of
+    /// `config.qteReactionWindow` just to size a progress bar. Meaningless while `!isQTEActive`.
+    @Published private(set) var qteProgress: Float = 0
     /// A fish is nearby and interested but hasn't bitten. World may show a
     /// subtle cue; Rod plays a slow periodic haptic while this is `true`.
     @Published private(set) var isFishInterested = false
@@ -102,12 +97,13 @@ final class FishFightController: ObservableObject {
     /// Hook-to-rod distance on the first `updateFight` tick of the current fight — the baseline
     /// `escapeDistanceAllowance` is measured against. `nil` outside a fight.
     private var fightStartDistance: Float?
-    /// Seconds left in the current fight's juking sub-phase; counts down in `updateFight`.
-    /// `fightDirection` clears once this reaches 0. `0` whenever no fight is active.
-    private var fightDirectionRemainingDuration: Float = 0
-    /// Seconds until the next direction flip — "rapid randomizer," reset to a new random interval
-    /// every time `fightDirection` flips.
-    private var fightDirectionSwitchTimer: Float = 0
+    /// Seconds until the next QTE prompt spawns — counts down in `updateFight` whenever
+    /// `!isQTEActive`. Re-seeded to a fresh random interval on bite and after every prompt
+    /// resolves (success or timeout), so prompts keep recurring for the rest of the fight.
+    private var qteSpawnTimer: Float = 0
+    /// Seconds left in the *current* active prompt's reaction window — counts down in
+    /// `updateFight` whenever `isQTEActive`. Reaching 0 resolves the prompt as a miss.
+    private var qteReactionTimer: Float = 0
 
     private let recordStore: FishRecordStore
     private let progressionStore: ProgressionStore
@@ -155,8 +151,10 @@ final class FishFightController: ObservableObject {
         currentCastDistance = castDistance
         lastCastDistance = castDistance
         fightStartDistance = nil
-        fightDirection = nil
-        fightDirectionRemainingDuration = 0
+        isQTEActive = false
+        qteProgress = 0
+        qteSpawnTimer = 0
+        qteReactionTimer = 0
     }
 
     /// Call every tick while searching (`.hookInWater`). Returns the search
@@ -185,13 +183,13 @@ final class FishFightController: ObservableObject {
         isFishInterested = false
         lineTension = config.initialTension
 
-        // Fight-direction juking phase starts the instant the fish is hooked — a random 5-10s
-        // (config-driven) window during which it darts left/right, on top of the base tension
-        // fight above. Requested directly: fish should "geser kanan kiri dengan rapid randomizer"
-        // for "beberapa detik" per fight, with the player countering by leaning the rod opposite.
-        fightDirection = Bool.random() ? .left : .right
-        fightDirectionRemainingDuration = Float.random(in: config.fightDirectionMinDuration...config.fightDirectionMaxDuration)
-        fightDirectionSwitchTimer = Float.random(in: config.fightDirectionSwitchMinInterval...config.fightDirectionSwitchMaxInterval)
+        // Flick-QTE prompts start recurring the instant the fish is hooked (ADR-078) — the first
+        // one spawns after a random `qteSpawnMinInterval...qteSpawnMaxInterval` delay, not
+        // instantly, giving the player a moment to settle into the fight first.
+        isQTEActive = false
+        qteProgress = 0
+        qteSpawnTimer = Float.random(in: config.qteSpawnMinInterval...config.qteSpawnMaxInterval)
+        qteReactionTimer = 0
 
         return .bite
     }
@@ -199,12 +197,10 @@ final class FishFightController: ObservableObject {
     /// Call every tick a fish is hooked (`.fishOnHook` or `.reeling`),
     /// whether or not the player is currently reeling. `hookDistance` is the current hook-to-rod
     /// distance World measures; the first tick's value becomes the baseline for the
-    /// distance-escape check (ADR-039). `rodRoll` is `RodState.roll` (relative to the calibrated
-    /// idle pose) — used only to evaluate the fight-direction counter below; has no effect outside
-    /// the juking phase. Returns the failure that just ended the fight, if any; `nil` while it
-    /// continues.
+    /// distance-escape check (ADR-039). Returns the failure that just ended the fight, if any;
+    /// `nil` while it continues.
     @discardableResult
-    func updateFight(deltaTime: Float, isReeling: Bool, reelSpeed: Float, hookDistance: Float, rodRoll: Double) -> FightFailure? {
+    func updateFight(deltaTime: Float, isReeling: Bool, reelSpeed: Float, hookDistance: Float) -> FightFailure? {
         guard hasFishOnHook else { return nil }
 
         if fightStartDistance == nil {
@@ -216,8 +212,13 @@ final class FishFightController: ObservableObject {
         }
 
         let reelPull = isReeling ? reelSpeed * config.baseReelTensionRate : 0
-        let directionDelta = updateFightDirection(deltaTime: deltaTime, rodRoll: rodRoll)
-        lineTension = min(1, max(0, lineTension + (reelPull - effectiveFishPullRate + directionDelta) * deltaTime))
+        lineTension = min(1, max(0, lineTension + (reelPull - effectiveFishPullRate) * deltaTime))
+        // Disabled for debugging (ADR-078's QTE mechanic) — commented out, not removed. This is
+        // the single call site that drives the whole lifecycle: with it out, `isQTEActive` never
+        // becomes true, so `qtePrompt`/the "FLICK ROD NOW!" banner never fire, and `handleQTEFlick()`
+        // stays a permanent no-op (its own `guard isQTEActive` never passes) even though Rod keeps
+        // detecting/sending flicks as normal. Uncomment this one line to re-enable.
+        // updateQTE(deltaTime: deltaTime)
 
         if lineTension <= 0 {
             resolve(outcome: .escaped)
@@ -230,34 +231,52 @@ final class FishFightController: ObservableObject {
         return nil
     }
 
-    /// Advances the juking sub-phase (direction flips, phase expiry) and evaluates whether the
-    /// player is currently countering the fish's pull correctly, returning a tension/sec delta to
-    /// fold into `updateFight`'s main formula — `0` whenever the phase isn't active. Kept as a
-    /// separate method purely for readability; it's still just more `lineTension` math, no
-    /// entity/RealityKit knowledge crosses into this controller.
-    private func updateFightDirection(deltaTime: Float, rodRoll: Double) -> Float {
-        guard let direction = fightDirection else { return 0 }
-
-        fightDirectionRemainingDuration -= deltaTime
-        guard fightDirectionRemainingDuration > 0 else {
-            fightDirection = nil
-            return 0
+    /// Advances the flick-QTE spawn/reaction timers (ADR-078) and resolves a prompt's outcome as
+    /// an instant `lineTension` adjustment when one occurs — a miss (reaction window expiring) or
+    /// a hit via `handleQTEFlick()` below, called separately by `WorldViewModel` the instant Rod
+    /// reports a flick. Kept as a separate method purely for readability; still just more
+    /// `lineTension` bookkeeping, no entity/RealityKit/network knowledge crosses into this
+    /// controller.
+    private func updateQTE(deltaTime: Float) {
+        if isQTEActive {
+            qteReactionTimer -= deltaTime
+            qteProgress = max(0, qteReactionTimer / max(0.001, config.qteReactionWindow))
+            guard qteReactionTimer > 0 else {
+                // Missed it — the reaction window ran out with no flick. Same sign convention the
+                // ADR-053 mechanic used for "not countering": a miss reads as the fish's sudden
+                // pull going unanswered, spiking tension *up* (toward the snap edge), not down —
+                // matching how `effectiveFishPullRate` already drains tension toward 0 on its own
+                // every tick regardless, so a miss's risk is specifically snap risk, not escape.
+                isQTEActive = false
+                qteProgress = 0
+                lineTension = min(1, lineTension + config.qteFailurePenalty)
+                qteSpawnTimer = Float.random(in: config.qteSpawnMinInterval...config.qteSpawnMaxInterval)
+                return
+            }
+        } else {
+            qteSpawnTimer -= deltaTime
+            guard qteSpawnTimer <= 0 else { return }
+            isQTEActive = true
+            qteReactionTimer = config.qteReactionWindow
+            qteProgress = 1
         }
+    }
 
-        fightDirectionSwitchTimer -= deltaTime
-        if fightDirectionSwitchTimer <= 0 {
-            fightDirection = direction == .left ? .right : .left
-            fightDirectionSwitchTimer = Float.random(in: config.fightDirectionSwitchMinInterval...config.fightDirectionSwitchMaxInterval)
-        }
-
-        // The fish pulls `.left` -> the player must roll the rod toward their right (positive
-        // roll, by this project's convention) to counter it, and vice versa — real-fishing
-        // "rod-side pressure." `fightDirection` may have just flipped above; re-read it so the
-        // very same tick already evaluates against the new direction rather than lagging a frame.
-        let isCountering = fightDirection == .left
-            ? rodRoll >= config.fightDirectionRollThreshold
-            : rodRoll <= -config.fightDirectionRollThreshold
-        return isCountering ? -config.fightDirectionCounterRelief : config.fightDirectionPenalty
+    /// Called by `WorldViewModel` the instant Rod reports a flick (`FishingEvent.qteFlick`) during
+    /// a fight. A no-op whenever no prompt is currently active — including a flick that arrives
+    /// just after a prompt already timed out, or outside a fight entirely (`isQTEActive` can only
+    /// be `true` while `hasFishOnHook`) — so a stray/late/unprompted flick never has any effect.
+    @discardableResult
+    func handleQTEFlick() -> Bool {
+        guard isQTEActive else { return false }
+        isQTEActive = false
+        qteProgress = 0
+        // Relief, not a reward that raises tension — same sign as the ADR-053 mechanic's
+        // successful counter: a hit relieves the fish's sudden pull before it can spike tension
+        // toward the snap edge.
+        lineTension = max(0, lineTension - config.qteSuccessRelief)
+        qteSpawnTimer = Float.random(in: config.qteSpawnMinInterval...config.qteSpawnMaxInterval)
+        return true
     }
 
     /// Current haptic rhythm tier for Rod, from `lineTension` (ADR-039). `nil` when no fight is
@@ -336,8 +355,10 @@ final class FishFightController: ObservableObject {
         lineTension = 0
         interestTimer = Float.random(in: 0.8...2.0)
         fightStartDistance = nil
-        fightDirection = nil
-        fightDirectionRemainingDuration = 0
+        isQTEActive = false
+        qteProgress = 0
+        qteSpawnTimer = 0
+        qteReactionTimer = 0
     }
 
     /// 1...5, from how close the catch weight is to the species' max.

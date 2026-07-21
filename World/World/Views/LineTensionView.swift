@@ -14,10 +14,13 @@ import SwiftUI
 struct LineTensionView: View {
     let isFighting: Bool
     let tension: Float
-    /// Which way the hooked fish is currently pulling, during the juking sub-phase — `nil`
-    /// whenever that phase isn't active. The player must lean the rod the *opposite* way; shown
-    /// here (not on Rod) since Rod owns no gameplay HUD.
-    let fightDirection: FishFightController.FightDirection?
+    /// Whether a flick-QTE prompt is currently active (ADR-078, replacing the ADR-053 lean-left/
+    /// right juke) — the player must flick the rod forward (same gesture as a cast release)
+    /// before `qteProgress` reaches 0. Shown here (not on Rod) since Rod owns no gameplay HUD.
+    let isQTEActive: Bool
+    /// `1.0` right when a prompt spawns, ticking down to `0.0` as the reaction window elapses —
+    /// drives the shrinking progress bar below. Meaningless while `!isQTEActive`.
+    let qteProgress: Float
 
     private let dangerLow: Float = 0.15
     private let dangerHigh: Float = 0.85
@@ -75,15 +78,22 @@ struct LineTensionView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-                if let fightDirection {
-                    HStack {
-                        Label("Fish pulling", systemImage: fightDirection == .left ? "arrow.left" : "arrow.right")
-                            .foregroundStyle(.orange)
-                        Spacer()
-                        Label("Lean rod", systemImage: fightDirection == .left ? "arrow.right" : "arrow.left")
-                            .foregroundStyle(.cyan)
+                if isQTEActive {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("FLICK ROD NOW!", systemImage: "bolt.fill")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(.yellow)
+
+                        GeometryReader { geometry in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(.quaternary)
+                                Capsule()
+                                    .fill(.yellow)
+                                    .frame(width: CGFloat(min(1, max(0, qteProgress))) * geometry.size.width)
+                            }
+                        }
+                        .frame(height: 6)
                     }
-                    .font(.caption.bold())
                 }
             }
         }
