@@ -193,7 +193,15 @@ final class WorldViewModel: ObservableObject {
     /// catchCutsceneSettleDuration`. All hand-picked, not tuned against a live session.
     private let catchCutsceneRiseDuration: Float = 0.35
     private let catchCutsceneFreezeDuration: Float = 0.9
-    private let catchCutsceneSettleDuration: Float = 0.35
+    /// Retuned (ADR-071 — "jadiin 5 detik deh") to make the *real* wall-clock cutscene length exactly
+    /// 5 s given `catchCutsceneRiseDuration`/`catchCutsceneFreezeDuration` above and the
+    /// slow-motion dilation constants below: real time is `rise + C * (freeze + settle)` where `C`
+    /// (≈2.688) is the ratio between real and story time for one dilation dip, derived by numeric
+    /// integration of `1/catchCutsceneTimeDilation` over a normalized phase — solved for `settle`
+    /// given a 5 s target, not hand-picked. ADR-070 originally set this to `1.85` (a flat "+1.5 s"),
+    /// which produced a much longer real time than intended once the dilation multiplier was
+    /// actually accounted for (~7+ s) — this value corrects that.
+    private let catchCutsceneSettleDuration: Float = 0.83
     /// Peak height (m) of the placeholder catch-cutscene jump above where the hook landed — also the
     /// held height during the freeze phase.
     private let catchCutsceneJumpHeight: Float = 0.6
@@ -204,6 +212,30 @@ final class WorldViewModel: ObservableObject {
     /// lower than the mid-fight trailing `followOffset` (`[0, 1.5, 3.0]`, ADR-039).
     private let catchCutsceneCameraStartOffset: SIMD3<Float> = [0, 1.2, 2.4]
     private let catchCutsceneCameraEndOffset: SIMD3<Float> = [0, 0.9, 1.6]
+
+    /// Unscaled distance (m) from `caughtFishEntity`'s root to its nose/mouth tip, along the local
+    /// `-Y` axis (ADR-069's orientation puts local `-Y`/head at world `+Y`, i.e. above the root once
+    /// hanging vertically). Base value sourced from the mesh's own measured extent (ADR-071 — a live
+    /// screenshot showed the hook sitting on/over the eye and head when using the `Head` *joint's*
+    /// bind position, Y≈−0.6): the exported `.usdz`'s `extent` attribute is `[(-0.26, -1.00, -0.36),
+    /// (0.26, 1.00, 0.36)]`, i.e. the actual geometry (snout/whiskers included, not just the `Head`
+    /// bone's pivot) reaches to Y≈−1.0. A second live screenshot at exactly `1.0` still showed the
+    /// hook slightly short of the snout tip ("dikiiittt lagi") — nudged to `1.15`, a small clearance
+    /// past the measured extent rather than flush with it, matching this project's own established
+    /// pattern for hook-placement margins (ADR-043's dock-clearance offset used the same "measured
+    /// bound plus a small margin" approach). Used to park `hookEntity` (ADR-070 — "tali dan bomber
+    /// nya masih nyangkut dengan ikan") at the fish's mouth instead of leaving it behind at the water
+    /// or hidden. Scaled by `caughtFishEntity.scale` each frame, since the displayed fish size varies
+    /// with the rolled catch length (ADR-064).
+    private let caughtFishHeadOffset: Float = 1.15
+
+    /// Line tension (see `lineTension(for:)`) held during the catch cutscene (ADR-070) instead of
+    /// relaxing to `0` for the whole `.result` phase as before — a slack line read as disconnected
+    /// from the fish right when the cutscene is trying to show it still hooked. Matches the
+    /// mid-fight `.fishOnHook`/`.reeling` tension so the line still reads taut, not just "not
+    /// obviously wrong." Only applied while `isShowingCatchCutscene` is true; the rest of `.result`
+    /// (the `ResultView` wait) still relaxes to `0` via `lineTension(for:)`.
+    private let catchCutsceneLineTension: Float = 0.8
 
     /// Where the new "Caught" clip's single most dramatic beat (a full-body arch, authored per the
     /// ADR-066/052 handoff) lands in the clip's own timeline — frame 44 of a 90-frame/24fps clip, per
@@ -279,6 +311,10 @@ final class WorldViewModel: ObservableObject {
     /// `updateCatchCutscene` can retarget `.speed` every frame as the slow-motion envelope moves
     /// through the freeze phase, instead of only setting it once at the start.
     private var caughtFishAnimationController: AnimationPlaybackController?
+    /// Thin cylinder stretched/oriented between `hookEntity` and the live rod tip during the catch
+    /// cutscene (ADR-072), standing in for `rod_line.usdz`'s own fixed-length rig, which doesn't
+    /// reach the cutscene's hook position. `nil` before `makeSceneEntity()` runs.
+    private var cutsceneLineEntity: ModelEntity?
     private var playerCamera: Entity?
     private var hookVelocity = SIMD3<Float>.zero
     private var castLaunchPosition = SIMD3<Float>.zero
@@ -450,6 +486,22 @@ final class WorldViewModel: ObservableObject {
             root.addChild(fish)
         }
 
+        // ADR-072: a dedicated, simple line for the catch cutscene — "kalo tambahin tali pancing nya
+        // bisa ga." `rod_line.usdz`'s own rig (`RodRigController.applyLineTension`) is a fixed-length
+        // prop anchored at the rod tip; the cutscene's hook sits ~2.6 m further out than any mid-fight
+        // distance that rig was ever meant to span, so it doesn't reach — confirmed by reading
+        // `RodRigController.swift` directly (procedural bend only, no length/reach driven by code)
+        // rather than guessed from the screenshot showing no line at all. A thin cylinder, stretched
+        // and oriented every frame between `hookEntity` and the live rod tip, is simpler and more
+        // reliable than trying to make the skinned rig stretch beyond its authored length.
+        let line = ModelEntity(
+            mesh: .generateCylinder(height: 1, radius: 0.012),
+            materials: [SimpleMaterial(color: .white, isMetallic: false)]
+        )
+        line.isEnabled = false
+        cutsceneLineEntity = line
+        root.addChild(line)
+
         // root.addChild(makeDebugForwardRay())
 
         return root
@@ -572,6 +624,7 @@ final class WorldViewModel: ObservableObject {
         hookEntity?.isEnabled = false
         caughtFishEntity?.isEnabled = false
         caughtFishAnimationController = nil
+        cutsceneLineEntity?.isEnabled = false
         catchCutscene = nil
         isShowingCatchCutscene = false
         fishFight.resetForNewCast()
@@ -590,7 +643,7 @@ final class WorldViewModel: ObservableObject {
     private func tick(deltaTime: Float) {
         updateRodPose()
         updateCameraFollow()
-        rodRig?.applyLineTension(lineTension(for: hookPhase))
+        rodRig?.applyLineTension(isShowingCatchCutscene ? catchCutsceneLineTension : lineTension(for: hookPhase))
         rodRig?.applyReelSpin(reelSpeed: rodState.reelSpeed, isReeling: rodState.action == .reeling, deltaTime: deltaTime)
 
         switch hookPhase {
@@ -816,6 +869,7 @@ final class WorldViewModel: ObservableObject {
         let tipPosition = tipEntity.position(relativeTo: nil)
         hookEntity.isEnabled = true
         hookEntity.position = tipPosition
+        hookEntity.scale = SIMD3<Float>(repeating: 1)  // ADR-071: undo any catch-cutscene scaling
         castLaunchPosition = tipPosition
         let angle = solution.launchAngle
 
@@ -974,25 +1028,36 @@ final class WorldViewModel: ObservableObject {
     /// it arrives at the dock. `hookPhase` is already `.result` by the time this is called (set by
     /// `reelHook`'s caller), so casting/reeling are locked for the whole cutscene exactly as before.
     ///
-    /// ADR-064: hides `hookEntity` and shows `caughtFishEntity` (a real animated fish,
-    /// `mekong_catfish_caught.usdz`) in its place, playing that asset's baked "Caught" clip. Always
-    /// the same species regardless of which `FishSpecies` tier (`fish_a`/`fish_b`/`fish_c`/`scott`)
-    /// was actually rolled — `FishCatalog`'s four tiers are still placeholder data with no asset
-    /// reference of their own (see its own doc comment), and only one species out of the asset
-    /// repo's ten has a fully verified-good export/orientation (see `caughtFishEntity`'s doc
-    /// comment). Mapping specific tiers to specific species is a content decision left for later,
-    /// once more species are vetted. `caughtFishEntity`'s *display scale* does still vary with the
-    /// actual rolled catch length, so the size at least tracks what `ResultView` shows next.
+    /// ADR-064: shows `caughtFishEntity` (a real animated fish, `mekong_catfish_caught.usdz`) in the
+    /// hook's place, playing that asset's baked "Caught" clip. Always the same species regardless of
+    /// which `FishSpecies` tier (`fish_a`/`fish_b`/`fish_c`/`scott`) was actually rolled —
+    /// `FishCatalog`'s four tiers are still placeholder data with no asset reference of their own
+    /// (see its own doc comment), and only one species out of the asset repo's ten has a fully
+    /// verified-good export/orientation (see `caughtFishEntity`'s doc comment). Mapping specific
+    /// tiers to specific species is a content decision left for later, once more species are vetted.
+    /// `caughtFishEntity`'s *display scale* does still vary with the actual rolled catch length, so
+    /// the size at least tracks what `ResultView` shows next.
+    ///
+    /// ADR-070: `hookEntity` is **not** disabled when `caughtFishEntity` is available — it stays
+    /// visible, parked at the fish's mouth (`caughtFishHeadOffset` along the fish's local `-Y`/head
+    /// axis, scaled to match), so the line rigged to it still reads as physically hooked into the
+    /// catch instead of the fish appearing to float free while the hook/line vanish.
     private func beginCatchCutscene(from position: SIMD3<Float>) {
-        hookEntity?.isEnabled = false
-
         if let caughtFishEntity {
             caughtFishEntity.isEnabled = true
             caughtFishEntity.position = position
-            caughtFishEntity.orientation = catchCutsceneFishOrientation(at: position)
+            caughtFishEntity.orientation = catchCutsceneFishOrientation
             let lengthMeters = Float((fishFight.lastCatchResult?.length ?? 100) / 100)
             let scale = max(lengthMeters / caughtFishAuthoredLength, 0.35)
             caughtFishEntity.scale = SIMD3<Float>(repeating: scale)
+            // ADR-071: also scales the hook sphere itself (fixed-size otherwise, unlike the fish) —
+            // a live screenshot on a small catch showed a full-size hook dwarfing the scaled-down
+            // fish's head, part of the reported "masih agak broken" look. Reset to 1 in `launchHook`
+            // for the next cast.
+            hookEntity?.scale = SIMD3<Float>(repeating: scale)
+            let hookPosition = position + SIMD3<Float>(0, caughtFishHeadOffset * scale, 0)
+            hookEntity?.position = hookPosition
+            updateCutsceneLine(from: hookPosition)
             if let clip = caughtFishEntity.availableAnimations.first {
                 // Speed is derived, not artistic (ADR-067 — see `catchCutsceneFishAnimationSpeed`'s
                 // own doc comment): this clip was re-authored in Blender (ADR-066/052 handoff) to
@@ -1034,14 +1099,29 @@ final class WorldViewModel: ObservableObject {
         }
     }
 
-    /// Where `caughtFishEntity`'s head should point during the cutscene (ADR-065) — the fish is
-    /// hooked and being pulled up the line, so its head faces `rodRig.tipEntity` (falling back to
-    /// `controllerEntity`, the rod's render-anchor root, if the rig isn't loaded), recomputed every
-    /// call since both the fish (rising) and the tip (rod bend) can move during the cutscene.
-    private func catchCutsceneFishOrientation(at position: SIMD3<Float>) -> simd_quatf {
-        let rodPoint = rodRig?.tipEntity?.position(relativeTo: nil) ?? controllerEntity?.position
-        guard let rodPoint else { return simd_quatf(angle: 0, axis: [0, 1, 0]) }
-        return fishOrientation(facing: rodPoint - position)
+    /// Fixed vertical "hooked and hanging" pose for `caughtFishEntity` (ADR-069 — ADR-068's
+    /// horizontal `+X`-facing pose was seen live and reported as "ikannya kaya berenang... harusnya
+    /// kepala nya [di atas], vertical" — the fish read as lying flat like an ordinary swim cycle, not
+    /// like a fish hanging from the line by its mouth. Reverses ADR-068's direction: head points
+    /// *up*, not sideways). Head (local `-Y`, per the axis confirmation in `fishOrientation
+    /// (facing:)`'s doc comment) maps to world `+Y`; the fish's local `X` (lateral/width — its
+    /// "thin" dimension) maps to world `Z`, so the camera — which always looks roughly along `-Z`,
+    /// same fixed geometry ADR-068 relied on — sees the fish's broadside silhouette (length +
+    /// height) while it hangs vertically, not a foreshortened head-on view.
+    ///
+    /// Built directly from target basis vectors, not `fishOrientation(facing:)`'s two-step
+    /// shortest-arc-plus-roll-correction construction — that function's roll step is degenerate when
+    /// the facing direction *is* world-up (no distinct "desired up" left to correct toward once
+    /// forward and up are the same vector), so a direct rotation-matrix build sidesteps the issue
+    /// and gives explicit control over the roll instead of leaving it arbitrary.
+    private var catchCutsceneFishOrientation: simd_quatf {
+        let localXTarget = SIMD3<Float>(0, 0, -1)   // fish's lateral/width axis -> world -Z
+        let localYTarget = SIMD3<Float>(0, -1, 0)   // fish's body axis -> world -Y (head, at local -Y, ends up at world +Y)
+        // Dorsal (local Z) target computed, not guessed, so the rotation stays proper or (no
+        // mirroring) — cross product of the two chosen columns, matching this rig's right-handed
+        // local axes (confirmed via `upAxis = "Z"`, a direct Blender-convention export).
+        let localZTarget = simd_cross(localXTarget, localYTarget)
+        return simd_quatf(simd_float3x3(columns: (localXTarget, localYTarget, localZTarget)))
     }
 
     /// Builds the world-space rotation for `mekong_catfish_caught.usdz` given a desired head
@@ -1081,21 +1161,63 @@ final class WorldViewModel: ObservableObject {
         return roll * alignHead
     }
 
+    /// Stretches/orients `cutsceneLineEntity` (ADR-072 — "kalo tambahin tali pancing nya bisa ga")
+    /// to span from `hookPosition` to the live rod tip (`rodRig.tipEntity`, falling back to
+    /// `controllerEntity` if the rig isn't loaded), called every frame the cutscene is active so it
+    /// tracks both the hook and any live rod movement. Disables itself if there's no rod reference
+    /// or the two points are degenerately close, rather than rendering a zero-length/undefined line.
+    private func updateCutsceneLine(from hookPosition: SIMD3<Float>) {
+        guard let cutsceneLineEntity else { return }
+        guard let rodPoint = rodRig?.tipEntity?.position(relativeTo: nil) ?? controllerEntity?.position else {
+            cutsceneLineEntity.isEnabled = false
+            return
+        }
+
+        let delta = rodPoint - hookPosition
+        let length = simd_length(delta)
+        guard length > 0.01 else {
+            cutsceneLineEntity.isEnabled = false
+            return
+        }
+
+        cutsceneLineEntity.isEnabled = true
+        cutsceneLineEntity.position = (hookPosition + rodPoint) / 2
+        // The base cylinder mesh (`generateCylinder(height: 1, ...)`) runs along local Y, so scaling
+        // just that axis stretches it to the measured distance without distorting its radius.
+        cutsceneLineEntity.scale = SIMD3<Float>(1, length, 1)
+        cutsceneLineEntity.orientation = simd_quatf(from: [0, 1, 0], to: simd_normalize(delta))
+    }
+
     /// Real-time-to-"story"-time dilation factor at `elapsed` seconds of story time into the
-    /// cutscene (ADR-066 — "ada slowmotion ketika di cut scene ketangkep, jadi beneran kaya game
-    /// mancing"). `1` (normal speed) outside the freeze phase entirely; inside it, eases down to
-    /// `catchCutsceneSlowMotionFactor` over the first `catchCutsceneSlowMotionEaseFraction` of the
-    /// freeze window, holds there through the middle, then eases back up to `1` over the same
-    /// fraction at the end — an abrupt on/off at the freeze's own boundaries would read as a jump
-    /// cut in and out of bullet-time rather than a deliberate slow-down/speed-up.
+    /// cutscene. `1` (normal speed) during the rise phase; inside the freeze phase (ADR-066 — "ada
+    /// slowmotion ketika di cut scene ketangkep, jadi beneran kaya game mancing") and, separately,
+    /// inside the settle phase (ADR-070 — "ketika cut scene catch udah mau beres, tambahin slow
+    /// motion ikan nya," a second dip right as the cutscene is about to finish), eases down to
+    /// `catchCutsceneSlowMotionFactor` over the first `catchCutsceneSlowMotionEaseFraction` of
+    /// *that* phase's own window, holds there through the middle, then eases back up to `1` over the
+    /// same fraction at the end of that phase — an abrupt on/off at a phase boundary would read as a
+    /// jump cut in and out of bullet-time rather than a deliberate slow-down/speed-up. Both dips
+    /// reuse the same shape/constants rather than each having their own, for a consistent feel.
     private func catchCutsceneTimeDilation(elapsed: Float) -> Float {
         let riseEnd = catchCutsceneRiseDuration
         let freezeEnd = riseEnd + catchCutsceneFreezeDuration
-        guard elapsed >= riseEnd, elapsed < freezeEnd else { return 1 }
+        let settleEnd = freezeEnd + catchCutsceneSettleDuration
 
-        let freezeProgress = (elapsed - riseEnd) / catchCutsceneFreezeDuration
-        let rampIn = min(freezeProgress / catchCutsceneSlowMotionEaseFraction, 1)
-        let rampOut = min((1 - freezeProgress) / catchCutsceneSlowMotionEaseFraction, 1)
+        let phaseStart: Float
+        let phaseDuration: Float
+        if elapsed >= riseEnd, elapsed < freezeEnd {
+            phaseStart = riseEnd
+            phaseDuration = catchCutsceneFreezeDuration
+        } else if elapsed >= freezeEnd, elapsed < settleEnd {
+            phaseStart = freezeEnd
+            phaseDuration = catchCutsceneSettleDuration
+        } else {
+            return 1
+        }
+
+        let phaseProgress = (elapsed - phaseStart) / phaseDuration
+        let rampIn = min(phaseProgress / catchCutsceneSlowMotionEaseFraction, 1)
+        let rampOut = min((1 - phaseProgress) / catchCutsceneSlowMotionEaseFraction, 1)
         let envelope = min(rampIn, rampOut)
         return 1 - envelope * (1 - catchCutsceneSlowMotionFactor)
     }
@@ -1105,8 +1227,8 @@ final class WorldViewModel: ObservableObject {
     /// `caughtFishEntity` (the real animated fish, ADR-064); falls back to the placeholder
     /// `hookEntity` sphere if the asset failed to load, so the cutscene still plays *something*
     /// rather than nothing. `cutscene.elapsed` (the "story clock") now advances at
-    /// `deltaTime * catchCutsceneTimeDilation(elapsed:)` (ADR-066) rather than raw `deltaTime` — the
-    /// fish's own animation is retargeted to the same dilation each frame, so the position/camera
+    /// `deltaTime * catchCutsceneTimeDilation(elapsed:)` (ADR-066/070) rather than raw `deltaTime` —
+    /// the fish's own animation is retargeted to the same dilation each frame, so the position/camera
     /// motion and the struggle animation all visibly slow down and speed back up together, instead
     /// of only one of them.
     private func updateCatchCutscene(deltaTime: Float) {
@@ -1121,9 +1243,15 @@ final class WorldViewModel: ObservableObject {
 
         if let caughtFishEntity, caughtFishEntity.isEnabled {
             caughtFishEntity.position = position
-            caughtFishEntity.orientation = catchCutsceneFishOrientation(at: position)
+            caughtFishEntity.orientation = catchCutsceneFishOrientation
+            // ADR-070: keeps the hook/line parked at the fish's mouth every frame, not just at the
+            // cutscene's start, so it tracks the fish through the whole rise/freeze/settle motion.
+            let hookPosition = position + SIMD3<Float>(0, caughtFishHeadOffset * caughtFishEntity.scale.y, 0)
+            hookEntity?.position = hookPosition
+            updateCutsceneLine(from: hookPosition)
         } else {
             hookEntity?.position = position
+            updateCutsceneLine(from: position)
         }
 
         guard cutscene.elapsed >= catchCutsceneTotalDuration else {
@@ -1135,6 +1263,7 @@ final class WorldViewModel: ObservableObject {
         hookEntity?.isEnabled = false
         caughtFishEntity?.isEnabled = false
         caughtFishAnimationController = nil
+        cutsceneLineEntity?.isEnabled = false
         isShowingCatchCutscene = false
     }
 

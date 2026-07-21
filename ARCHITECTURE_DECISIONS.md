@@ -11,6 +11,291 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-072 --- A Dedicated Cutscene-Only Line Stretches From the Hook to the Rod Tip
+
+## Decision
+
+Added a new entity, `cutsceneLineEntity` — a thin cylinder (`generateCylinder(height: 1, radius:
+0.012)`, white `SimpleMaterial`) — loaded once in `makeSceneEntity()` alongside every other scene
+entity, disabled by default. A new function, `updateCutsceneLine(from:)`, called every frame the
+cutscene is active (both `beginCatchCutscene(from:)` and `updateCatchCutscene(deltaTime:)`, right
+after each computes the hook's position) stretches and orients it to span exactly from the hook's
+current position to the live rod tip (`rodRig.tipEntity.position(relativeTo: nil)`, falling back to
+`controllerEntity.position`): scales only the cylinder's local `Y` axis (the axis its base mesh runs
+along) to the measured distance, positions it at the midpoint of the two points, and rotates it via
+`simd_quatf(from: [0, 1, 0], to: normalize(rodPoint - hookPosition))`. Disables itself if there's no
+rod reference available or the two points are degenerately close. Disabled at every point
+`hookEntity`/`caughtFishEntity` already are (end of cutscene, `returnToMenu()`).
+
+**This is a new, cutscene-only line — not an extension of `rod_line.usdz`'s own rig.** Read
+`RodRigController.swift` directly before deciding this (not guessed from the screenshot showing no
+line): `applyLineTension(_:)` only bends that rig's existing, fixed-length bone chain via procedural
+joint rotations — there is no code path that changes its total reach. The cutscene's hook sits at
+`hookLiftTargetPosition`, roughly 2.6 m further from the rod's anchor than any mid-fight distance
+that rig was ever authored to span, so even at full tension it doesn't reach anywhere near the
+cutscene's framing — confirmed as the root cause of the reported missing line, not assumed.
+
+## Rationale
+
+Requested directly, immediately after the hook-placement fix (ADR-071) was confirmed close: "kalo
+tambahin tali pancing nya bisa ga" (can we add the fishing line?) — the screenshot showed the hook
+floating with no visible connection to anything.
+
+A new simple primitive was chosen over trying to make `rod_line.usdz`'s skinned rig stretch beyond
+its authored length — driving a skinned mesh's bone chain to exceed its bind-pose total length
+without visibly distorting/tearing the mesh is a materially harder problem (this project's own asset
+repo `AGENTS.md` §13 documents exactly this class of failure — "Animating Multiple Bone Chains" —
+for the fish rigs, and the same risk applies to any skinned asset) than drawing a fresh, purpose-built
+line for a moment that doesn't need the gameplay rig's own sag/tension behavior anyway — the cutscene
+already forces `catchCutsceneLineTension` to a fixed, constant value (ADR-070), so the mid-fight
+rig's whole reason for being code-driven (dynamic tension response) isn't even in play here. A thin
+cylinder, stretched and oriented by simple vector math each frame, gets the same visual result
+(something connecting hook to rod) with far less risk.
+
+Anchoring the far end to the *live* rod tip (not a fixed point) means the line stays correctly
+attached even if the rod's own bend/orientation is moving during the cutscene (whatever the player's
+phone happened to be doing), rather than drifting away from the actual rod position.
+
+## Status
+
+Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World` target
+only (see the matching `CHECKPOINT.md` entry). Not yet played: whether a plain white, untextured
+cylinder reads convincingly as a fishing line at this scale/thickness, and whether spanning the full
+~2.6+ m gap to the rod tip (rather than, say, a shorter, more stylized line) looks correct once
+actually rendered, are both unconfirmed.
+
+------------------------------------------------------------------------
+
+# ADR-071 --- Cutscene Retuned to Exactly 5 Real Seconds; Hook Repositioned/Rescaled to the Actual Mouth
+
+## Decision
+
+Direct response to a live screenshot (fish correctly vertical/broadside, "CATCH!" showing — ADR-069
+confirmed working) and its accompanying feedback: total real time and the hook's placement/size both
+needed fixing.
+
+**1. `catchCutsceneSettleDuration`: `1.85` -> `0.83`, targeting exactly 5 s real time.** ADR-070's
+`1.85` was a flat "+1.5 s" applied to the *story*-time duration, without accounting for how much the
+slow-motion dilation (ADR-066/070) multiplies that into real wall-clock time — the actual result was
+~7+ s, confirmed too long ("jadiin 5 detik deh"). Solved properly this time: for a phase of story
+duration `D` using the shared ease-in/hold/ease-out dilation shape, real time is exactly `D * C`
+where `C = ∫₀¹ du/dilation(u)` is a constant depending only on `catchCutsceneSlowMotionFactor`/
+`catchCutsceneSlowMotionEaseFraction` (not on `D` itself, since the ease fraction is defined
+proportionally to the phase — verified this scaling relationship holds, not assumed). Computed `C`
+by numeric integration (`≈2.688` at the current factor/ease-fraction values), then solved
+`0.35 + C×(0.9 + settle) = 5.0` for `settle` directly — `0.83`, not a guess. `catchCutsceneRiseDuration`
+and `catchCutsceneFreezeDuration` are unchanged, so the freeze-phase dip (and the animation
+peak-alignment math in `catchCutsceneFishAnimationSpeed`, which depends on those two) is untouched;
+only the ending's dip got shorter.
+
+**2. `caughtFishHeadOffset`: `0.6` -> `1.0` -> `1.15`, sourced from the mesh's actual extent, not a
+bone position.** ADR-070's `0.6` came from the `Head` *joint's* bind-pose position — but a joint is a
+skeletal pivot, not the mesh's visible extremity. The first live screenshot showed the hook sitting
+on/over the fish's eye and head, not out past the snout. Re-inspected the exact same `.usdz` for its
+`extent` attribute (the mesh's actual measured bounding box, not the skeleton): `[(-0.26, -1.00,
+-0.36), (0.26, 1.00, 0.36)]` — the real geometry (snout, whiskers included) reaches to local Y ≈
+−1.0, well past the `Head` joint's −0.6. A *second* live screenshot at `1.0` showed the hook still
+slightly short of the actual snout tip ("dikiiittt lagi" — just a little more) — nudged to `1.15`, a
+small clearance past the measured extent rather than sitting flush with it, matching the same
+"measured bound plus a small margin" pattern ADR-043 already used for the dock-clearance offset.
+
+**3. `hookEntity` now scales with the fish.** Previously fixed at its base `0.07` m radius regardless
+of the fish's own display scale (which ranges `0.35`–`1.0` depending on the rolled catch length,
+ADR-064) — on a smaller catch, a full-size hook visibly dwarfed the scaled-down head, part of the
+reported "masih agak broken" look. `hookEntity.scale` is now set to match `caughtFishEntity.scale` in
+`beginCatchCutscene`, and reset to `1` in `launchHook` so the next cast's hook isn't left at whatever
+scale the previous catch's cutscene set.
+
+## Rationale
+
+All three fixes trace directly to the same screenshot/feedback: "jadiin 5 detik deh, lalu masih aga
+broken begini bomber nya" (make it 5 seconds, and the bobber is still kind of broken like this). The
+duration fix corrects a real modeling gap in ADR-070 (conflating story-time and real-time durations)
+rather than just picking a smaller number by feel — the derivation generalizes cleanly if the
+dilation shape constants ever change again. The hook placement/size fixes both follow this whole
+feature's established pattern of reading the asset's actual data (bind transforms for orientation,
+now mesh extent for the nose position) instead of estimating from a bone pivot or leaving a
+fixed-size prop unscaled.
+
+## Status
+
+Accepted, iterated once against a second live screenshot (`1.0` -> `1.15`) — verified via `swiftc
+-typecheck` against the `World` target, plus the duration math independently checked by numeric
+integration (`python3`/`numpy`, not hand arithmetic) confirming the `5.0` s target exactly at the
+chosen `0.83` s settle value (see the matching `CHECKPOINT.md` entry). The orientation itself
+(vertical, broadside — ADR-069) is now screenshot-confirmed correct. Still not independently
+re-confirmed by a third screenshot: whether `1.15` lands the hook cleanly at the snout tip or needs
+another small nudge, and whether the `5.0` s total duration itself (not just its arithmetic) reads
+well once actually played.
+
+------------------------------------------------------------------------
+
+# ADR-070 --- A Second Slow-Motion Dip Extends the Ending; Hook and Line Stay Attached to the Fish
+
+## Decision
+
+Two finishing touches to the catch cutscene, requested together as one "polish" pass:
+
+**1. A second slow-motion dip, and 1.5 s more runtime, as the cutscene ends.**
+`catchCutsceneSettleDuration` goes from `0.35` to `1.85` s (+1.5 s). `catchCutsceneTimeDilation
+(elapsed:)` — previously only dipping during the freeze phase — is generalized to apply the exact
+same ease-in/hold/ease-out shape to *either* the freeze phase or the settle phase, whichever
+`elapsed` currently falls in, reusing the same `catchCutsceneSlowMotionFactor`/
+`catchCutsceneSlowMotionEaseFraction` constants for both so the two dips feel consistent. Since
+`updateCameraFollow`'s push-in and `caughtFishEntity`'s own animation speed both already derive from
+this one dilation value every frame (ADR-051/066), extending it into the settle phase automatically
+slows the ending's descent, the camera, and the fish's animation together — no separate changes
+needed anywhere else.
+
+**2. `hookEntity` stays attached to the fish instead of disappearing.** Previously,
+`beginCatchCutscene(from:)` unconditionally disabled `hookEntity` the instant `caughtFishEntity` took
+over. It's no longer disabled at cutscene start — instead it's repositioned every frame (both at
+`beginCatchCutscene` and inside `updateCatchCutscene`) to `caughtFishEntity`'s position plus
+`caughtFishHeadOffset` (`0.6`, read from the fish's own `bindTransforms` — the `Head` joint's local
+Y-distance from the root) along the fish's local `-Y`/head axis, scaled by the fish's current display
+scale — i.e., parked right at the fish's mouth, tracking it through the whole rise/freeze/settle
+motion. Line tension (`rodRig.applyLineTension`, driven by `lineTension(for:)`) is no longer forced
+to `0` for the whole `.result` phase — while `isShowingCatchCutscene` is true specifically, a new
+`catchCutsceneLineTension` (`0.8`, matching the mid-fight `.fishOnHook`/`.reeling` value) is used
+instead, so the line reads taut rather than slack during the cutscene. `lineTension(for:)` itself is
+unchanged; `tick(deltaTime:)`'s call site now branches on `isShowingCatchCutscene` before falling
+back to it.
+
+## Rationale
+
+Requested directly as two related "finishing touch" items in one message: "ketika cut scene catch
+udah mau beres, tambahin slow motion ikan nya dan durasi animasi nya tambah 1,5 detik lagi" (as the
+catch cutscene is about to finish, add slow-motion for the fish and extend the animation duration by
+another 1.5 seconds) and "juga refine agar tali dan bomber nya masih nyangkut dengan ikan ketika di
+cut scene" (also refine so the line and hook stay attached to the fish during the cutscene).
+
+The ending dip specifically (rather than, say, lengthening the freeze phase's existing dip instead)
+was chosen because the request explicitly ties it to the moment the cutscene "is about to finish" —
+the settle phase is that moment by construction, and reusing the exact same dilation mechanism there
+(rather than inventing a new one) keeps the two dips visually consistent and costs only a
+control-flow generalization, not new math.
+
+Attaching the hook to the fish's head rather than, say, hiding it and only showing the fish alone was
+the direct, literal ask — a hooked fish should visibly still have the hook (and by extension, a taut
+line) in it during the reveal, not float free with the tackle nowhere to be seen. `caughtFishHeadOffset`
+was derived from the same `bindTransforms` reading already used for orientation (ADR-065/069) rather
+than eyeballed, keeping with this whole feature's pattern of reading the asset's actual data instead
+of guessing.
+
+## Status
+
+Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World` target
+only (see the matching `CHECKPOINT.md` entry). Not yet played, and flagged explicitly: the settle
+phase's slow-motion dip roughly *multiplies* its real wall-clock length well beyond the nominal +1.5 s
+story-time extension (the same dilation-integral effect ADR-066 already produced for the freeze
+phase) — back-of-envelope, total cutscene real time is now in the region of 7+ seconds, up from ~3 s
+before this pass. Whether that reads as "a satisfying extended finish" or "too long a wait before
+`ResultView`" is exactly the kind of question only a live session can answer, and is the single
+biggest open risk in this change. `caughtFishHeadOffset`'s exact placement (whether the hook visually
+lands right at the mouth vs. slightly off) is also unconfirmed on-device.
+
+------------------------------------------------------------------------
+
+# ADR-069 --- Caught Fish Reverts to a Fixed Vertical "Hooked and Hanging" Pose, Broadside to Camera
+
+## Decision
+
+`catchCutsceneFishOrientation` (ADR-068's constant `fishOrientation(facing: [1, 0, 0])`, a fixed
+horizontal pose) is replaced with a direct rotation-matrix construction that points the fish's head
+straight up: local `-Y` (head) maps to world `+Y`, local `X` (the fish's lateral/width — its "thin"
+dimension) maps to world `-Z`, and local `Z` (dorsal) maps to a third target computed as the cross
+product of the first two (not guessed), keeping the rotation proper (determinant `+1`, no mirroring).
+Verified by direct execution (`swift` REPL, not just derivation): head lands at world `(0, ~1, 0)`,
+confirming the pose is vertical as intended, and the fish's lateral axis lands at world `(0, 0, ~-1)`
+— parallel to the fixed camera's `-Z` view direction — which means the camera looks straight through
+the fish's *thin* dimension and sees its full length/height broadside silhouette while it hangs
+vertically, not a foreshortened view.
+
+`fishOrientation(facing:)` (ADR-065/068) is not reused here — its two-step shortest-arc-plus-roll
+construction becomes degenerate when the facing direction is exactly world-up (the "desired up minus
+its projection onto forward" term collapses to zero, since forward and up are then the same vector),
+so it silently falls back to returning the unrolled shortest-arc rotation alone in that case. A
+direct basis-vector construction sidesteps the degenerate case entirely and gives explicit control
+over the roll instead of leaving it arbitrary. `fishOrientation(facing:)` itself is left in the
+codebase, still valid for any future non-degenerate facing direction, just unused by this property
+for now.
+
+## Rationale
+
+Directly reverses ADR-068, one iteration after it shipped. Live feedback on ADR-068's horizontal pose:
+"ikannya kaya berenang, harusnya kepala nya di [atas], vertical, skrg horizontal kaya posisi
+berenang" (the fish looks like it's swimming — the head should be up, vertical — right now it's
+horizontal like a swimming position). ADR-068's own reasoning — a fixed direction guaranteed
+perpendicular to the camera's view axis reads reliably broadside on screen — was sound and is kept
+here (the lateral-axis-to-camera-view-axis alignment is exactly the same principle, just applied to
+a vertical pose instead of a horizontal one); what was wrong was the *choice* of horizontal at all —
+a horizontal, dorsal-up pose reads as an ordinary swim cycle silhouette (which is, not coincidentally,
+literally the same body orientation this asset's `Cruise` state would already show), not a fish being
+held up by a hook through its mouth. A caught fish hanging from a line is a vertical pose; ADR-065's
+original (broken) attempt at facing the rod tip was conceptually reaching for this same vertical
+"hooked" read, it just implemented it as an unpredictable, tip-position-dependent direction instead
+of a fixed one. This ADR keeps ADR-068's fix to *that* specific problem (fixed, not dynamic) while
+correcting the direction itself back to vertical.
+
+## Status
+
+Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World` target,
+plus a standalone `swift` REPL execution of the exact rotation-matrix/quaternion construction to
+confirm the head-up and broadside-to-camera claims numerically, not just by derivation (see the
+matching `CHECKPOINT.md` entry). Not yet played: which world direction the fish's dorsal fin/lateral
+axis specifically face (`-X`/`-Z` here, both arbitrary choices between two options once "head up,
+broadside to camera" is satisfied) is unconfirmed to look correct — same class of open question
+ADR-068 already flagged for its own axis choice, now inherited here.
+
+------------------------------------------------------------------------
+
+# ADR-068 --- Caught Fish Uses a Fixed Horizontal Showcase Pose Instead of Facing the Rod
+
+## Decision
+
+`catchCutsceneFishOrientation` (ADR-065's `catchCutsceneFishOrientation(at:)`, which computed a
+direction from the fish's current position toward `rodRig.tipEntity`'s live position every frame) is
+replaced with a constant computed property that always faces the fish's head along world `[1, 0, 0]`
+(`+X`) — reusing `fishOrientation(facing:)`'s existing two-step construction (shortest-arc head
+align, then a roll correction so the dorsal fin faces world-up) unchanged, just fed a fixed direction
+instead of a dynamic one. Both call sites (`beginCatchCutscene(from:)`,
+`updateCatchCutscene(deltaTime:)`) now read the property directly with no arguments, since the
+result no longer depends on the fish's current position. The `rodRig.tipEntity`/`controllerEntity`
+fallback lookup that direction previously required is removed entirely — no longer needed.
+
+## Rationale
+
+Reported directly after a live look: "animasi ngamuk nya masih belum bener, ikannya masih normal
+vertical belum horizontal seperti kondisi ditangkep" (the raging animation still isn't right, the
+fish is still normal/vertical, not horizontal like when it's actually caught). Tracing the previous
+(ADR-065) design: the fish's fixed cutscene position (`hookLiftTargetPosition`, `[0.22, 1.95, -4.7]`,
+only its Y height varies during the jump) and the rod tip's live position both sit close to the same
+X, with the tip's actual height depending on the rod rig's current live bend (`rodState.orientation`,
+whatever the player's phone was doing last) — not a fixed, predictable relationship. Facing the fish
+toward that point produced a pose dominated by whatever vertical offset happened to exist between the
+fish and the tip at that moment, reading as the fish hanging nose-up rather than the broadside,
+horizontal "holding up the catch" reveal a fishing game's catch moment classically shows.
+
+A fixed world `+X` facing was chosen specifically because the cutscene's own camera geometry is
+already fixed and known: `playerCameraPosition`, `catchCutsceneCameraStartOffset`, and
+`catchCutsceneCameraEndOffset` all share `X = 0`, and neither the fish's cutscene position nor the
+camera ever moves off that line — so a fish facing along world `X` is *always* perpendicular to the
+camera's view axis, guaranteeing a broadside/horizontal silhouette on screen regardless of jump
+height, dolly progress, or whatever the rod rig happens to be doing live. This is simpler and more
+robust than trying to compute a "horizontal-looking" direction from the rod's actual (unpredictable)
+tip position — the fixed camera geometry already gives an exact, guaranteed-correct answer without
+needing to know anything about the rod at all.
+
+## Status
+
+Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World` target
+only (see the matching `CHECKPOINT.md` entry). Not yet played: whether facing `+X` specifically
+(versus `-X`, an arbitrary choice between the two horizontal options) reads better for this
+particular model/camera framing is unconfirmed — flip the sign in `catchCutsceneFishOrientation` if
+the fish ends up facing away from camera/off-screen instead of broadside.
+
+------------------------------------------------------------------------
+
 # ADR-063 --- RodState Gets Short Wire Keys — Every Cast Was Silently Dropped Over BLE
 
 ## Decision

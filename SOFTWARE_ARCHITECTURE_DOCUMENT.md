@@ -705,26 +705,48 @@ species regardless of tier. The asset is **CC-BY 4.0** (Sketchfab, "Ikan
 Patin") and requires attribution; this branch has no credits screen yet to
 host it (see ADR-064's own note).
 
-**The fish orients toward the rod and its struggle plays faster (ADR-065).**
-Reported directly after a live look: the fish sat at identity rotation the
-whole cutscene (never set before this fix), making a technically-playing
-struggle animation still read as passive/"preview-like." Added
-`fishOrientation(facing:)` and `catchCutsceneFishOrientation(at:)`, called
-from both `beginCatchCutscene(from:)` and `updateCatchCutscene(deltaTime:)` so
-the fish keeps facing `rodRig.tipEntity`'s live position as it rises. The
-asset's local axes (body length along Y, dorsal-ventral along Z) were
-confirmed by reading `mekong_catfish_caught.usdz`'s own `Skeleton
-.bindTransforms` directly (`unzip`+`usdcat`), not assumed from the source
-repo's pre-export Blender notes — this file's `upAxis = "Z"` means it kept
-Blender's native convention rather than the Y-up axis swap the sibling glTF
-exporter performs, so the two could plausibly have disagreed. Orientation is
-built in two steps (shortest-arc align, then a roll correction so the dorsal
-fin faces up) to avoid an arbitrary sideways/upside-down roll. Separately,
-`beginCatchCutscene` now sets `.speed = 1.4` on the played clip's
-`AnimationPlaybackController` — a tempo-only change; the asset repo's own
-`Source_Log.md` documents this species' authored motion as deliberately
-gentler/slower-cadence than other fish, which a playback-rate change cannot
-add amplitude to, only speed up.
+**The fish orients vertically, hanging as if hooked, and its struggle plays
+faster (ADR-065/068/069).** Reported directly after a live look: the fish sat
+at identity rotation the whole cutscene (never set before this fix), making a
+technically-playing struggle animation still read as passive/"preview-like."
+Added `fishOrientation(facing:)`, a two-step construction (shortest-arc
+align, then a roll correction so the dorsal fin faces up) that avoids an
+arbitrary sideways/upside-down roll — still present and usable for any
+non-degenerate facing direction, though not what the final pose ends up using
+(see below). Its asset-specific local axes (body length along Y,
+dorsal-ventral along Z) were confirmed by reading `mekong_catfish_caught
+.usdz`'s own `Skeleton.bindTransforms` directly (`unzip`+`usdcat`), not
+assumed from the source repo's pre-export Blender notes — this file's
+`upAxis = "Z"` means it kept Blender's native convention rather than the
+Y-up axis swap the sibling glTF exporter performs, so the two could
+plausibly have disagreed.
+
+Three iterations on `catchCutsceneFishOrientation` followed, each a direct
+response to a live look: (1) ADR-065 fed `fishOrientation(facing:)` a
+direction toward `rodRig.tipEntity`'s live position, producing an
+unpredictable near-vertical pose dominated by the tip's live height above
+the fish ("ikannya masih normal vertical belum horizontal seperti kondisi
+ditangkep"); (2) ADR-068 replaced it with a fixed horizontal world `+X`
+facing — exploiting the cutscene camera's fixed geometry
+(`playerCameraPosition`/`catchCutsceneCameraStartOffset`/`EndOffset` all
+share `X = 0`) to guarantee a broadside pose regardless of jump height or
+camera dolly progress — but read as an ordinary swim-cycle silhouette once
+seen live ("ikannya kaya berenang... harusnya kepala nya [di atas],
+vertical"); (3) **ADR-069** keeps ADR-068's "fixed, not dynamic" insight but
+reverses the direction back to vertical: a direct rotation-matrix
+construction (not `fishOrientation(facing:)`, whose roll-correction step is
+degenerate when facing is exactly world-up) points the head straight up
+(world `+Y`) while aligning the fish's lateral/width axis to the camera's
+`-Z` view direction, so the camera sees the fish's full broadside
+length/height silhouette *while it hangs vertically* — verified by direct
+`swift` REPL execution of the exact construction, not derivation alone.
+
+Separately, `beginCatchCutscene` originally set a hardcoded `.speed = 1.4` on
+the played clip's `AnimationPlaybackController` (ADR-065) — a tempo-only
+change, since the asset repo's own `Source_Log.md` documented that clip's
+authored motion as deliberately gentler/slower-cadence than other fish, which
+a playback-rate change alone couldn't add amplitude to. Superseded by ADR-067
+once the clip itself was replaced (see below).
 
 **The freeze phase gained an in-code slow-motion envelope (ADR-066).**
 `updateCatchCutscene`'s `cutscene.elapsed` — the single story clock
@@ -743,8 +765,65 @@ slows both together; `caughtFishAnimationController` (kept from
 struggle visibly slows and speeds back up in lockstep too, not just the
 world-space motion around it. Real wall-clock time to get through the
 freeze's nominal 0.9 s "story" duration is now considerably longer while
-dilated (~2.3–2.4 s at current constants) — total cutscene runtime is now
-roughly 3 s, up from ~1.6 s.
+dilated (~2.3–2.4 s at current constants).
+
+**A second dip extends the ending, and the hook/line stay attached to the
+fish (ADR-070/071).** `catchCutsceneTimeDilation(elapsed:)` was generalized
+from "dip only during the freeze phase" to "dip during whichever of freeze
+or settle `elapsed` currently falls in," reusing the exact same
+ease-in/hold/ease-out shape and constants for both — so a second bullet-time
+moment now plays as the cutscene ends, not just at its peak. Separately,
+`hookEntity` is no longer disabled the instant the cutscene starts — it's
+repositioned every frame to `caughtFishEntity`'s position plus
+`caughtFishHeadOffset` along the fish's head axis, scaled to match the
+fish's current display size, so the hook stays visually parked at the
+fish's mouth through the whole cutscene instead of vanishing.
+`tick(deltaTime:)`'s line-tension call now uses a new
+`catchCutsceneLineTension` (`0.8`) while `isShowingCatchCutscene` is true,
+instead of the `0` (fully slack) `lineTension(for:)` previously returned for
+the whole `.result` phase, so the line reads taut rather than disconnected
+during the reveal.
+
+**Retuned against a live screenshot (ADR-071).** ADR-070's
+`catchCutsceneSettleDuration` (`1.85` s, a flat "+1.5 s") produced ~7+ s of
+real time once the slow-motion dilation multiplier was actually accounted
+for — confirmed too long. Solved properly: for a phase of story duration `D`
+under the shared dilation shape, real time is exactly `D × C` where
+`C = ∫₀¹ du/dilation(u)` is a constant (`≈2.688` at the current
+factor/ease-fraction values) independent of `D` itself — computed by numeric
+integration, then solved for the settle duration that makes total real time
+exactly `5.0` s: `0.35 + C×(0.9 + settle) = 5.0` → `settle ≈ 0.83`. Rise and
+freeze durations (and the freeze-dependent animation peak-alignment math)
+are untouched — only the ending's dip got shorter. `caughtFishHeadOffset`
+also changed, `0.6` -> `1.0` -> `1.15` across two live screenshots: the old
+value came from the `Head` *joint's* bind-pose position, but the first
+screenshot showed the hook sitting on the fish's eye/head rather than past
+the snout — re-read the `.usdz`'s `extent` attribute (the mesh's actual
+measured bounds, not the skeleton) and found the real geometry reaches
+local Y ≈ −1.0, well past the joint; a second screenshot at `1.0` still
+showed the hook slightly short, nudged to `1.15` (a small clearance past the
+measured extent). `hookEntity`
+is now also scaled to match `caughtFishEntity.scale` (previously fixed-size
+regardless of the fish's own display scale, part of the same reported
+"broken" look on smaller catches), reset to `1` in `launchHook` for the next
+cast.
+
+**A dedicated cutscene-only line connects the hook to the rod tip
+(ADR-072).** `rod_line.usdz`'s own rig (`RodRigController.applyLineTension`)
+only bends a fixed-length bone chain — there's no code path that extends its
+reach, and the cutscene's hook sits roughly 2.6 m further from the rod's
+anchor than any mid-fight distance that rig spans, so it never reached the
+cutscene's framing at all (confirmed by reading `RodRigController.swift`
+directly, not guessed from the screenshot showing no line). Rather than
+drive the skinned rig beyond its authored length — a materially harder,
+higher-risk problem than the fix itself warrants, especially since the
+cutscene already forces a constant tension value (ADR-070) rather than
+needing the rig's dynamic response — a new `cutsceneLineEntity` (a plain
+thin cylinder) is stretched and oriented by simple vector math every frame:
+scale its local `Y` axis to the measured hook-to-rod-tip distance, position
+it at their midpoint, rotate it via `simd_quatf(from: [0,1,0], to:
+normalize(...))`. Anchored to the *live* rod tip position each frame, so it
+stays attached even as the rod's own bend moves.
 
 **The new "Caught" clip lands its peak beat inside the slow-motion dip by
 construction (ADR-067).** The `Caught` clip itself was re-authored in

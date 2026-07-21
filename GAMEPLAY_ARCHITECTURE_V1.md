@@ -221,10 +221,12 @@ sourced from the asset repo, scaled to the actual rolled catch length) now
 plays instead of the placeholder sphere used in earlier passes — every catch
 currently shows this same species regardless of which tier was actually
 caught; showing a different, matching species per tier is a future content
-decision, not built yet. The fish faces the rod/line as it's pulled up rather
-than sitting in a fixed default rotation, and its struggle animation plays at
-a brisker tempo than authored so it reads as actively fighting the line, not
-calmly floating.
+decision, not built yet. The fish holds a fixed vertical pose — hanging head
+up as if suspended by the hook, broadside to the camera so its full
+silhouette reads clearly — rather than a default rotation or a flat
+swimming-style pose, and its struggle animation plays at a brisker tempo
+than authored so it reads as actively fighting the line, not calmly
+floating.
 
 The camera itself pushes in slowly over the cutscene rather than holding a
 single static shot, letterbox bars slide in from top and bottom, a soft glow
@@ -238,13 +240,22 @@ easing down to about a third of normal speed through the middle of the hold,
 then back up to normal, rather than an instant jump into and out of
 bullet-time. The fish's own struggle animation slows and speeds back up in
 lockstep with the world around it, not just the position/camera. This
-stretches the cutscene's total length noticeably (roughly a second and a
-half longer than before) in exchange for a more deliberate, dramatic pause on
-the catch. The struggle animation itself has since been re-authored (a real
-thrash-then-arch-then-ease motion, not the original gentle placeholder), and
-its playback speed is tuned so the animation's own most dramatic pose lands
-right in the middle of the slow-motion hold — the two are designed to line
-up, not just coincidentally overlap.
+stretches the cutscene's total length noticeably in exchange for a more
+deliberate, dramatic pause on the catch. The struggle animation itself has
+since been re-authored (a real thrash-then-arch-then-ease motion, not the
+original gentle placeholder), and its playback speed is tuned so the
+animation's own most dramatic pose lands right in the middle of the
+slow-motion hold — the two are designed to line up, not just coincidentally
+overlap.
+
+A second slow-motion dip now plays again right as the cutscene ends, giving
+the settle back into the water its own dramatic pause rather than cutting
+straight from the peak hold to the result screen. Total cutscene length is
+tuned to a fixed 5 seconds, real time, catch to result. The hook stays
+visibly attached at the fish's mouth throughout the whole cutscene, sized to
+match the fish itself, with a visible line stretching from it back to the
+held rod, instead of the fish appearing to float free the moment it takes
+over.
 
 ## Catch Result and Continue
 
