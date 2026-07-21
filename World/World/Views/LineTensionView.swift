@@ -14,7 +14,7 @@ import SwiftUI
 struct LineTensionView: View {
     let isFighting: Bool
     let tension: Float
-    /// Whether a flick-QTE prompt is currently active (ADR-068, replacing the ADR-053 lean-left/
+    /// Whether a flick-QTE prompt is currently active (ADR-078, replacing the ADR-053 lean-left/
     /// right juke) — the player must flick the rod forward (same gesture as a cast release)
     /// before `qteProgress` reaches 0. Shown here (not on Rod) since Rod owns no gameplay HUD.
     let isQTEActive: Bool

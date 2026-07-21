@@ -6704,13 +6704,873 @@ revision. No code change made; confirmed to the user instead of blindly re-editi
 - `git diff --check` clean.
 - Not run: any live session — same standing caveat as every feel-tuning/SFX change in this project.
 
-## Feature: Fight Direction Replaced by a Randomized Flick QTE (ADR-068)
+Date: 2026-07-20.
+
+Requested directly: "skrg kita butuh animasi ikan ketangkep buat scene barusan, kamu bisa akses repo
+nya di sini /Users/radityaaydin/repos/new-blender-project, baca semua doc nya untuk bisa paham
+menggunakan repo itu, siapkan asset dan manfaatkan di repo ini" (we now need the caught-fish
+animation for the cutscene we just built; read the sibling asset repo's docs to understand how to
+use it, prepare the asset, and put it to use here).
+
+### Research: reading the asset repo
+
+Read `new-blender-project/CLAUDE.md` (confirms it's the dedicated asset-supply repo for this exact
+app — "The app repo is `~/repos/c4/CtSPoC`... this file is your entry point"),
+`FishAssets/AGENTS.md` (full pipeline spec: each species ships `Cruise`/`Bite`/`Caught`/`Preview` as
+GLB+USDZ pairs, `Caught` = 72-frame "struggle→calm→showcase" clip), and
+`FishAssets/APP_TEAM_HANDOFF.md` (a handoff note from an earlier session that worked this same app's
+now-shelved AR fish-preview feature — its per-species on-device test table was the deciding factor
+in species choice, see below).
+
+### Species selection: Mekong Giant Catfish
+
+Of the asset repo's 10 species, 8 have complete 4-state exports, but `APP_TEAM_HANDOFF.md` documents
+that **5 of those 8 have known, unresolved orientation/normals/UV export defects**, confirmed via
+on-device AR testing (Skipjack Tuna, Grouper, Giant Trevally still broken as of that note; Bluefin/
+Yellowfin Tuna fixed but unconfirmed on-device). Only two species are called reliable: Sailfish
+(different import chain, explicitly flagged as an outlier — "do not touch") and **Mekong Giant
+Catfish**, named the actual reference other species should be fixed to match ("the best-exported and
+best-oriented fish currently in the app... use its current Blender object transform, material setup,
+and export process as the template for everything else"). Picked Mekong Giant Catfish over Sailfish
+only because it's the more "normal" (non-outlier) pipeline, not because Sailfish is untrustworthy.
+
+Independently verified (not just trusted from the handoff note) that
+`Fish06_MekongGiantCatfish/Caught/MekongCatfish_Caught.usdz` actually contains real baked animation:
+`unzip`+`usdcat` on the extracted `.usdc` shows a `Skeleton "CatfishArm"` with a `SkelAnimation
+"Catfish_Caught"` carrying `rotations.timeSamples`.
+
+### Asset copy
+
+Copied `new-blender-project/FishAssets/Fish06_MekongGiantCatfish/Caught/MekongCatfish_Caught.usdz`
+(4.9 MB) to `CtSPoC/World/World/Assets/FishCaught/mekong_catfish_caught.usdz`, renamed to this
+project's snake_case convention (matches every `Assets/Environment/*.usdz` file; the source repo's
+own file used legacy PascalCase). `shasum -a 256` confirmed byte-identical on both sides before and
+after the copy. This is a new asset category (`Assets/FishCaught/`) — the source repo's "keep both
+copies byte-identical" sync rule (`CLAUDE.md`) is scoped specifically to `FishAssets/Environment/`,
+not fish, so this doesn't extend that rule, just follows its spirit for a first-time copy.
+
+### World: WorldViewModel
+
+- `makeSceneEntity()`: loads `caughtFishEntity` once via `Entity(named: "mekong_catfish_caught")` —
+  same pattern `EnvironmentSceneBuilder` already uses — disabled by default, added as a sibling of
+  `hookEntity`.
+- Added `caughtFishAuthoredLength: Float = 2.0` (this asset's authored body length per its own
+  `Source_Log.md` step 4, "scaled to 2.0 m").
+- `beginCatchCutscene(from:)`: now disables `hookEntity` and, if `caughtFishEntity` loaded, enables
+  it, positions it, scales it to `max(rolledLengthMeters / caughtFishAuthoredLength, 0.35)` (so the
+  displayed size tracks the actual `fishFight.lastCatchResult.length` roll, not a fixed 2 m
+  regardless of catch), and plays `caughtFishEntity.availableAnimations.first` (the asset's one baked
+  clip).
+- Factored the ADR-047 rise/freeze/settle height math out of `updateCatchCutscene` into a new shared
+  `catchCutsceneHeight(elapsed:)`.
+- `updateCatchCutscene(deltaTime:)`: now moves `caughtFishEntity` if enabled, falling back to
+  `hookEntity` only if the fish asset failed to load; disables both entities at cutscene end (instead
+  of just `hookEntity`).
+- `updateCameraFollow()`'s ADR-048 cutscene push-in branch: now computes its focus point from
+  `cutscene.origin + catchCutsceneHeight(elapsed:)` directly instead of reading `hookEntity.position`
+  — `hookEntity` is hidden and stale for the whole cutscene now that `caughtFishEntity` plays it
+  instead.
+- `returnToMenu()`: also disables `caughtFishEntity` alongside its existing `hookEntity`/cutscene
+  resets, so ending a session mid-cutscene can't leave the fish visible on a later session.
+
+### Explicitly not attempted this pass
+
+- **Per-tier species mapping.** `FishCatalog`'s four tiers (`fish_a`/`fish_b`/`fish_c`/`scott`) have
+  no asset reference field and remain placeholder data (see the catalog's own doc comment). Every
+  catch currently shows Mekong Giant Catfish regardless of tier — deciding which real species
+  represents which abstract tier (especially `scott`, a named "boss" fish) is a content/design
+  decision, not invented here.
+- **Orientation correction.** No corrective rotation was applied to `caughtFishEntity` — trusting the
+  source repo's own claim that this specific species needs none, unconfirmed on this app's own
+  renderer.
+- **CC-BY attribution.** `Source_Log.md` states this asset is CC-BY 4.0 (Sketchfab, "Ikan Patin"),
+  requiring attribution. This branch has no credits screen yet (that UI lives on the separate,
+  not-yet-merged `feat/ui-slice` branch) — the requirement is recorded here, not silently skipped,
+  but is **not yet satisfied** anywhere in the shipped app.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-068.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with an ADR-068
+  paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now describes the real fish and its current
+  every-tier-looks-the-same limitation.
+- No files changed inside `new-blender-project` — that repo was only read from, not modified; nothing
+  was re-exported there, so its own "re-export → re-copy + re-verify" sync rule doesn't apply here.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- `shasum -a 256` matched on both copies of `mekong_catfish_caught.usdz`.
+- `unzip`+`usdcat` on the copied file directly confirmed a real baked `SkelAnimation`, not just an
+  empty/placeholder skeleton.
+- `World.xcodeproj` uses `PBXFileSystemSynchronizedRootGroup` rooted at `World/World` with no
+  exclusions beyond `Info.plist` — confirmed the new `Assets/FishCaught/` folder is covered, same as
+  `Assets/Environment/`, no manual `project.pbxproj` edit needed.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. Unverified on-device: the fish's final display scale/framing within the
+  ADR-048 cutscene camera, whether `availableAnimations.first` actually resolves to the intended
+  "Caught" clip, and the model's world-space orientation (no corrective rotation applied).
+
+## Fix: Caught Fish Orients to the Rod, Struggle Plays Faster (ADR-069)
+
+Date: 2026-07-20.
+
+First live-playtest feedback on ADR-068's fish: "ikannya masih make animasi preview, kurang cocok,
+harusnya animasi ikan ngamuk ketika ditangkep, ngepak ngepak dan orientasi nya ngikuti arah pancing"
+(the fish still looks like it's using the preview animation, doesn't fit — it should look like it's
+thrashing when caught, flapping, and its orientation should follow the rod/line direction).
+
+### Diagnosis
+
+Before assuming which part was broken, re-confirmed directly (not re-trusted from the earlier pass's
+own claims) that `mekong_catfish_caught.usdz` really does contain live per-frame motion: `unzip`+
+`usdcat` on the file's `rotations.timeSamples` shows all 11 joints' quaternions changing frame to
+frame from frame 0. There is exactly one `SkelAnimation` embedded (`Catfish_Caught`), explicitly bound
+via the `Skeleton`'s `skel:animationSource` relationship — so `availableAnimations.first` (added in
+ADR-068) cannot be resolving to some other, wrong clip; there is only one to resolve to. This narrowed
+the likely cause to: a technically-animating fish sitting at RealityKit's default identity rotation
+for the entire cutscene (ADR-068 never set `caughtFishEntity.orientation` at all), whose silhouette
+from the ADR-048 cutscene camera didn't read as "hooked and struggling" regardless of the bones moving
+underneath.
+
+### Orientation: read the asset's actual axes, don't assume them
+
+Extracted the copied `.usdz` and read `Skeleton.bindTransforms` per named joint directly (not the
+source repo's Blender-side notes, which describe pre-export space): body length runs along local
+**Y** (`Root/Spine_00/Head` at Y≈−0.6; `.../Tail`/`Caudal_Fin` at Y≈+0.5/+0.75), dorsal-ventral runs
+along local **Z** (`Dorsal_Fin` at Z≈+0.1, `Anal_Fin` at Z≈−0.1). Confirmed this matches the
+pre-export note ("head −Y / tail +Y / dorsal +Z") because the file's own `upAxis = "Z"` metadata shows
+this USDZ export preserved Blender's native Z-up convention directly, rather than going through the
+Y-up axis-swap the sibling glTF exporter performs (per that repo's own AGENTS.md §5.3) — the two
+export paths could plausibly have disagreed, so this was checked rather than assumed.
+
+### World: WorldViewModel
+
+- Added `fishOrientation(facing:)` — builds a world-space rotation for a given target direction using
+  the axes above: two-step construction (shortest-arc align local `-Y` to `forward` via
+  `simd_quatf(from:to:)`, then a roll correction around `forward` so local `+Z` ends up close to
+  world-up) to avoid an arbitrary sideways/upside-down roll that a single shortest-arc rotation alone
+  would leave undefined.
+- Added `catchCutsceneFishOrientation(at:)` — supplies `forward` as `rodRig.tipEntity`'s live world
+  position minus the fish's current position (falling back to `controllerEntity.position` if the rig
+  isn't loaded), matching how `launchHook(solution:)` already derives cast aim from the tip rather
+  than the rig's root.
+- Both `beginCatchCutscene(from:)` and `updateCatchCutscene(deltaTime:)` now set
+  `caughtFishEntity.orientation` from this every frame, alongside the existing position update, so the
+  fish keeps facing the rod as it rises rather than staying frozen at whatever direction it happened
+  to face when the cutscene began.
+- Added `catchCutsceneFishAnimationSpeed: Float = 1.4`. `beginCatchCutscene`'s
+  `caughtFishEntity.playAnimation(clip)` now sets `.speed = catchCutsceneFishAnimationSpeed` on the
+  returned `AnimationPlaybackController` — addresses "ngamuk... ngepak ngepak" via tempo, the one
+  lever available without re-authoring the clip in Blender; the asset repo's own `Source_Log.md`
+  documents this species' authored motion as a deliberately gentler/slower-cadence amplitude profile
+  than other fish (catfish are flexible-bodied, not stiff thunniform swimmers), which a playback-rate
+  change cannot add to.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-069.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with an ADR-069
+  paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now mentions the fish facing the rod and its
+  brisker struggle tempo.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors (confirms `AnimationPlaybackController.speed` is settable this way and
+  `simd_quatf(from:to:)`/`.act(_:)` resolve as expected).
+- Direct `usdz` inspection (`unzip`+`usdcat`) for both the joint bind-transform positions (axis
+  claims) and the animation's per-frame rotation data (motion claim) — not assumed from
+  documentation.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. This is a direct response to the first live-playtest look at ADR-068's
+  fish, but the fix itself has not yet been re-tested on-device — the axis identification is
+  file-verified, not guessed, but the specific roll-correction behavior, the rod-tip reference choice,
+  and the `1.4` speed value are all still first-pass, pending a second live look.
+
+## Handoff: New "Caught" Struggle Animation + Rig, Written to the Blender Asset Repo (No CtSPoC ADR)
+
+Date: 2026-07-20.
+
+Second round of feedback on the catch cutscene fish: "butuh animasi baru dengan rigging baru, yang
+menggambarkan ikan ngamuk dan ada slowmotion ketika di cut scene ketangkep, jadi beneran kaya game
+mancing" (need a new animation with new rigging depicting a raging/thrashing fish, plus slow-motion
+in the catch cutscene, so it really feels like a fishing game).
+
+Checked first: this session has no live Blender/MCP connection (`ToolSearch` for "blender" returned
+no matching tool) — a session rooted in `CtSPoC` cannot reach the `blender` MCP server the same way
+`new-blender-project/.mcp.json` auto-connects for a session rooted there. Authoring new rigging/
+animation in Blender is out of reach from here. Asked the user how to proceed
+(`AskUserQuestion`: implement in-app slow-motion now with the existing asset / write a Blender
+handoff spec / both); the user chose **handoff spec only** — in-app slow-motion is explicitly a
+separate, not-yet-scheduled follow-up, not built this pass.
+
+### What was written
+
+`new-blender-project/FishAssets/APP_TEAM_HANDOFF_CAUGHT_STRUGGLE.md` — a new handoff document,
+following the exact precedent already established in that same folder
+(`APP_TEAM_HANDOFF.md`, an unrelated, still in-progress Preview-state orientation-fix task written by
+an earlier `CtSPoC`-rooted session for the same reason: no Blender MCP access from `CtSPoC`). Explicitly
+does not touch or reference altering that existing file — confirmed via `git status` in that repo that
+it's mid-flight (uncommitted `.blend`/Preview re-export changes), left untouched.
+
+Contents: why the request exists (tracing both rounds of feedback, ADR-068/069), what "ngamuk" should
+look like (large-amplitude thrash, head shake, rigid fins, explicit contrast with the current clip's
+gentle "struggle → calm → showcase"), a suggested timeline shape designed around an eventual in-app
+slow-motion segment (fast violent thrash ~0–1s, one big sweeping "peak" motion ~1–2.5s meant to be the
+slow-motion showcase, optional calming tail), the open content decision of redoing Mekong Giant
+Catfish's own clip vs. a distinct new species (left unresolved, flagged for whoever picks this up to
+confirm with the user), the current rig's exact joint hierarchy and local-axis convention (read
+directly from the shipped `.usdz`'s `bindTransforms`, not assumed), a strong preference to keep that
+same convention so `WorldViewModel.fishOrientation(facing:)`'s hardcoded axis constants don't also
+need changing, export/delivery steps mirroring the ADR-068 copy-and-shasum-verify process, and the
+CC-BY 4.0 licensing carryover if the existing model/rig is reused.
+
+### Why no ADR
+
+No `CtSPoC` code or architecture changed this pass — this was research (confirming no Blender access)
+plus writing a cross-repo request document. Recorded here per this project's "every task gets a
+checkpoint entry" rule, without a matching ADR since there's no decision about this app's own
+architecture to record yet; a real ADR follows once the new asset actually lands and gets integrated.
+
+### Verification
+
+- `ToolSearch` confirmed no Blender-related tool is available in this session.
+- Confirmed via `git status`/`ls` in `new-blender-project` that the existing `APP_TEAM_HANDOFF.md` is
+  unrelated and mid-flight, and was left untouched — only a new, distinctly-named file was added.
+- No `CtSPoC` files changed this pass (this entry itself is the only change, in `CHECKPOINT.md`).
+- Not run: any Blender work. This entry only records that a handoff request now exists; the requested
+  animation/rig has not been created yet.
+
+## Feature: In-Code Slow-Motion for the Catch Cutscene's Freeze Phase (ADR-070)
+
+Date: 2026-07-20.
+
+Follow-up to the handoff entry above. User said "try again" with no other context; asked directly
+what to retry (re-check Blender access / redo the handoff doc / implement slow-motion now in code),
+and the user picked **implement slow-motion in code now**, using the existing Mekong Catfish asset —
+the "new animation + rigging" half of the original request stays with the handoff doc written
+previously; this entry is purely the in-app slow-motion half.
+
+### World: WorldViewModel
+
+- Added `catchCutsceneSlowMotionFactor: Float = 0.3` and `catchCutsceneSlowMotionEaseFraction: Float
+  = 0.2`.
+- Added `catchCutsceneTimeDilation(elapsed:)` — returns `1` outside the freeze phase; inside it,
+  eases from `1` down to `catchCutsceneSlowMotionFactor` over the first 20% of the freeze window,
+  holds through the middle 60%, eases back to `1` over the last 20%.
+- `updateCatchCutscene(deltaTime:)`: `cutscene.elapsed` now advances by `deltaTime * dilation`
+  instead of raw `deltaTime`. Since `catchCutsceneHeight(elapsed:)` (position) and
+  `updateCameraFollow`'s ADR-048 dolly both already read `cutscene.elapsed`, this alone slows both the
+  fish's world-space motion and the camera push-in together — no separate changes needed to either.
+- Added `caughtFishAnimationController: AnimationPlaybackController?`, populated in
+  `beginCatchCutscene` from the `AnimationPlaybackController` `playAnimation(_:)` already returned
+  (previously discarded after setting `.speed` once). `updateCatchCutscene` now retargets its
+  `.speed` every frame to `catchCutsceneFishAnimationSpeed * dilation`, so the fish's own struggle
+  animation visibly slows and speeds back up in lockstep with everything else, instead of continuing
+  to flap at a fixed 1.4x while the world around it dips into bullet-time.
+- Cleared `caughtFishAnimationController = nil` alongside the existing cutscene-state resets in both
+  the normal end-of-cutscene path and `returnToMenu()`.
+
+### Effect on cutscene timing
+
+The freeze phase's nominal "story" duration (`catchCutsceneFreezeDuration`, 0.9 s) is unchanged, but
+real wall-clock time to get through it while dilated is now considerably longer (~2.3–2.4 s at these
+constants) — total cutscene runtime is now roughly 3 s, up from ~1.6 s before this pass.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-070.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with an ADR-070
+  paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now describes the slow-motion dip and its effect on
+  total length, and notes the still-pending new-animation handoff.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. `catchCutsceneSlowMotionFactor` (0.3), the ease fraction (0.2), and the
+  resulting ~3 s total cutscene length are all hand-picked — whether ~3 s feels dramatic or just slow
+  is an open question a live playtest would need to answer.
+
+## Handoff Doc Refreshed to Match ADR-070 ("handofer ke repo blender, nanti ada agent di sana")
+
+Date: 2026-07-20.
+
+User confirmed the new-animation/rig work should stay handed off to a future Blender-MCP session
+("hand it off to the Blender repo, there'll be an agent there [later]") rather than attempted here.
+Since ADR-070 (in-app slow-motion) was built *after* the original handoff doc was written, that doc
+still described slow-motion as a hypothetical future follow-up — stale and actively misleading for
+whoever picks the task up next, since the real mechanism's timing is exactly what the new animation
+should be authored around.
+
+### What changed
+
+Updated `new-blender-project/FishAssets/APP_TEAM_HANDOFF_CAUGHT_STRUGGLE.md` in place (same file,
+not a new one):
+
+- Added a "How the in-app slow-motion actually works now (ADR-070)" section: the three cutscene
+  phases in story time (rise 0.35 s, freeze 0.9 s, settle 0.35 s), the freeze phase's ease-in/hold/
+  ease-out dilation down to 0.3x, and the resulting real-world timing (~2.3–2.4 s freeze, ~3 s total
+  cutscene) — concrete numbers so the new clip's dramatic peak can be authored to actually land
+  inside the real slow-motion hold instead of a guessed-at one.
+- Rewrote the "structure the timeline" guidance from absolute seconds (which assumed slow-motion
+  didn't exist yet) to thirds of the clip's own timeline, cross-referenced against the phases above.
+- Updated the "Export + delivery" handback checklist to mention retuning
+  `catchCutsceneSlowMotionFactor`/`catchCutsceneSlowMotionEaseFraction` alongside the other timing
+  constants if the new clip's proportions differ from what's assumed here.
+- Left `new-blender-project/FishAssets/APP_TEAM_HANDOFF.md` (the unrelated, still in-progress
+  Preview-orientation task) and every other uncommitted file in that repo untouched.
+
+### Git state, intentionally left as-is
+
+`new-blender-project/FishAssets/APP_TEAM_HANDOFF_CAUGHT_STRUGGLE.md` remains untracked (`git status`
+shows `??`), matching the existing `APP_TEAM_HANDOFF.md`'s own state — not committed. That repo
+currently has substantial unrelated uncommitted work in progress (several `.blend`/Preview re-export
+changes from the orientation-fix task); committing there wasn't requested and risks bundling in work
+that isn't this session's to commit. If a future session needs this file committed/pushed for a
+differently-located agent to find, that's a separate, explicit ask.
+
+### Verification
+
+- Re-read the full updated handoff doc end-to-end to confirm no remaining stale "not yet built"
+  references to slow-motion.
+- `git status` in `new-blender-project` confirmed only the intended file changed (no accidental edits
+  to the other in-progress work there).
+- No `CtSPoC` Swift/architecture files changed this pass; this entry itself is the only `CtSPoC`
+  change.
+
+## Feature: New "Caught" Animation Integrated, Speed Derived to Center the Peak in Slow-Motion (ADR-071)
+
+Date: 2026-07-20.
+
+"udah ada animasi mekong fish yang baru untuk cut scene baru, implementasiin dong" (there's already a
+new Mekong fish animation for the new cutscene, please implement it) — the Blender-MCP session picked
+up the handoff and finished it. Found via `new-blender-project/FishAssets/CHECKPOINT.md` (CP44/CP45):
+the handoff doc itself was already deleted per its own "delete when done" instruction, confirming
+completion.
+
+### What the Blender session actually did (read from their CHECKPOINT, not re-derived)
+
+Re-animated `Fish06_MekongGiantCatfish`'s `Caught` clip in place (confirmed decision: same model/rig,
+not a new species — matches the handoff's own recommendation). New clip: 90 frames/24fps = 3.75 s
+(old: 72 frames/3.0 s), three literal thirds — violent thrash (frames 0–29), one coherent full-body
+arch peak (frames 30–59, peaking at frame 44 ≈ 1.83 s / ≈49% through), decaying ease (frames 60–89).
+Rig axes independently re-confirmed unchanged by that session (their own report, not just trusted).
+
+### Asset copy
+
+Copied `new-blender-project/FishAssets/Fish06_MekongGiantCatfish/Caught/MekongCatfish_Caught.usdz`
+over `CtSPoC/World/World/Assets/FishCaught/mekong_catfish_caught.usdz` (overwrite in place).
+`shasum -a 256`: new file's hash differs from the old ADR-068 file (confirms a real change landed,
+not a no-op copy) and matches the source repo's copy exactly.
+
+**Independently re-verified, not just trusted from the Blender session's own report:**
+`unzip`+`usdcat` on the new file directly — stage metadata `endTimeCode = 89`,
+`timeCodesPerSecond = 24` (confirms 90 frames/3.75 s), exactly one `SkelAnimation "Catfish_Caught"`
+still bound via `skel:animationSource`, and `bindTransforms` **byte-identical** to the previous
+file's values for every one of the 11 joints (same Head/Tail/Dorsal_Fin/Anal_Fin Y/Z positions) —
+confirms the rig genuinely didn't change, so `fishOrientation(facing:)`'s hardcoded axis constants
+need no update.
+
+### World: WorldViewModel
+
+- Added `caughtFishAnimationPeakTime: Float = 1.83` (the new clip's reported peak frame, in seconds).
+- Changed `catchCutsceneFishAnimationSpeed` from a hardcoded `let = 1.4` to a **computed** property:
+  `caughtFishAnimationPeakTime / (catchCutsceneRiseDuration + catchCutsceneFreezeDuration / 2)` —
+  derives to `2.2875` at current constants. Chose computed over hardcoding the arithmetic result so a
+  future rise/freeze retune (or another new clip) can't silently leave a stale speed behind.
+- Derivation (see ADR-071 for the full writeup): both `cutscene.elapsed`'s advancement and the
+  animation controller's `.speed` are scaled by the identical per-frame dilation value each tick
+  (ADR-070), so clip-time consumed per unit of *story* time reduces to a plain constant independent
+  of dilation — meaning the target story-time for the peak can be solved directly, without needing to
+  integrate over the dilation curve's shape.
+- Considered and rejected: keeping speed near `1.0x` and instead extending
+  `catchCutsceneFreezeDuration` to give the peak time to arrive naturally — a back-of-envelope
+  estimate put total cutscene length at 8+ seconds for that approach (freeze duration extension gets
+  amplified by the dilation itself), not viable for something that repeats every catch.
+- Updated stale comments referencing the old clip's "1.4/deliberately gentle" rationale (ADR-069) —
+  the new clip is already violent by design; the speed's only remaining job is peak-alignment timing.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-071.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with an ADR-071
+  paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" no longer describes the new animation as pending —
+  now describes it as built and tuned to land its peak inside the slow-motion hold.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- `shasum -a 256` confirmed the copy is byte-identical to the source, and differs from the previous
+  file (a real update, not a no-op).
+- `unzip`+`usdcat` independently re-verified stage metadata, animation binding, and every joint's
+  `bindTransforms` against the previous file — not re-derived from the Blender session's report alone.
+- Sanity-checked the `2.2875` derivation arithmetic directly (`1.83 / (0.35 + 0.9/2)`).
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. The peak-alignment math is exact given the stated assumptions, but
+  whether a ~2.29x base playback speed (during the non-dilated thrash phase) looks appropriately
+  violent or too fast/blurry is an open question only a live session can answer.
+
+## Merge: origin/main into feat/playtest-refine — ADR-049/050/051/052 Numbering Collision Resolved (-> ADR-064/065/066/067)
+
+Date: 2026-07-21.
+
+"pull main, resolve conflict." `feat/playtest-refine`'s prior tip (`a2ae594`) was already an ancestor
+of `origin/main` (merged via PR #14/#15), but `main` had since advanced substantially through `dev`
+— device pairing allowlist, an explicit "Start Casting" arm gate, a rod-rig pass, a floating bobber,
+the cast-power timing mini-game rewrite, maxed Rod haptics, five playtest fixes, pairing recovery,
+and an `RodState` wire-key fix (short JSON keys — casts were being silently dropped over BLE at the
+old key length) — and, critically, **reused ADR numbers 049 through 052 for those four unrelated
+decisions**, directly colliding with this session's own ADR-049 through ADR-052 (the fish-cutscene
+work: real animated fish, orientation, slow-motion, new "Caught" clip integration). This project has
+hit this exact collision pattern twice before (`8b03ce2 docs: resolve ADR-030/031 numbering
+collision`, and a `dev`-merge note referencing an earlier "ADR-044 numbering collision") — same root
+cause each time: independent branches numbering forward from the same branch-point without
+coordinating.
+
+### Sequence
+
+1. Committed this session's uncommitted work (`5b021b6`) as a clean checkpoint before merging, so
+   nothing was at risk during conflict resolution.
+2. `git merge origin/main --no-edit`. Two real conflicts (`ARCHITECTURE_DECISIONS.md`,
+   `CHECKPOINT.md`); everything else — including `World/World/ViewModels/WorldViewModel.swift`
+   itself, despite both branches modifying it heavily — auto-merged cleanly with no conflict markers.
+3. **`ARCHITECTURE_DECISIONS.md`**: kept `origin/main`'s ADR-063 down through ADR-049 unchanged (the
+   canonical, already-shipped continuation), then appended this session's four ADRs immediately after,
+   renumbered ADR-064–067 (052->067, 051->066, 050->065, 049->064) to sit right before the ADR-048
+   section both sides already shared identically. Verified no duplicate `# ADR-NNN` headers remain
+   anywhere in the file afterward.
+4. **`CHECKPOINT.md`**: same principle — `origin/main`'s new entries (chronologically already part of
+   the shipped history) placed first, this session's four entries appended after with the same
+   renumbering applied throughout (headers and inline body references both).
+5. **`SOFTWARE_ARCHITECTURE_DOCUMENT.md`** and **`World/World/ViewModels/WorldViewModel.swift`** both
+   auto-merged without conflict markers but ended up containing a genuine *mix* of `main`'s legitimate
+   ADR-049–052 references (device pairing, cast arming, rod rig, floating bobber) and this session's —
+   read every single occurrence in context line-by-line in both files (not a blind find-replace) to
+   classify which was which before renaming only this session's own, leaving every one of `main`'s
+   references at its original, correct number.
+6. Repo-wide `grep` afterward confirmed no ambiguous/stray old-numbered references remained anywhere
+   (`GAMEPLAY_ARCHITECTURE_V1.md`'s single `ADR-050` hit is `main`'s "Start Casting" arm reference —
+   confirmed correctly left untouched, not mine).
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-macosx26.0` and `arm64-apple-ios17.0-simulator` — exit code
+  0, no errors (confirms the merged `Shared` changes from `main` — `RodState`'s new `CodingKeys`,
+  `CastResolver`/`FishFightConfig`/`RodMotionInterpreter` changes — compile clean).
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` Swift file list against the iOS-simulator
+  `Shared` module — exit code 0, no errors.
+- `git diff --check` clean; no duplicate `private func`/`private var`/`private let` declarations in
+  `WorldViewModel.swift` (checked directly, since a clean auto-merge can still interleave logic
+  incorrectly without tripping a textual conflict).
+- Read `tick(deltaTime:)` directly post-merge to confirm `main`'s new branches (reel-spin, bobber
+  float, fight-direction drift) and this session's `.result`/catch-cutscene branch sit in genuinely
+  separate, non-overlapping cases — not just "compiles," but logically sound.
+- Excluded the same files this entire session has consistently excluded from every commit:
+  `Rod/Rod.xcodeproj/project.pbxproj` and `World/World.xcodeproj/project.pbxproj` (local
+  code-signing team diffs) and this machine's own `xcuserdata` — both remain unstaged/untracked,
+  matching every prior commit in this session.
+- Not run: any live session, and specifically not re-verified that `main`'s new features (casting
+  arm gate, floating bobber, rod rig bend/reel-spin) and this session's catch-cutscene/fish-orientation
+  work behave correctly *together* at runtime — only that the merged source compiles and reads
+  logically consistent from static inspection.
+
+## Fix: Caught Fish Uses a Fixed Horizontal Pose Instead of Facing the Rod (ADR-072)
+
+Date: 2026-07-21.
+
+First live look after the merge: "animasi ngamuk nya masih belum bener, ikannya masih normal vertical
+belum horizontal seperti kondisi ditangkep" (the raging animation still isn't right, the fish is
+still normal/vertical, not horizontal like when it's actually caught). Root cause traced, not
+guessed: ADR-069's `catchCutsceneFishOrientation(at:)` faced the fish's head toward
+`rodRig.tipEntity`'s *live* position every frame — the fish's cutscene position only moves in Y (a
+fixed `hookLiftTargetPosition` XZ), while the rod tip's actual height depends on the rig's live bend
+(`rodState.orientation`, whatever the player's phone was doing last) — an unpredictable, tip-dependent
+relationship that in practice produced a near-vertical, nose-up dangling pose, not the broadside
+"holding up the catch" reveal a fishing game's catch moment classically shows.
+
+### World: WorldViewModel
+
+- `catchCutsceneFishOrientation` changed from a function taking a `position` parameter (computing a
+  direction toward the rod tip each call) to a **constant** computed property: `fishOrientation(facing:
+  [1, 0, 0])` — always faces world `+X`, reusing `fishOrientation(facing:)`'s existing two-step
+  construction (shortest-arc head align, then dorsal-up roll correction) completely unchanged, just
+  fed a fixed direction instead of a dynamic one.
+- Removed the `rodRig.tipEntity`/`controllerEntity` fallback lookup that direction previously
+  required — no longer needed, since the result no longer depends on the fish's position or the rod's
+  live state at all.
+- Both call sites (`beginCatchCutscene(from:)`, `updateCatchCutscene(deltaTime:)`) updated to read the
+  property directly with no arguments.
+- Chose world `+X` specifically (not an arbitrary pick): the cutscene's own camera geometry
+  (`playerCameraPosition`, `catchCutsceneCameraStartOffset`, `catchCutsceneCameraEndOffset`) all share
+  `X = 0` and neither the fish nor the camera ever moves off that line during the cutscene — so a fish
+  facing along world `X` is *guaranteed* perpendicular to the camera's view axis, reading
+  broadside/horizontal on screen regardless of jump height, dolly progress, or the rod's live bend.
+  Simpler and more robust than trying to compute a "looks horizontal" direction from the rod's
+  actual, unpredictable position.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-072.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: rewrote the ADR-069 paragraph to describe the fixed-`+X`
+  orientation instead of the rod-facing one; also fixed a stale "`.speed = 1.4`" claim in the same
+  paragraph left over from before ADR-071 changed that to a derived value.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now describes a fixed horizontal showcase pose
+  instead of "faces the rod/line."
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. Whether facing `+X` specifically (versus `-X`) reads better for this
+  model/camera framing is unconfirmed — an easy one-line sign flip if the fish ends up facing away
+  from camera instead of broadside.
+
+## Fix: Caught Fish Reverts to a Fixed Vertical "Hooked and Hanging" Pose (ADR-073)
+
+Date: 2026-07-21.
+
+First live look at ADR-072's horizontal pose, one turn later: asked to clarify "masih horizontal"
+first via `AskUserQuestion` (ambiguous on its own — could have meant "still wrong the old way,"
+"wrong direction," or "horizontal but still not right"); the user's answer clarified it directly:
+"ikannya kaya berenang, harusnya kepala nya di x, vertical, skrg horizontal kaya posisi berenang"
+(the fish looks like it's swimming — the head should be up, vertical — right now it's horizontal
+like a swimming position). Direct reversal of ADR-072's chosen direction, one iteration after it
+shipped.
+
+### World: WorldViewModel
+
+- `catchCutsceneFishOrientation` changed from ADR-072's `fishOrientation(facing: [1, 0, 0])`
+  (horizontal) to a direct rotation-matrix construction: local `-Y` (head) → world `+Y` (straight
+  up), local `X` (the fish's lateral/thin axis) → world `-Z` (parallel to the fixed camera's view
+  direction, so the camera sees the fish's full length/height broadside silhouette rather than a
+  foreshortened view), local `Z` (dorsal) → the cross product of the first two, computed rather than
+  guessed, to keep the rotation proper (no mirroring).
+- Did **not** reuse `fishOrientation(facing:)` (ADR-069/072's two-step shortest-arc-plus-roll
+  helper) for this — that function's roll-correction step is degenerate when the facing direction is
+  exactly world-up (the "desired up minus its projection onto forward" term collapses to zero, since
+  forward and up become the same vector), so it would have silently fallen back to an uncontrolled
+  roll. `fishOrientation(facing:)` itself is left in place, unused by this property but still valid
+  for any future non-degenerate direction.
+- Independently verified the construction numerically, not just derived on paper: wrote a standalone
+  `swift` REPL script applying the resulting quaternion to the known local head/dorsal/lateral axes
+  — confirmed head lands at world `(0, ~1, 0)` and the lateral axis lands at world `(0, 0, ~-1)`,
+  matching the intended "vertical, broadside to camera" pose exactly.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-073, explicitly framed as reversing ADR-072's direction
+  while keeping its "fixed, not dynamic" insight.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: rewrote the orientation paragraph as a three-iteration history
+  (ADR-069 dynamic/broken -> ADR-072 horizontal/still wrong -> ADR-073 vertical) so the reasoning
+  trail stays legible instead of overwriting it silently.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now describes a vertical hanging pose instead of a
+  horizontal showcase pose.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors (confirms `simd_quatf(simd_float3x3)` and `simd_float3x3(columns:)` resolve as expected).
+- Standalone `xcrun swift` execution of the exact rotation construction, confirming the numeric
+  claims above (not just typechecking that the code compiles).
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. Which world direction the dorsal fin/lateral axis specifically face
+  (`-X`/`-Z` here, an arbitrary choice between two options once "head up, broadside to camera" is
+  satisfied) is unconfirmed to look correct on-device — same open question ADR-072 already flagged
+  for its own axis choice, inherited here.
+
+## Feature: Ending Slow-Motion Dip, +1.5s Duration, Hook/Line Stay Attached to the Fish (ADR-074)
+
+Date: 2026-07-21.
+
+Two "finishing touch" items requested together: "ketika cut scene catch udah mau beres, tambahin
+slow motion ikan nya dan durasi animasi nya tambah 1,5 detik lagi" (as the catch cutscene is about to
+finish, add slow-motion for the fish and extend the animation duration by another 1.5 seconds), and
+"juga refine agar tali dan bomber nya masih nyangkut dengan ikan ketika di cut scene" (also refine so
+the line and hook stay attached to the fish during the cutscene).
+
+### World: WorldViewModel — ending slow-motion + duration
+
+- `catchCutsceneSettleDuration`: `0.35` -> `1.85` (+1.5 s, as requested).
+- `catchCutsceneTimeDilation(elapsed:)` generalized from a single freeze-phase-only dip to a shared
+  helper that applies the same ease-in/hold/ease-out shape to *either* the freeze phase or the settle
+  phase, whichever `elapsed` currently falls in — reusing the existing
+  `catchCutsceneSlowMotionFactor`/`catchCutsceneSlowMotionEaseFraction` constants for both, so the two
+  dips feel consistent rather than each having independently-tuned shapes.
+- No changes needed anywhere else for this half — `updateCameraFollow`'s push-in and
+  `caughtFishAnimationController`'s speed retargeting already both derive from this one dilation
+  value every frame (ADR-048/070), so extending it into the settle phase automatically slows the
+  ending's descent, camera, and animation together.
+- **Flagged explicitly:** because slow-motion multiplies real wall-clock time well beyond the
+  nominal story-time duration (the same effect ADR-070 already produced for the freeze phase),
+  total cutscene real time is now roughly 7+ seconds (up from ~3 s before this pass) — the single
+  biggest open risk in this change, not confirmed live.
+
+### World: WorldViewModel — hook/line stay attached
+
+- Added `caughtFishHeadOffset: Float = 0.6` — the `Head` joint's local Y-distance from the fish's
+  root, read from the same `bindTransforms` inspection already used for orientation (ADR-069/073),
+  not eyeballed.
+- Added `catchCutsceneLineTension: Float = 0.8` — matches the mid-fight `.fishOnHook`/`.reeling`
+  tension value.
+- `beginCatchCutscene(from:)`: no longer unconditionally disables `hookEntity` when
+  `caughtFishEntity` takes over — instead repositions it to `caughtFishEntity.position +
+  caughtFishHeadOffset * scale` along the fish's head axis (world `+Y`, per ADR-073's vertical pose),
+  parking it at the fish's mouth.
+- `updateCatchCutscene(deltaTime:)`: repeats that same repositioning every frame (reading
+  `caughtFishEntity.scale.y`, set once at cutscene start) so the hook tracks the fish through the
+  whole rise/freeze/settle motion, not just at the start.
+- `tick(deltaTime:)`'s `rodRig?.applyLineTension(...)` call now branches: `catchCutsceneLineTension`
+  while `isShowingCatchCutscene` is true, `lineTension(for: hookPhase)` (unchanged, still `0` for the
+  rest of `.result`) otherwise — previously the line went fully slack for the entire `.result` phase,
+  including the cutscene itself.
+- The cutscene's existing end-of-cutscene cleanup (`hookEntity?.isEnabled = false` once
+  `catchCutscene.elapsed >= catchCutsceneTotalDuration`) is unchanged — both entities still hide once
+  the cutscene fully ends and `ResultView` takes over.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-074, covering both halves of the request together (they were
+  asked as one combined "polish" pass).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the ADR-070 slow-motion paragraph and added a new
+  paragraph for both the settle-phase dip and the hook/line attachment fix.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now mentions the ending's own slow-motion dip and
+  that the hook/line stay visibly attached throughout.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. Two specific open risks flagged above: the ~7+ s total real-time
+  cutscene length, and whether `caughtFishHeadOffset` visually lands the hook right at the fish's
+  mouth or noticeably off.
+
+## Fix: Cutscene Retuned to Exactly 5 Seconds; Hook Repositioned/Rescaled to the Actual Mouth (ADR-075)
+
+Date: 2026-07-21.
+
+First real screenshot from the app (attached to the message): fish correctly vertical, broadside,
+"CATCH!" title showing — ADR-073's orientation fix confirmed working live. But: "jadiin 5 detik deh,
+lalu masih aga broken begini bomber nya" (make it 5 seconds, and the bobber's still kind of broken
+like this) — the hook was sitting on/over the fish's eye and head in the screenshot, clearly wrong,
+and ADR-074's duration change was flagged as too long even before this message (the ~7+ s estimate
+from that entry's own "not run" caveat).
+
+### Duration: solved properly this time, not re-guessed
+
+ADR-074's `catchCutsceneSettleDuration = 1.85` was a flat "+1.5 s" applied to *story* time, without
+accounting for how much the slow-motion dilation multiplies that into *real* time. Derived the actual
+relationship this time: for a phase of story duration `D` under the shared ease-in/hold/ease-out
+dilation shape, real time is exactly `D × C` where `C = ∫₀¹ du/dilation(u)` — a constant independent
+of `D` (verified this proportionality holds: substituting `s = D·u` in the integral factors `D` out
+cleanly, since the ease fraction is defined proportionally to the phase, not as an absolute time).
+Computed `C ≈ 2.688` by numeric integration (`python3`/`numpy`, `trapz`), then solved
+`0.35 + C×(0.9 + settle) = 5.0` for `settle` directly.
+
+### hookEntity: read the mesh's actual extent, not a bone position
+
+ADR-074's `caughtFishHeadOffset = 0.6` came from the `Head` joint's bind-pose position — but a
+skeletal joint is a pivot, not the mesh's visible surface. Re-inspected `mekong_catfish_caught.usdz`
+for its `extent` attribute (the actual measured mesh bounding box, not the skeleton):
+`[(-0.26, -1.00, -0.36), (0.26, 1.00, 0.36)]` — real geometry (snout, whiskers included) reaches
+local Y ≈ −1.0, well past the joint's −0.6, explaining exactly why the hook fell short and landed on
+the head instead of the nose.
+
+### World: WorldViewModel
+
+- `catchCutsceneSettleDuration`: `1.85` -> `0.83` (derived, targets exactly 5.0 s real time; rise and
+  freeze durations, and the freeze-dependent `catchCutsceneFishAnimationSpeed` peak-alignment math,
+  are untouched).
+- `caughtFishHeadOffset`: `0.6` -> `1.0` (mesh-extent-sourced, not joint-position-sourced).
+- `hookEntity.scale` now set to match `caughtFishEntity.scale` in `beginCatchCutscene` — previously
+  fixed at its base `0.07` m radius regardless of the fish's own display scale (`0.35`–`1.0` range,
+  ADR-068), which visibly dwarfed a scaled-down fish's head on smaller catches, part of the same
+  "broken" look. Reset to `1` in `launchHook` so the next cast's hook isn't left at a stale scale.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-075.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the ADR-074 paragraph with the ADR-075 retune and its
+  derivation.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now states the fixed 5-second total and mentions the
+  hook being sized to match the fish.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- Independently verified the `5.0` s duration math via `python3`/`numpy` numeric integration, not
+  hand arithmetic — confirmed `settle = 0.83` produces exactly `5.0` at the current dilation
+  constants.
+- Re-extracted and re-read the `.usdz`'s `extent` attribute directly (`unzip`+`usdcat`) rather than
+  trusting the earlier `bindTransforms`-based estimate.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session with these specific values. The duration math is exact given the stated
+  model; whether the hook now visually lands right at the nose tip (versus still short, or now past
+  it) is the one claim not re-confirmed by a second screenshot.
+
+## Tune: Hook Offset Nudged 1.0 -> 1.15 After a Second Screenshot ("dikiiittt lagi")
+
+Date: 2026-07-21.
+
+A second live screenshot, this time also confirming ADR-073's orientation fix is genuinely working
+(fish vertical, broadside, "CATCH!" visible) — the hook itself was much closer than before but still
+sitting slightly short of the snout tip. Feedback: "dikiiittt lagi" (just a little more). Amended
+ADR-075 in place (still uncommitted at this point, so no separate ADR-076 needed for a same-day
+follow-up tune of an unshipped change): `caughtFishHeadOffset` `1.0` -> `1.15` — a small clearance
+past the mesh's measured extent (`-1.00`) rather than sitting exactly flush with it, following the
+same "measured bound plus a small margin" pattern ADR-043 already used for the dock-clearance offset.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- Updated `ARCHITECTURE_DECISIONS.md` and `SOFTWARE_ARCHITECTURE_DOCUMENT.md` in place (both still
+  describing ADR-075, now noting the two-screenshot iteration `1.0` -> `1.15`) rather than adding a
+  new ADR, since the original hasn't been committed yet.
+- Not run: any live session with `1.15` specifically. Still open whether this lands cleanly or needs
+  another small nudge — and separately, whether the `5.0` s total duration reads well once played.
+
+## Feature: Dedicated Cutscene Line, Hook to Rod Tip (ADR-076)
+
+Date: 2026-07-21.
+
+Third screenshot in this thread — hook placement confirmed "better" — followed by a new ask: "kalo
+tambahin tali pancing nya bisa ga" (can we add the fishing line?). The screenshot showed the hook
+floating with no line at all connecting it to anything.
+
+### Investigation before writing any code
+
+Read `World/World/Reality/RodRigController.swift` directly rather than guessing at the missing
+line's cause: `applyLineTension(_:)` only bends `rod_line.usdz`'s existing bone chain via procedural
+joint rotations — there's no code path that extends the rig's total reach. The cutscene's hook sits
+at `hookLiftTargetPosition`, roughly 2.6 m further from the rod's anchor than any mid-fight distance
+that rig was ever authored to span (per the coordinates already established in ADR-042/043) — so even
+at full tension, it never reached anywhere near the cutscene's framing. Confirmed as the actual root
+cause, not assumed from the screenshot alone.
+
+### World: WorldViewModel
+
+- Added `cutsceneLineEntity: ModelEntity?`, created once in `makeSceneEntity()` — a thin cylinder
+  (`generateCylinder(height: 1, radius: 0.012)`, white `SimpleMaterial`), disabled by default.
+- Added `updateCutsceneLine(from:)` — stretches/orients the cylinder every frame to span exactly from
+  the hook's current position to the live rod tip (`rodRig.tipEntity.position(relativeTo: nil)`,
+  falling back to `controllerEntity.position`): scales only the mesh's local `Y` axis to the measured
+  distance, positions it at the midpoint, rotates via `simd_quatf(from: [0,1,0], to:
+  normalize(rodPoint - hookPosition))`. Disables itself if there's no rod reference or the points are
+  degenerately close.
+- Called from both `beginCatchCutscene(from:)` and `updateCatchCutscene(deltaTime:)`, right after
+  each computes the hook's own position, so the line always matches exactly.
+- Disabled alongside `hookEntity`/`caughtFishEntity` at every point they already are: end-of-cutscene
+  cleanup in `updateCatchCutscene`, and `returnToMenu()`.
+
+### Why a new entity, not a stretched `rod_line.usdz`
+
+Considered and rejected driving the existing skinned rig beyond its bind-pose length — this project's
+own asset repo `AGENTS.md` §13 documents a related failure class ("Animating Multiple Bone Chains")
+for the fish rigs, and the same risk (mesh tearing/distortion) applies to any skinned asset pushed
+past its authored geometry. A plain cylinder driven by direct vector math sidesteps that risk
+entirely, and the cutscene already forces a constant tension value (ADR-074) rather than needing
+`rod_line`'s dynamic response, so its gameplay behavior isn't even relevant here.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-076.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the fish/cutscene section with an ADR-076 paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now mentions the visible line to the rod.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. Whether a plain white cylinder at this thickness reads convincingly as a
+  fishing line, and whether spanning the full ~2.6+ m distance looks right once actually rendered,
+  are both unconfirmed.
+
+## Fix: Cutscene Line Removed — Read as a Rigid Pole (ADR-077)
+
+Date: 2026-07-21.
+
+Two messages in immediate succession on ADR-076's line. First: "ini lebih ke tongkat ketimbang tali,
+pakai tali dari rod aja bisa ga" (this reads more like a stick than a line, can we use the rod's own
+line instead?) — confirming the exact risk ADR-076's own Status section had flagged as unconfirmed: a
+straight, constant-radius cylinder spanning ~2.6+ m read as a rigid pole, not a fishing line. Before
+starting the "try the real `rod_line` rig" investigation this implied, a second message arrived:
+"tali nya hapus dulu aja deh, makin jelek pakai tali itu" (just remove the line for now, it looks
+worse with it) — superseding the fix-it request in favor of a straight revert.
+
+### World: WorldViewModel
+
+Removed everything ADR-076 added: the `cutsceneLineEntity` property, its creation in
+`makeSceneEntity()` (the cylinder mesh + material), `updateCutsceneLine(from:)` in full, and all four
+call sites (`beginCatchCutscene(from:)`, both branches of `updateCatchCutscene(deltaTime:)`, the
+end-of-cutscene cleanup, `returnToMenu()`). `hookEntity`'s mouth-attachment (ADR-070/071) and
+`catchCutsceneLineTension` (ADR-070) are untouched — only the ADR-076 geometry is gone.
+
+This landed while an `origin/main` merge was still in progress (see the entries above/below) — kept
+as a distinct, separately-reasoned change rather than folded silently into the merge's own
+resolution, so the "why" (two direct pieces of live feedback) stays traceable on its own.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-077; added a "Superseded by ADR-077" note to ADR-076's own
+  Status section (not rewritten/deleted — the original decision and rationale stay intact as a
+  record of what was tried and why).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the ADR-076 paragraph to describe the removal.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" no longer claims a visible line; now states plainly
+  that the cutscene currently shows no line, flagged as a known gap.
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-macosx26.0` and `arm64-apple-ios17.0-simulator` (needed
+  regardless, to pick up `origin/main`'s new `RodState.calibrationStep`/`CalibrationStep` additions
+  for the in-progress merge) — exit code 0, no errors both times.
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` Swift file list against the iOS-simulator
+  `Shared` module — exit code 0, no errors.
+- `grep` confirmed zero remaining references to `cutsceneLineEntity`/`updateCutsceneLine`/
+  `generateCylinder` anywhere in `WorldViewModel.swift`.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. The cutscene's current no-line state is a known, explicitly-flagged gap,
+  not a final answer — a future pass may revisit using `rod_line.usdz`'s real rig, per the user's
+  first message.
+## Feature: Fight Direction Replaced by a Randomized Flick QTE (ADR-078)
 
 Date: 2026-07-21.
 
 Requested directly: "daripada fish pull dan lean rod, mending diganti jadi QTE yang randomized
 spawn ketika fishInHook. QTE nya adalah, flick device aja ke depan (atau sesuai arah cast)."
-Recorded as ADR-068 — a full replacement of ADR-053's lean-left/right mechanic, not an addition.
+Recorded as ADR-078 (renumbered from a colliding ADR-068 — see the merge-collision entry below) —
+a full replacement of ADR-053's lean-left/right mechanic, not an addition.
 
 ### Shared: FishingEvent, FishFightConfig
 
@@ -6787,10 +7647,12 @@ Recorded as ADR-068 — a full replacement of ADR-053's lean-left/right mechanic
 
 ### Documentation
 
-- `ARCHITECTURE_DECISIONS.md`: added ADR-068; added a one-line "Superseded by ADR-068" pointer at
-  the top of ADR-053's own entry, keeping the rest of that entry as an untouched historical record.
+- `ARCHITECTURE_DECISIONS.md`: added ADR-078 (renumbered from a colliding ADR-068 during the
+  `origin/main` merge — see the merge-collision entry below); added a one-line "Superseded by
+  ADR-078" pointer at the top of ADR-053's own entry, keeping the rest of that entry as an
+  untouched historical record.
 - `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: replaced the "Fight direction (ADR-053)" paragraph with a
-  full description of the new QTE mechanic under ADR-068.
+  full description of the new QTE mechanic under ADR-078.
 
 ### Verification
 
@@ -6806,3 +7668,71 @@ Recorded as ADR-068 — a full replacement of ADR-053's lean-left/right mechanic
   reaction window accounts for real BLE round-trip latency between Rod's flick detection and
   World's resolution, and whether the 4-8s spawn interval feels appropriately "randomized" during
   a real fight.
+
+## Merge: origin/main into dev — ADR-068 Numbering Collision Resolved (-> ADR-078)
+
+Date: 2026-07-21.
+
+"pull dari main dong dan merge ke dev. sekalian atasin conflictnya." `dev`'s only local commit ahead
+of `origin/main` was `00adf32` (the QTE feature above, including its own debug-disable comment).
+Meanwhile `origin/main` had advanced through PR #18 (`feat/playtest-refine`, merge commit `f24bf05`)
+with a full catch-cutscene-fish arc — real animated fish, orientation fixes, slow-motion timing, a
+cutscene line added then removed — spanning **ADR-068 through ADR-077**, directly colliding with
+this session's own ADR-068 (the flick QTE). Same collision pattern this project has now hit three
+times (`8b03ce2` ADR-030/031, the ADR-044 note, and the ADR-049–052 merge above) — independent
+branches numbering forward from the same branch-point without coordinating.
+
+### Sequence
+
+1. `git status` on session resume found the merge already in progress (`git merge origin/main` had
+   been run, `.git/MERGE_HEAD` present) with two real conflicts (`ARCHITECTURE_DECISIONS.md`,
+   `CHECKPOINT.md`, both `UU`) and four files already auto-merged without conflict markers
+   (`GAMEPLAY_ARCHITECTURE_V1.md`, `SOFTWARE_ARCHITECTURE_DOCUMENT.md`,
+   `World/World/ViewModels/WorldViewModel.swift`, plus the new
+   `World/World/Assets/FishCaught/mekong_catfish_caught.usdz` staged as an addition).
+2. `git log --oneline dev..origin/main` confirmed the exact collision range (fadc215's commit message
+   states "ADR-068 through ADR-072"; the actual file content on `main` runs through ADR-077 —
+   confirmed by reading the headers directly, not trusting the commit message's own count).
+3. **`ARCHITECTURE_DECISIONS.md`**: kept `origin/main`'s ADR-077 down through ADR-072 unchanged (the
+   canonical, already-shipped continuation — `main`'s numbering wins per this project's established
+   precedent), renumbered this session's single colliding entry 068 -> 078 and placed it first (this
+   file orders newest-first), with an explicit note at the top of the renumbered entry recording the
+   collision and its resolution. Also fixed ADR-053's own "Superseded by ADR-068" forward-pointer to
+   "Superseded by ADR-078".
+4. **`CHECKPOINT.md`**: same principle, opposite placement (this file orders chronologically,
+   oldest-first) — `origin/main`'s fourteen dated entries (2026-07-20 through 2026-07-21, ADR-068
+   through ADR-077) kept first, this session's renumbered QTE entry appended after.
+5. **`SOFTWARE_ARCHITECTURE_DOCUMENT.md`** and **`World/World/ViewModels/WorldViewModel.swift`** both
+   auto-merged cleanly but ended up containing a genuine *mix* of `main`'s legitimate ADR-068
+   references (the catch-cutscene fish) and this session's — read every occurrence in context,
+   line-by-line, in both files before renaming only this session's own (`WorldViewModel.swift`:
+   `lastQTEActive`'s doc comment, `syncQTE()`'s doc comment, and the `.qteFlick` handler's inline
+   comment; `SOFTWARE_ARCHITECTURE_DOCUMENT.md`'s single "Fight QTE" paragraph heading), leaving
+   `main`'s eight WorldViewModel.swift references and two SOFTWARE_ARCHITECTURE_DOCUMENT.md
+   references at their original, correct ADR-068.
+6. **`GAMEPLAY_ARCHITECTURE_V1.md`** auto-merged with no `ADR-068`/QTE content at all — this session
+   never touched this file, so everything in it came from `main`. Its "Fish Fight" section still
+   flatly stated "It is not a quick-time event," now false given ADR-078 — updated to describe the
+   flick QTE and note ADR-053's supersession, matching this file's role as the product source of
+   truth (not something the automatic 3-way merge could have caught, since no textual conflict
+   existed).
+7. Repo-wide `grep` for `ADR-068` afterward, classifying every hit: every remaining occurrence either
+   belongs to `main`'s catch-cutscene feature (its correct, canonical number) or is this session's
+   own retrospective note about the renumbering (e.g. "renumbered from a colliding ADR-068"); none
+   stray/unclassified.
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-macosx26.0` and `arm64-apple-ios17.0-simulator`
+  (`-emit-module -emit-library`) — exit code 0, no errors on either.
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list (macOS 26) and the full
+  `Rod/Rod` Swift file list (iOS 17 simulator) — both exit code 0, no errors.
+- `git diff --check` clean.
+- Repo-wide `grep` for `fightDirection`/`FightDirection` across `Shared`/`Rod`/`World` — zero
+  remaining references, confirming `main`'s merge didn't reintroduce anything ADR-078 removed.
+- Repo-wide `grep` for leftover `<<<<<<<`/`=======`/`>>>>>>>` conflict markers — none found.
+- Not run: any live session on physical devices, and specifically not re-verified that `main`'s new
+  catch-cutscene fish work and this session's flick QTE behave correctly *together* at runtime — only
+  that the merged source compiles and every ADR-068 reference resolves to the correct feature.
+- Not yet pushed to `origin/dev` — merge commit only, per this session's standing rule of not pushing
+  without an explicit request.

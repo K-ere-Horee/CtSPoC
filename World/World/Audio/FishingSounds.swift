@@ -65,7 +65,7 @@ final class FishingSounds {
         case .reelTensionLow, .reelTensionMedium, .reelTensionHigh:
             break
         case .qtePrompt, .qteFlick:
-            // No dedicated asset (ADR-068) — the QTE prompt/response are already covered by
+            // No dedicated asset (ADR-078) — the QTE prompt/response are already covered by
             // `LineTensionView`'s visual banner and Rod's own haptic alert; not reusing an
             // existing sound here since none fit without risking confusion with what it's already
             // used for elsewhere (e.g. `fishBite`'s own pattern playing at the start of a fight).

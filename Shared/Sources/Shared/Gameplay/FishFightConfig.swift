@@ -73,7 +73,7 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
     /// never shrink it to an unfair sliver.
     public var minEscapeDistanceAllowance: Float
 
-    // MARK: Fight QTE (flick prompt, ADR-068 — replaces the ADR-053 lean-left/right juke)
+    // MARK: Fight QTE (flick prompt, ADR-078 — replaces the ADR-053 lean-left/right juke)
 
     /// Seconds between flick-QTE prompts during a fight — the timer starts the instant a fish
     /// bites and re-starts after every prompt resolves (success or timeout), so prompts keep

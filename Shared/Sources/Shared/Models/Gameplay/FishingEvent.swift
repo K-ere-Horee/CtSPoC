@@ -26,7 +26,7 @@ public enum FishingEvent: String, Codable, Sendable, Equatable {
     case reelTensionLow
     case reelTensionMedium
     case reelTensionHigh
-    /// A flick-QTE prompt just spawned during a fight (ADR-068, replacing the ADR-053 lean-left/
+    /// A flick-QTE prompt just spawned during a fight (ADR-078, replacing the ADR-053 lean-left/
     /// right juking mechanic) — World -> Rod, alerting the player to flick the rod forward (the
     /// same gesture as a cast release) within `FishFightConfig.qteReactionWindow`.
     case qtePrompt

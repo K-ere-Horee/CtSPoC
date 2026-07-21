@@ -177,8 +177,9 @@ and tension feedback. Rod provides a strong haptic pulse.
 
 ## Fish Fight
 
-The fight is the core gameplay interaction. It is not a quick-time event. It
-combines physical rod movement, reeling, line tension, and haptic feedback.
+The fight is the core gameplay interaction. It combines physical rod
+movement, reeling, line tension, and haptic feedback, punctuated by a
+randomized flick quick-time-event (ADR-078).
 
 ### Line Tension
 
@@ -191,6 +192,14 @@ LOW ---------------- HIGH
 
 The player keeps tension in a safe zone. Sustained tension that is too high or
 too low causes the fish to escape and may snap the line.
+
+### Flick QTE (ADR-078)
+
+While a fish is hooked, a "FLICK ROD NOW!" prompt spawns at a randomized
+interval. The player flicks the rod forward — the same physical gesture as a
+cast release — before a short reaction window expires. A successful flick
+relieves tension; a missed prompt spikes it. This replaces the earlier
+lean-left/right rod-roll counter mechanic (ADR-053, superseded).
 
 ### Haptics
 
@@ -216,9 +225,17 @@ distinct, designed moment that casting already has (Hook Flying/Splash) —
 while a "CATCH!" title appears. The hold at the peak is deliberate: a jump
 that immediately came back down read as too quick to register as a real
 cutscene moment. The cutscene ends on its own after a short, fixed duration —
-no player input dismisses it. The current hook visual is a placeholder; the
-cutscene is built so a real fish mesh/leap animation can drop in later
-without changing when, why, or how the camera frames it.
+no player input dismisses it. A real animated fish (Mekong Giant Catfish,
+sourced from the asset repo, scaled to the actual rolled catch length) now
+plays instead of the placeholder sphere used in earlier passes — every catch
+currently shows this same species regardless of which tier was actually
+caught; showing a different, matching species per tier is a future content
+decision, not built yet. The fish holds a fixed vertical pose — hanging head
+up as if suspended by the hook, broadside to the camera so its full
+silhouette reads clearly — rather than a default rotation or a flat
+swimming-style pose, and its struggle animation plays at a brisker tempo
+than authored so it reads as actively fighting the line, not calmly
+floating.
 
 The camera itself pushes in slowly over the cutscene rather than holding a
 single static shot, letterbox bars slide in from top and bottom, a soft glow
@@ -226,6 +243,30 @@ frames the title, and the routine gameplay HUD (catch count, level, line
 tension) fades out for the duration — all deliberate choices to make the
 moment read as a real cutscene rather than a label popping up over an
 otherwise-unchanged screen.
+
+The hold at the peak now dips into genuine slow-motion partway through —
+easing down to about a third of normal speed through the middle of the hold,
+then back up to normal, rather than an instant jump into and out of
+bullet-time. The fish's own struggle animation slows and speeds back up in
+lockstep with the world around it, not just the position/camera. This
+stretches the cutscene's total length noticeably in exchange for a more
+deliberate, dramatic pause on the catch. The struggle animation itself has
+since been re-authored (a real thrash-then-arch-then-ease motion, not the
+original gentle placeholder), and its playback speed is tuned so the
+animation's own most dramatic pose lands right in the middle of the
+slow-motion hold — the two are designed to line up, not just coincidentally
+overlap.
+
+A second slow-motion dip now plays again right as the cutscene ends, giving
+the settle back into the water its own dramatic pause rather than cutting
+straight from the peak hold to the result screen. Total cutscene length is
+tuned to a fixed 5 seconds, real time, catch to result. The hook stays
+visibly attached at the fish's mouth throughout the whole cutscene, sized to
+match the fish itself, instead of the fish appearing to float free the
+moment it takes over. A placeholder line connecting the hook back to the
+rod was tried and removed after a live look — a plain straight cylinder
+read as a rigid pole, not a fishing line; the cutscene currently shows no
+line at all, a known gap pending a better approach.
 
 ## Catch Result and Continue
 

@@ -72,7 +72,7 @@ final class HapticManager {
         playTransient(intensity: 1.0, sharpness: 0.2)
     }
 
-    /// A sharp, fast double-tap alerting the player to flick now (ADR-068's QTE mechanic) —
+    /// A sharp, fast double-tap alerting the player to flick now (ADR-078's QTE mechanic) —
     /// deliberately quicker and crisper than `fishBite()`'s slower 4-pulse pattern (0.18s+ between
     /// taps) so the two can't be confused: this needs to read as "act immediately," not "something
     /// happened."

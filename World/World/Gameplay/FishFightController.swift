@@ -43,7 +43,7 @@ final class FishFightController: ObservableObject {
     }
 
     @Published private(set) var hasFishOnHook = false
-    /// Whether a flick-QTE prompt is currently active (ADR-068, replacing the ADR-053 lean-left/
+    /// Whether a flick-QTE prompt is currently active (ADR-078, replacing the ADR-053 lean-left/
     /// right juke) — the player has `qteReactionWindow` seconds to flick the rod forward before
     /// it counts as a miss. World reads this to show a HUD prompt and to fire a one-shot Rod
     /// haptic alert on the rising edge (Rod owns no gameplay HUD, so this can't be communicated
@@ -183,7 +183,7 @@ final class FishFightController: ObservableObject {
         isFishInterested = false
         lineTension = config.initialTension
 
-        // Flick-QTE prompts start recurring the instant the fish is hooked (ADR-068) — the first
+        // Flick-QTE prompts start recurring the instant the fish is hooked (ADR-078) — the first
         // one spawns after a random `qteSpawnMinInterval...qteSpawnMaxInterval` delay, not
         // instantly, giving the player a moment to settle into the fight first.
         isQTEActive = false
@@ -213,7 +213,7 @@ final class FishFightController: ObservableObject {
 
         let reelPull = isReeling ? reelSpeed * config.baseReelTensionRate : 0
         lineTension = min(1, max(0, lineTension + (reelPull - effectiveFishPullRate) * deltaTime))
-        // Disabled for debugging (ADR-068's QTE mechanic) — commented out, not removed. This is
+        // Disabled for debugging (ADR-078's QTE mechanic) — commented out, not removed. This is
         // the single call site that drives the whole lifecycle: with it out, `isQTEActive` never
         // becomes true, so `qtePrompt`/the "FLICK ROD NOW!" banner never fire, and `handleQTEFlick()`
         // stays a permanent no-op (its own `guard isQTEActive` never passes) even though Rod keeps
@@ -231,7 +231,7 @@ final class FishFightController: ObservableObject {
         return nil
     }
 
-    /// Advances the flick-QTE spawn/reaction timers (ADR-068) and resolves a prompt's outcome as
+    /// Advances the flick-QTE spawn/reaction timers (ADR-078) and resolves a prompt's outcome as
     /// an instant `lineTension` adjustment when one occurs — a miss (reaction window expiring) or
     /// a hit via `handleQTEFlick()` below, called separately by `WorldViewModel` the instant Rod
     /// reports a flick. Kept as a separate method purely for readability; still just more

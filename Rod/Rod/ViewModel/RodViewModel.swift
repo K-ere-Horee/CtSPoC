@@ -67,7 +67,7 @@ final class RodViewModel: ObservableObject {
     private var orientation = RodOrientation.identity
     private var spatial = SpatialState()
     private var hasStarted = false
-    /// Edge-detection state for `detectFightFlick()` (ADR-068) — `true` while the last-seen sample
+    /// Edge-detection state for `detectFightFlick()` (ADR-078) — `true` while the last-seen sample
     /// was past the forward-flick threshold, so a sustained flick reports once, not every frame.
     private var wasFightFlicking = false
     private var calibrationSamples: [RodMotionInput] = []
@@ -393,7 +393,7 @@ final class RodViewModel: ObservableObject {
         detectFightFlick()
     }
 
-    /// Reports a forward flick to World during a fish fight (ADR-068's QTE mechanic) — reuses the
+    /// Reports a forward flick to World during a fish fight (ADR-078's QTE mechanic) — reuses the
     /// exact same calibrated threshold as a cast release (`profile.castAcceleration`/
     /// `castAccelerationSign`), per the request that the QTE gesture be "flick device aja ke
     /// depan (atau sesuai arah cast)," not a new gesture to learn. Independent of

@@ -89,7 +89,7 @@ final class FishingHaptics {
             isFishInterested = false
             fightBand = .high
         case .qtePrompt:
-            // ADR-068: a sharp, distinct alert telling the player to flick now — deliberately not
+            // ADR-078: a sharp, distinct alert telling the player to flick now — deliberately not
             // reusing `fishBite()`'s pattern (which already means something different: the start
             // of a fight, not a mid-fight prompt) or the continuous `fightTick` rhythm (which
             // keeps running underneath this regardless).
