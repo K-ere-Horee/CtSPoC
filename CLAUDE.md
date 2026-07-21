@@ -96,8 +96,12 @@ these NI fields are not currently consumed anywhere in gameplay or rendering
 — present and transmitted, but debug-display-only for now.
 
 World's `updateRodPose()` maintains a fixed camera-relative controller offset
-and applies only `RodState.orientation`. `launchHook()`, flying simulation, and
-reeling own hook movement. Hook reset must not modify the rod root.
+and applies only the yaw component of `RodState.orientation` (ADR-079) — the
+rod root turns left/right but never tumbles on pitch/roll, matching how a real
+rod moves in an angler's hands — plus a fixed, sensor-independent
+`rodRestPitch` composed under that yaw so the rod reads as diagonally held
+rather than flat horizontal. `launchHook()`, flying simulation, and reeling
+own hook movement. Hook reset must not modify the rod root.
 
 `HookPhase.allowsCasting` and `allowsReeling` are the centralized action rules.
 World owns gameplay HUD and `World/Views/CastMeterView.swift`; Rod owns no

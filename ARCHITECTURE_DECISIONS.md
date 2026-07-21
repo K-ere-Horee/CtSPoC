@@ -11,6 +11,127 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-080 --- Cast Direction Follows the Rod's Own Live Yaw Instead of a Rendered-Tip Vector
+
+## Decision
+
+`launchHook(solution:)`'s horizontal aim derivation is replaced entirely. It previously computed
+`tipPosition - controllerEntity.position` (the world-space vector from the rod root to the rendered
+tip), normalized it, rotated it by an empirical `aimCorrectionAngle` constant (`.pi`, a 180° flip
+discovered by debug measurement, not derived), then clamped the result into `castConeHalfAngle` via
+`clampedToForwardCone`. All of that — the tip-vector geometry, `rotatedAroundY`,
+`clampedToForwardCone`, `signedAngleDegrees`, and `aimCorrectionAngle` itself — is removed. In its
+place, `launchHook` now calls `rodYawAngle(from: rodState.orientation)` (ADR-079's helper, factored
+out of `yawOnly(from:)` so both callers share it), clamps that single angle into
+`±castConeHalfAngle`, and builds the horizontal direction directly: `SIMD3<Float>(sin(clampedAngle),
+0, -cos(clampedAngle))`.
+
+`castConeHalfAngle` itself (135° total, ±67.5°) is unchanged and kept as a safety bound — a player
+swinging the rod hard to one side still can't cast directly backward past the camera's field of
+view — but it now clamps the rod's own real heading rather than compensating for a separately
+unreliable signal.
+
+## Rationale
+
+Requested directly: "would it be possible untuk arah throw nya itu sesuai arah rod nya itself? jadi
+kalo rod nya lagi ke arah 'kiri', ya throw hook nya ke arah kiri juga" (could the throw direction
+match the rod's own direction — if the rod is pointing left, the hook should throw left too).
+
+The tip-vector approach this replaces was the entire reason `castConeHalfAngle`'s hard forward-bias
+clamp existed in the first place (see that constant's own doc comment/history): the raw aim it
+produced was reported as unpredictable ("gue masih gatau direction si yellow bobber ini kemana"),
+needed an empirical 180°-ish correction constant just to point roughly the right way, and even then
+was never trusted enough to drive cast direction directly — only clamped hard toward forward
+regardless of what it actually said. ADR-079 changed the ground truth: the rod's visual rotation is
+now driven by a single, exact, reliable `rodYawAngle(from:)` value with no geometric noise (no bone
+chains, no rest-pose axis conventions, no rig swaps to break it). Once that existed, reusing it for
+cast direction was the direct, correct fix for "hook doesn't go where the rod points" — not a
+further patch to the old vector's noise, but removing the noisy signal entirely in favor of the one
+already governing what the player sees. Because both `updateRodPose()` and `launchHook(solution:)`
+now read the identical `rodYawAngle(from:)` value, the rod's visible direction and the cast's actual
+direction are structurally guaranteed to agree — "point rod left, hook goes left" isn't a tuned
+approximation anymore, it's the same number.
+
+## Status
+
+Accepted, pending live confirmation — verified via `swiftc -typecheck` against the full `World/World`
+Swift file list (macOS 26) — exit code 0, no errors; repo-wide `grep` confirmed zero remaining
+references to the removed `aimCorrectionAngle`/`rotatedAroundY`/`clampedToForwardCone`/
+`signedAngleDegrees`. Not yet played: whether `castConeHalfAngle`'s ±67.5° bound still feels right
+now that the underlying direction is trustworthy (it was originally sized to mask an unreliable
+signal, not tuned as a deliberate gameplay limit — may be worth revisiting once cast direction is
+confirmed to track correctly), and whether the yaw sign still matches intuition through the full
+pipeline (rod visual -> cast direction) now that two different code paths depend on it agreeing.
+
+------------------------------------------------------------------------
+
+# ADR-079 --- Rod Root Rotation Restricted to Yaw Only, Plus a Fixed Diagonal Rest Tilt
+
+## Decision
+
+`WorldViewModel.updateRodPose()` no longer applies `RodState.orientation` (the full
+calibration-corrected pitch/roll/yaw quaternion) directly to `controllerEntity.orientation`. A new
+`yawOnly(from:)` reduces it to a pure rotation about world-up (Y) first: it applies the full
+quaternion to the scene's fixed forward direction `(0, 0, -1)` (the same convention
+`clampedToForwardCone` already uses elsewhere in this file), projects the resulting vector onto the
+horizontal plane, and derives a single yaw angle via `atan2(forward.x, -forward.z)` — then builds a
+fresh `simd_quatf(angle:axis: [0, 1, 0])` from that angle alone. Pitch and roll no longer rotate the
+rod root at all. `rodRig?.applyBend(pitch:roll:)` — a separate, per-bone flex effect on the rig's
+skeleton, not a rotation of the whole entity — is untouched and still reads raw `pitch`/`roll`.
+
+Derived geometrically from the corrected quaternion (via its action on a reference vector) rather
+than decomposed algebraically, because `RodState.orientation` is `inverse(reference) * current`
+(the calibration correction) — a product of quaternions that does not cleanly separate back into
+independent pitch/roll/yaw terms the way the raw, pre-correction Euler angles would. This also keeps
+faith with the existing rule that World must not reconstruct orientation from raw Euler angles: the
+yaw value is still derived from the single corrected `RodState.orientation` source of truth, just
+projected down to one axis afterward.
+
+## Rationale
+
+Requested directly: "aku mau agar asset Rod nya cukup diam di tempat, dan ga ikut muter muter as I
+reel the Rod. Kalo bisa, movement Rod di World yang valid itu cuma yaw kanan dan kiri, just like di
+real life aja" (I want the Rod asset to just stay in place, not spin around as I reel — if possible
+the only valid Rod movement in World should be yaw left/right, just like in real life). Applying the
+full 3-axis orientation meant any pitch/roll while the phone was held at an angle (routine during a
+real reel-in grip) visibly tumbled the whole rod model, not just turned it — not how a held fishing
+rod actually moves. Yaw-only matches the physical mental model directly instead of clamping or
+smoothing the existing full rotation, which would have kept the tumbling, just softened.
+
+The rig's own bend visualization (`applyBend`) was deliberately left alone — it is a subtle per-bone
+flex of the rod mesh, not a rotation of the whole object, and is not the "muter muter" (spinning)
+behavior the request was about.
+
+## Amendment: Fixed Diagonal Rest Tilt
+
+Immediate same-day follow-up, once the yaw-only rod read as flat/horizontal at rest: "tolong turunin
+pitch rod nya (maksudnya biar rod nya ga horizontal, tapi diagonal gitu)" (please lower the rod's
+pitch — I mean so the rod isn't horizontal, but diagonal instead).
+
+A new constant, `rodRestPitch: Float = .pi / 6` (30°, about the rod's local right axis, positive
+raises the tip), is composed under the live yaw in `updateRodPose()`:
+`controllerEntity.orientation = yaw * simd_quatf(angle: rodRestPitch, axis: [1, 0, 0])`. Composed
+*under* yaw (not over it) so the tilt is expressed in the rod's own local frame and rotates together
+with the player's live yaw turns, rather than staying fixed to a world axis regardless of heading.
+This is a static, sensor-independent art-direction offset — not derived from `RodState` at all —
+matching the same "yaw is the only thing live sensor data should drive" principle the base decision
+above already established; pitch stays out of the live signal path entirely, it's just no longer
+pinned to exactly zero either.
+
+## Status
+
+Accepted, pending live confirmation — verified via `swiftc -typecheck` against the full `World/World`
+Swift file list (macOS 26) — exit code 0, no errors, for both the base yaw-only change and the rest-
+tilt amendment. Not yet played: whether the yaw sign/direction matches the player's actual left/right
+hand motion 1:1 (the same `atan2(x, -z)` convention already used and confirmed correct for
+cast-direction clamping elsewhere in this file, but not independently re-confirmed for this new use);
+whether dropping pitch/roll entirely from the root (rather than, say, damping them toward zero) ever
+reads as visually abrupt during fast tilt changes; and whether 30° specifically reads as the intended
+"diagonal, not horizontal" angle once actually seen — `rodRestPitch` is a single named constant,
+intentionally easy to retune if it's too shallow or too steep.
+
+------------------------------------------------------------------------
+
 # ADR-078 --- Fight Direction Replaced by a Randomized Flick QTE
 
 **Renumbered from a colliding ADR-068.** This session's own work independently claimed ADR-068 while

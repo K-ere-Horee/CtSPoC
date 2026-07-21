@@ -7736,3 +7736,104 @@ branches numbering forward from the same branch-point without coordinating.
   that the merged source compiles and every ADR-068 reference resolves to the correct feature.
 - Not yet pushed to `origin/dev` — merge commit only, per this session's standing rule of not pushing
   without an explicit request.
+
+## Fix: Rod Root Rotation Restricted to Yaw Only (ADR-079)
+
+Date: 2026-07-21.
+
+Requested directly: "aku mau agar asset Rod nya cukup diam di tempat, dan ga ikut muter muter as I
+reel the Rod. Kalo bisa, movement Rod di World yang valid itu cuma yaw kanan dan kiri, just like di
+real life aja."
+
+### World: WorldViewModel
+
+- `updateRodPose()`: `controllerEntity.orientation` no longer set directly from
+  `RodState.orientation`'s full pitch/roll/yaw quaternion — now set from a new
+  `yawOnly(from:)` instead.
+- Added `yawOnly(from: RodOrientation) -> simd_quatf`: applies the full corrected quaternion to the
+  scene's fixed forward direction `(0, 0, -1)`, projects the result onto the horizontal plane, and
+  derives a single yaw angle via `atan2(forward.x, -forward.z)` — the same signed-angle convention
+  `clampedToForwardCone` already uses — then builds a fresh Y-axis-only `simd_quatf`. Geometric
+  derivation chosen over algebraic decomposition because `RodState.orientation` is
+  `inverse(reference) * current` (the calibration correction), a quaternion product that doesn't
+  cleanly separate back into independent pitch/roll/yaw terms.
+- `rodRig?.applyBend(pitch: rodState.pitch, roll: rodState.roll)` — the rig's per-bone flex
+  visualization — left untouched; it's a secondary bend effect on the mesh, not a rotation of the
+  whole entity, and wasn't part of the reported "muter muter" (spinning) problem.
+
+### Amendment: fixed diagonal rest tilt
+
+Same-day follow-up: "tolong turunin pitch rod nya (maksudnya biar rod nya ga horizontal, tapi
+diagonal gitu)." Once yaw-only landed, the rod read as flat/horizontal at rest — no pitch at all.
+
+- Added `rodRestPitch: Float = .pi / 6` (30°, about the rod's local right axis) — a fixed,
+  sensor-independent art-direction constant, not derived from `RodState`.
+- `updateRodPose()`: `controllerEntity.orientation` now `yaw * simd_quatf(angle: rodRestPitch, axis:
+  [1, 0, 0])` — the rest tilt composed *under* the live yaw (in the rod's own local frame) so it
+  turns together with the player's yaw rather than staying pinned to a world axis.
+
+### Documentation
+
+- `CLAUDE.md`: updated the `updateRodPose()` architecture-contract line to state yaw-only rotation.
+- `ARCHITECTURE_DECISIONS.md`: added ADR-079, amended in place with the rest-tilt addition (kept as
+  one entry — same decision, extended same day — rather than a new ADR number).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "World Controller and Hook Separation" section to
+  describe the yaw-only reduction plus the rest tilt.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0` — exit code 0, no errors, for both the yaw-only change and the rest-tilt
+  amendment.
+- `git diff --check` clean.
+- Not run: any live session. Unverified in particular: whether the derived yaw sign matches the
+  player's actual left/right hand motion 1:1, whether dropping pitch/roll entirely (rather than,
+  say, damping toward zero) ever reads as visually abrupt during fast tilt changes, and whether 30°
+  specifically looks like the intended "diagonal" angle once actually seen.
+
+## Feature: Cast Direction Follows the Rod's Own Live Yaw (ADR-080)
+
+Date: 2026-07-21.
+
+Requested directly: "would it be possible untuk arah throw nya itu sesuai arah rod nya itself? jadi
+kalo rod nya lagi ke arah 'kiri', ya throw hook nya ke arah kiri juga."
+
+### World: WorldViewModel
+
+- Refactored `yawOnly(from:)`'s body out into a new `rodYawAngle(from: RodOrientation) -> Float`,
+  returning just the signed angle instead of a quaternion; `yawOnly(from:)` now calls it and wraps
+  the result. Single source, two callers (`updateRodPose()` for the rod's visual rotation,
+  `launchHook(solution:)` for cast direction) — they can't disagree about which way the rod points.
+- Noticed in passing while refactoring: `rodYawAngle`'s `atan2` result is negated
+  (`-atan2(forward.x, -forward.z)`) relative to what this session originally wrote for
+  `yawOnly(from:)` in the ADR-079 entry above — left as-is (not reverted) per this session's
+  standing rule of treating externally-observed changes to values/signs as authoritative rather than
+  assuming stale memory of a prior edit is still correct.
+- `launchHook(solution:)`: replaced the entire tip-position-vector aim derivation (`tipPosition -
+  controllerEntity.position`, `rotatedAroundY` by the empirical `aimCorrectionAngle` constant, then
+  `clampedToForwardCone`) with `rodYawAngle(from: rodState.orientation)`, clamped directly into
+  `±castConeHalfAngle`, then converted to a horizontal direction vector inline.
+- Removed `aimCorrectionAngle` (the empirical 180°-ish correction constant), `rotatedAroundY(_:by:)`,
+  `clampedToForwardCone(_:)`, and `signedAngleDegrees(_:)` — all now unused; grepped the file
+  afterward to confirm zero remaining references. `castConeHalfAngle` itself is kept unchanged (135°
+  total) as a safety bound, its doc comment updated to explain it now clamps a trustworthy signal
+  rather than compensating for an unreliable one.
+- `debugRawAimDegrees`/`debugCorrectedAimDegrees` (unchanged property names, `ContentView.swift`'s
+  "Raw Aim Angle"/"Corrected Aim Angle" debug rows untouched) now populate directly from the yaw
+  angle in degrees, pre- and post-clamp, rather than from `signedAngleDegrees(vector:)`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-080.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0` — exit code 0, no errors.
+- `git diff --check` clean.
+- Repo-wide `grep` for the four removed helpers/constant — zero remaining references anywhere.
+- Not run: any live session. Unverified in particular: whether the cast direction now visually
+  matches the rod's own on-screen heading 1:1 (the whole point of this change), and whether
+  `castConeHalfAngle`'s ±67.5° bound (originally sized to mask the old unreliable signal, not tuned
+  as a deliberate gameplay limit) still feels like the right limit now that the underlying direction
+  is trustworthy.

@@ -75,25 +75,12 @@ final class WorldViewModel: ObservableObject {
     /// Half-angle (radians) of the allowed cast cone around the camera's fixed forward direction
     /// (-Z, per `makePlayerCamera()` — the camera never rotates dynamically, so this stays a
     /// constant, not a live basis vector). 135° total, so ±67.5° either side of straight ahead.
-    /// A hard clamp regardless of whatever `launchHook`'s aim derivation produces upstream — the
-    /// player reported the bobber's landing direction as unpredictable/unwanted ("gue masih gatau
-    /// direction si yellow bobber ini kemana, tapi... ga sesuai sama apa yang gue mau") and asked
-    /// for a guaranteed forward-biased limitation independent of that, rather than a further attempt
-    /// to make the raw aim direction itself "correct."
+    /// Originally a compensating clamp for an unreliable tip-position-derived aim (see
+    /// `CHECKPOINT.md`'s history) — kept as a safety bound now that `launchHook(solution:)` derives
+    /// cast direction directly from `rodYawAngle(from:)` (ADR-080), the same reliable source
+    /// `updateRodPose()` uses for the rod's own visual rotation, so a player swinging the rod hard
+    /// to one side can't cast directly backward past the camera's own field of view.
     private let castConeHalfAngle: Float = 135 * .pi / 180 / 2
-
-    /// Empirical correction rotating the rig-derived aim (see `launchHook(solution:)`) before the
-    /// forward-cone clamp is applied. Originally set to 90° from the reported "bobber jumps left"
-    /// symptom, but the debug angle readout (added specifically because the cone clamp was masking
-    /// the true unclamped magnitude — a clamped landing coordinate can't distinguish "just past the
-    /// edge" from "wildly off") measured the actual raw aim at **-174°**: not a quarter-turn off,
-    /// but almost exactly **opposite** of forward. The tip-minus-root vector in `launchHook
-    /// (solution:)` points nearly straight backward when the player casts forward — closer to a
-    /// sign flip than an axis-mismatch nudge. 180° (`.pi`) is the corrected value; a live-measured
-    /// raw angle of exactly -180° would need no further tuning, so the residual few degrees off
-    /// that (-174° measured, not -180°) is left unaddressed here — check the next test's "Corrected
-    /// Aim Angle" debug reading and adjust this constant directly if it isn't near 0°.
-    private let aimCorrectionAngle: Float = .pi
 
     // MARK: - Debug: Forward Reference Ray (disabled, kept for later re-enabling)
     // /// Debug: length (meters) of the always-visible reference line drawn from `dockAnchorPosition`
@@ -827,24 +814,65 @@ final class WorldViewModel: ObservableObject {
 
     /// Per ADR-018/ADR-019 and the calibration contract in `AGENTS.md`: the rod root stays at a
     /// fixed camera-relative offset (`dockAnchorPosition`) — Nearby Interaction distance/direction
-    /// must never move it, only the hook receives cast trajectory. Orientation comes directly from
-    /// `RodState.orientation`, the single renderer-facing quaternion already corrected by the
-    /// Rod/Shared calibration pipeline; World must not reconstruct it from raw Euler angles or add
-    /// its own smoothing/clamping on top. Raw `pitch`/`roll` remain available for the rod rig's own
-    /// secondary bend visualization (`RodRigController.applyBend`), which is a supplementary flex
-    /// effect layered on top of the whole-rig orientation, not the renderer orientation itself.
+    /// must never move it, only the hook receives cast trajectory.
+    ///
+    /// **Rotation is yaw-only, plus a fixed diagonal rest tilt (ADR-079).** `RodState.orientation`
+    /// is the full pitch/roll/yaw quaternion, already corrected by the Rod/Shared calibration
+    /// pipeline — but applying it wholesale made the rod visibly tumble/spin as the player tilted
+    /// the phone mid-reel, not the "turns left/right in your hands" motion a real fishing rod has.
+    /// Only the yaw component (rotation about world-up) is derived from live sensor data; pitch/roll
+    /// are dropped from the root's rotation entirely. World still must not *reconstruct* yaw from
+    /// raw Euler angles — `yawOnly(from:)` derives it from the same corrected `RodState.orientation`
+    /// quaternion, just projected down to one axis, so calibration correctness is preserved.
+    /// `rodRestPitch` is then composed on top — a constant, sensor-independent tilt (about the rod's
+    /// own local right axis, applied *before* yaw so it rotates along with the player's turn) so the
+    /// rod reads as diagonally held (tip raised) rather than flat horizontal, matching how a rod is
+    /// actually held. Raw `pitch`/`roll` remain available for the rod rig's own secondary bend
+    /// visualization (`RodRigController.applyBend`), a per-bone flex effect independent of the
+    /// root's rotation.
     private func updateRodPose() {
         guard let controllerEntity else { return }
 
         controllerEntity.position = dockAnchorPosition
-        controllerEntity.orientation = simd_quatf(
-            ix: Float(rodState.orientation.x),
-            iy: Float(rodState.orientation.y),
-            iz: Float(rodState.orientation.z),
-            r: Float(rodState.orientation.w)
-        )
+        let yaw = yawOnly(from: rodState.orientation)
+        let restTilt = simd_quatf(angle: rodRestPitch, axis: [1, 0, 0])
+        controllerEntity.orientation = yaw * restTilt
 
         rodRig?.applyBend(pitch: rodState.pitch, roll: rodState.roll)
+    }
+
+    /// Fixed pitch (radians, about the rod's local right axis) giving the rod its diagonal
+    /// "tip-raised" rest angle instead of lying flat horizontal (ADR-079 follow-up). Not derived
+    /// from any live sensor data — a static art-direction offset composed under `yawOnly(from:)` in
+    /// `updateRodPose()`. Positive raises the tip; tune here if it reads as too shallow/steep.
+    private let rodRestPitch: Float = .pi / 6
+
+    /// Derives the rod's live yaw heading (radians, signed: 0 = forward, + = right, - = left —
+    /// `launchHook(solution:)` clamps this same convention into `castConeHalfAngle`) from the full
+    /// calibration-corrected `RodOrientation` quaternion (ADR-079/ADR-080). Applies the quaternion
+    /// to the scene's fixed forward direction (0, 0, -1) and reads the resulting horizontal
+    /// heading, rather than decomposing the quaternion algebraically — `RodState.orientation` is
+    /// `inverse(reference) * current` (the calibration correction), a quaternion product that
+    /// doesn't cleanly separate back into independent pitch/roll/yaw terms the way raw,
+    /// pre-correction Euler angles would. This is the single source both `updateRodPose()` (the
+    /// rod's visual rotation) and `launchHook(solution:)` (cast direction, ADR-080) read from, so
+    /// the two can never disagree about which way the rod is actually pointing.
+    private func rodYawAngle(from orientation: RodOrientation) -> Float {
+        let full = simd_quatf(
+            ix: Float(orientation.x),
+            iy: Float(orientation.y),
+            iz: Float(orientation.z),
+            r: Float(orientation.w)
+        )
+        let forward = full.act(SIMD3<Float>(0, 0, -1))
+        guard simd_length(SIMD2<Float>(forward.x, forward.z)) > 0.0001 else { return 0 }
+        return -atan2(forward.x, -forward.z)
+    }
+
+    /// Reduces the rod's live yaw heading to a pure rotation about world-up (Y), so the rod root
+    /// turns left/right without tumbling (ADR-079). See `rodYawAngle(from:)` for the derivation.
+    private func yawOnly(from orientation: RodOrientation) -> simd_quatf {
+        simd_quatf(angle: rodYawAngle(from: orientation), axis: [0, 1, 0])
     }
 
     private func lineTension(for phase: HookPhase) -> Float {
@@ -879,29 +907,23 @@ final class WorldViewModel: ObservableObject {
         castLaunchPosition = tipPosition
         let angle = solution.launchAngle
 
-        // `solution.direction` is Shared's abstract Rod-frame heading, rotated from a hardcoded
-        // `CastVector3.forward = (0, 0, -1)` — a constant only ever correct for the old placeholder
-        // arrow mesh, whose local tip sat along -Z. `rod_main.usdz`'s bone chain rests along +Y
-        // instead (see `RodRigController.rodBones`' `restTranslation`s), so reinterpreting
-        // `solution.direction`'s x/z as a World-space heading pointed the hook off-axis from
-        // wherever the rig visually aimed — a fixed, consistent offset, not per-cast noise. Per
-        // ADR-018/019, Shared must stay mesh-agnostic, so the fix belongs here: derive the actual
-        // horizontal aim from the live rig geometry at this exact cast moment — the vector from the
-        // fixed `controllerEntity` root to the tip's current world position — which by construction
-        // always matches wherever the rendered tip is actually pointing, independent of any rig's
-        // internal rest-pose axis convention (and immune to the next rig swap breaking this again).
-        let aim = tipPosition - controllerEntity.position
-        let horizontalAim = SIMD3<Float>(aim.x, 0, aim.z)
-        let rawHorizontal = simd_length(horizontalAim) > 0.0001
-            ? simd_normalize(horizontalAim)
-            : SIMD3<Float>(0, 0, -1)
-        let correctedHorizontal = rotatedAroundY(rawHorizontal, by: aimCorrectionAngle)
-        let horizontal = clampedToForwardCone(correctedHorizontal)
+        // Cast direction follows wherever the rod is actually pointing (ADR-080): the same
+        // `rodYawAngle(from:)` that drives the rod's own visual yaw in `updateRodPose()`, not a
+        // geometric vector re-derived from the tip's rendered position. The tip-position approach
+        // this replaced (`tipPosition - controllerEntity.position`) needed an empirical 180°
+        // correction constant to become usable at all — it measured the rig's aim as landing nearly
+        // exactly opposite of forward, a symptom of reading an unreliable secondary signal instead
+        // of the one source of truth. `rodYawAngle(from:)` has no such correction because there is
+        // nothing left for it to compensate for: it's the identical calculation the visible rod
+        // itself rotates by, so "rod points left" and "hook flies left" can't disagree.
+        let rawYawAngle = rodYawAngle(from: rodState.orientation)
+        let clampedYawAngle = max(-castConeHalfAngle, min(castConeHalfAngle, rawYawAngle))
+        let horizontal = SIMD3<Float>(-sin(clampedYawAngle), 0, -cos(clampedYawAngle))
 
         // Captured pre-clamp: `debugCastLandingCoordinate` alone can't distinguish "just past the
         // cone edge" from "wildly off" once clamped, since both land at the same clamped boundary.
-        debugRawAimDegrees = signedAngleDegrees(rawHorizontal)
-        debugCorrectedAimDegrees = signedAngleDegrees(correctedHorizontal)
+        debugRawAimDegrees = rawYawAngle * 180 / .pi
+        debugCorrectedAimDegrees = clampedYawAngle * 180 / .pi
 
         // Speed-vs-power floor raised 0.5 -> 1.4 (ADR-066), the multiplier shrunk 1.5 -> 0.6 to
         // compensate, keeping the power=1 ceiling exactly unchanged (castSpeed * 2.0 either way —
@@ -920,36 +942,6 @@ final class WorldViewModel: ObservableObject {
 
         sounds.castLaunched()
         setHookPhase(.flying)
-    }
-
-    /// Rotates a horizontal (Y=0) direction by `angle` radians around Y — positive rotates right,
-    /// matching `clampedToForwardCone`'s sign convention below. Used to apply
-    /// `aimCorrectionAngle`'s empirical bias fix ahead of the cone clamp.
-    private func rotatedAroundY(_ direction: SIMD3<Float>, by angle: Float) -> SIMD3<Float> {
-        let cosA = cos(angle)
-        let sinA = sin(angle)
-        return SIMD3<Float>(
-            direction.x * cosA - direction.z * sinA,
-            direction.y,
-            direction.x * sinA + direction.z * cosA
-        )
-    }
-
-    /// Clamps a horizontal (Y=0) direction into `castConeHalfAngle` of the camera's fixed forward
-    /// (-Z). `atan2(x, -z)` gives the signed angle from straight-ahead (0 = forward, positive =
-    /// right, negative = left, matching this scene's convention where -Z is "out over the lake");
-    /// clamping that angle and rebuilding the vector is simpler and cheaper than a quaternion slerp
-    /// for a single fixed reference axis.
-    private func clampedToForwardCone(_ direction: SIMD3<Float>) -> SIMD3<Float> {
-        let angle = atan2(direction.x, -direction.z)
-        let clamped = max(-castConeHalfAngle, min(castConeHalfAngle, angle))
-        return SIMD3<Float>(sin(clamped), 0, -cos(clamped))
-    }
-
-    /// Same signed-angle convention as `clampedToForwardCone` (0 = forward, + = right, - = left),
-    /// in degrees, unclamped — for debug display only.
-    private func signedAngleDegrees(_ direction: SIMD3<Float>) -> Float {
-        atan2(direction.x, -direction.z) * 180 / .pi
     }
 
     private func simulateFlyingHook(deltaTime: Float) {
