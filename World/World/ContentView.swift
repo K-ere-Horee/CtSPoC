@@ -23,15 +23,29 @@ struct ContentView: View {
         ZStack {
             content
 
+            if viewModel.screen == .onboarding {
+                OnboardingView(onComplete: viewModel.completeOnboarding)
+            }
+
             if viewModel.screen == .mainMenu {
                 MainMenuView(
                     connectionState: viewModel.connectionState,
                     pairedDeviceName: viewModel.pairedDeviceName,
                     hasPairedDevice: viewModel.hasPairedDevice,
+                    calibrationStep: viewModel.rodState.calibrationStep,
                     onForgetDevice: viewModel.forgetPairedDevice,
                     onResetProgression: viewModel.resetProgression,
-                    onRetryConnection: viewModel.retryConnection
+                    onRetryConnection: viewModel.retryConnection,
+                    onShowOnboarding: viewModel.showOnboarding
                 )
+            }
+
+            // ADR-064: recalibration is now possible mid-session (any tick `hookPhase == .idle`),
+            // not only from the Main Menu before the first "Start Fishing" — this overlay covers
+            // that case with the same live guidance `MainMenuView` shows for the first pass.
+            if viewModel.screen == .playing, viewModel.hookPhase == .idle,
+                viewModel.rodState.calibrationStep != .complete {
+                recalibrationOverlay
             }
 
             if viewModel.screen == .playing, viewModel.isShowingCatchCutscene {
@@ -49,6 +63,21 @@ struct ContentView: View {
                     fishFight.dismissLevelUpAnnouncement()
                 }
             }
+        }
+    }
+
+    /// Scrim + centered card, matching `ResultView`'s own treatment — the player deliberately
+    /// chose to recalibrate mid-session, so a focused overlay avoids any ambiguity about game
+    /// state during the walkthrough (casting/reeling are already impossible while `hookPhase ==
+    /// .idle` requires no fish/hook in flight to begin with).
+    private var recalibrationOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+
+            CalibrationGuidanceView(step: viewModel.rodState.calibrationStep)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+                .shadow(radius: 24)
         }
     }
 

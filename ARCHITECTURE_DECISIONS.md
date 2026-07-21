@@ -11,6 +11,92 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-064 --- Onboarding Flow, Live Calibration Guidance in World, Calibration Available Any Time the Hook Is Idle
+
+## Decision
+
+Three related pieces, closing the "World Main Menu + Tutorial + Calibration instructions" gap
+flagged open since ADR-029/038:
+
+**1. Calibration is available whenever `HookPhase == .idle`, not only before the first "Start
+Fishing."** Requested directly. Previously gated to `!isFishing` in practice (Rod's Calibrate
+button disabled while fishing; since `screen == .mainMenu` and `isFishing == false` are the same
+condition per ADR-038, this meant "World must be at the Main Menu"). Two changes: Rod's Calibrate
+toolbar button's `.disabled(...)` changed from `!hasMotionSample || isFishing` to
+`!hasMotionSample || hookPhase != .idle`; `RodViewModel.calibrateMotion()` itself gained the same
+guard (not just the button — this is what actually makes recalibration reachable mid-session, e.g.
+between casts, not only from the Main Menu). No changes were needed to prevent a cast firing
+mid-recalibration: re-entering the sequence already sets `motionInterpreter.profile.isComplete =
+false`, which already makes the interpreter report `.invalid` regardless of arming state until
+calibration finishes again — Rod's "Start Casting" button did gain one new disabled condition
+(`calibrationStep != .complete`) purely so its own label doesn't lie about what a press would do.
+
+**2. World renders live calibration guidance, closing the "Calibration instructions appear
+entirely in World" gap.** `MotionCalibrationStep` moves from a Rod-local enum to `Shared`'s
+`CalibrationStep` (`Codable`/`Sendable`/`Equatable`, same four cases). `RodState` gains a
+`calibrationStep: CalibrationStep` field (short wire key `"cal"`, ADR-063's convention), populated
+at all three `RodState` construction sites, transmitted continuously like every other field.
+`World/World/Views/CalibrationGuidanceView.swift` is a new reusable component — per-step
+title/instruction text plus an explicit "Press \u{201C}<label>\u{201D} on your Rod" callout, the
+label mirroring Rod's own `calibrationButtonTitle` switch so the two can't tell the player
+different things. Shown in two places, both driven by the same live `rodState.calibrationStep`:
+inline in `MainMenuView` (replacing the "press Start Fishing" status row whenever connected but
+not yet calibrated) and as a scrim+card overlay in `ContentView` (matching `ResultView`'s own
+treatment) whenever `screen == .playing && hookPhase == .idle && calibrationStep != .complete` —
+the mid-session recalibration case that item 1 just made reachable. Rod's own existing
+`calibrationInstruction`/button-label text was deliberately kept, not removed, despite the product
+doc's "Rod must not display tutorial content" framing — the player is physically holding Rod
+during each gesture and may not be looking at World's screen at that exact moment; Rod's text is
+what's literally in their hands, World's is the richer exposition layer, and both read the same
+underlying step so they can't contradict each other.
+
+**3. A new onboarding flow explains the game before the player reaches Main Menu for the first
+time.** Requested directly: an intro covering the game, main objective, levels, and a calibration
+walkthrough, shown before jumping straight into play. `WorldViewModel.Screen` gains `.onboarding`;
+`init` sets the initial `screen` from a persisted `world.hasSeenOnboarding` `UserDefaults` flag —
+`.onboarding` on a fresh install, `.mainMenu` on every later launch. `World/World/Views/
+OnboardingView.swift`: three static, manually-paged screens (Welcome/two-device explanation, Main
+Goal/catch Scott, Levels & Fish Tiers), a "Skip Intro" escape hatch, and a final "Let's Calibrate"
+button (`completeOnboarding()`) that persists the flag and returns to `.mainMenu` — where item 2's
+calibration guidance takes over automatically, since a first-time player's `calibrationStep` is
+still `.idle` at that point. A "How to Play" button on `MainMenuView` (`showOnboarding()`, only
+reachable from `.mainMenu` so it can't interrupt an active session) lets a returning player revisit
+the pages without touching the persisted flag. Onboarding deliberately does not embed calibration
+guidance itself — reusing item 2's already-built, already-live component instead of duplicating
+per-step instructional text in two places.
+
+The Levels page's copy comes from `ProgressionStore.swift`'s actual code (3 small -> unlock
+medium, 5 medium -> unlock big, 10 big -> unlock Scott, 1 Scott catch completes it), not from that
+file's own doc comment or ADR-037's original prose — both describe an older 10/10, three-level
+version that no longer matches what's shipped; fixed `ProgressionStore`'s doc comment in the same
+pass since writing accurate onboarding copy required reading the real thresholds anyway.
+
+## Rationale
+
+All three came from one request, and are genuinely one coherent change: the product doc
+(`GAMEPLAY_ARCHITECTURE_V1.md`) has said since its own first version that World owns "Main Menu,
+Tutorial, Calibration Instructions" — Main Menu shipped in ADR-036, but Tutorial and
+Calibration-instructions-in-World were both flagged open and left unaddressed across every session
+since (ADR-029's own rationale text, restated verbatim in `SOFTWARE_ARCHITECTURE_DOCUMENT.md`).
+This closes both halves in one pass, plus the specific UX complaint (calibration locked to
+"before you ever start fishing," even though a rod's calibration can reasonably drift or need a
+redo mid-session) that prompted revisiting the area at all.
+
+`CalibrationStep` moving to `Shared` rather than duplicating an equivalent enum in World mirrors
+`HookPhase`'s own precedent — any state Rod owns that World needs to react to lives in `Shared` and
+travels over `RodState`, never a parallel local re-derivation.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` (`Shared` rebuilt
+for both `arm64-apple-ios17.0-simulator` and `arm64-apple-macosx26.0`, full `Rod`/`World` file
+lists against each) and an empirical encode test confirming the new field keeps a
+populated-`castSolution` payload comfortably under ADR-063's 512-byte one-chunk budget (436 bytes
+measured, ~76 bytes of margin). Not yet played on physical devices — in particular, the onboarding
+copy/pacing and whether recalibrating mid-session actually feels discoverable (there's no
+in-gameplay hint pointing at Rod's Calibrate button beyond the overlay that appears once
+recalibration is already underway) are unverified until tried live.
+
+------------------------------------------------------------------------
+
 # ADR-063 --- RodState Gets Short Wire Keys — Every Cast Was Silently Dropped Over BLE
 
 ## Decision
@@ -1551,6 +1637,31 @@ pulse is kept from going stale. This implements `GAMEPLAY_ARCHITECTURE_V1.md`'s
 than static fish size — a stronger fish reaches the higher bands faster and holds them longer,
 so the rhythm still communicates the fish, but through the fight's actual state.
 
+**Live-tested retune, much later: fish pull speed halved, player reel-pull speed raised 50%.**
+Reported directly as two separate feel notes: "fish pull speed rasanya terlalu kencang. kurangi
+50% di semua difficulty" (fish pull speed feels too fast, reduce 50% across all difficulty) and
+"ketika reel, jarak ikan ke tariknya terlalu pelan. tingkatkan 50% juga di semua difficulty" (when
+reeling, the distance the fish gets pulled in is too slow, increase 50% too across all difficulty)
+— two sides of the same tug-of-war math, tuned independently since they're genuinely different
+terms. `FishFightConfig.basePullSpeed` 0.7 -> **0.35**: since `fishPullSpeed = basePullSpeed * (1
++ resistance * pullSpeedResistanceMultiplier)`, halving only the base term scales the fish's pull
+speed down 50% uniformly at every resistance/tier, without touching
+`pullSpeedResistanceMultiplier` (which still differentiates tiers the same way, just against a
+lower floor). `WorldViewModel.reelSpeed` (the player-input-to-m/s multiplier in `reelHook
+(deltaTime:)`'s tug-of-war) 3.0 -> **4.5**, and its paired minimum-guaranteed floor 0.35 -> **0.525**
+— both raised by the same 50% so light reeling gets the full boost too, not only full-speed
+reeling. Both changes are difficulty-independent by construction (`basePullSpeed`'s scaling is
+multiplicative across every resistance value; `reelSpeed`/its floor never read `resistance` at
+all), so "di semua difficulty" fell out automatically from where each number lives rather than
+needing separate per-tier adjustments.
+
+**Same-day follow-up: both cut a further 25%.** Requested directly: "kurangin keduanya by 25%" —
+"both" referring back to the two values just retuned above, not a reversion of either one's
+direction. `basePullSpeed` `0.35` -> **`0.2625`**; `reelSpeed` `4.5` -> **`3.375`** and its paired
+floor `0.525` -> **`0.39375`**. Same reasoning as the pass above applies unchanged (both scale
+uniformly regardless of `resistance`), just compounded on top of the already-retuned values rather
+than the original ADR-039 defaults.
+
 ## Rationale
 
 Requested directly: "rod casting nya kurang jauh"; "ketika hook kena fish, camera langsung geser
@@ -2416,6 +2527,12 @@ captures..." Rod's `calibrationInstruction` text (unchanged from before
 this sprint) still lives on Rod, not World. This is pre-existing, not
 introduced here, and is tracked as part of the still-open "World Main
 Menu + Tutorial + Calibration instructions" gap.
+
+**Closed by ADR-064**, several windows later: `RodState.calibrationStep` now transmits live so
+World can render its own calibration guidance (`CalibrationGuidanceView`) directly, alongside a
+new onboarding flow covering the rest of the still-open "Tutorial" half of this gap. Rod's own
+`calibrationInstruction` text was left in place rather than removed (see ADR-064's own rationale)
+— this paragraph is kept as an accurate record of the gap as it stood at the time.
 
 ### Fish Interested
 

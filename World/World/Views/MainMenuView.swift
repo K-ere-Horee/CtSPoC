@@ -22,9 +22,11 @@ struct MainMenuView: View {
     let connectionState: ConnectionState
     let pairedDeviceName: String?
     let hasPairedDevice: Bool
+    let calibrationStep: CalibrationStep
     let onForgetDevice: () -> Void
     let onResetProgression: () -> Void
     let onRetryConnection: () -> Void
+    let onShowOnboarding: () -> Void
 
     private var isRodReady: Bool {
         connectionState == .ready || connectionState == .streaming
@@ -59,18 +61,27 @@ struct MainMenuView: View {
 
                 Spacer()
 
-                HStack(spacing: 8) {
-                    if isRodReady {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    } else {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(.white)
+                // Calibration guidance takes over this whole status area once Rod is connected
+                // but not yet (re)calibrated (ADR-064) — recalibration can now happen at any point
+                // after the very first pass too (relaxed to `HookPhase == .idle`, not gated to
+                // "before ever pressing Start Fishing"), so a returning player recalibrating from
+                // here sees the exact same live, step-reactive guidance.
+                if isRodReady, calibrationStep != .complete {
+                    CalibrationGuidanceView(step: calibrationStep)
+                } else {
+                    HStack(spacing: 8) {
+                        if isRodReady {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        } else {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                        }
+                        Text(statusText)
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.8))
                     }
-                    Text(statusText)
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.8))
                 }
 
                 // ADR-061: a player-facing recovery button for the Rod<->World BLE link, reported
@@ -85,6 +96,13 @@ struct MainMenuView: View {
                 }
 
                 VStack(spacing: 10) {
+                    // ADR-064: lets a returning player revisit the intro/objective/levels pages
+                    // on demand — the automatic first-launch showing (`WorldViewModel.init`) only
+                    // ever happens once.
+                    Button("How to Play", action: onShowOnboarding)
+                        .font(.caption)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.white.opacity(0.6))
                     pairedDeviceRow
                     Button("Reset Progress", role: .destructive, action: onResetProgression)
                         .font(.caption)

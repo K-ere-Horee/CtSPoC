@@ -20,7 +20,13 @@ final class WorldViewModel: ObservableObject {
     /// scene (`content`) mounted for the whole app session regardless of `screen` — only an
     /// overlay is shown/hidden — so returning to the menu and starting again doesn't reload the
     /// environment/rod rig from disk a second time.
+    ///
+    /// `.onboarding` (ADR-064) closes the "World Tutorial" gap flagged open since ADR-029/038
+    /// (`GAMEPLAY_ARCHITECTURE_V1.md`: "World owns... Tutorial, Calibration Instructions"). Shown
+    /// automatically before `.mainMenu` on a fresh install (see `hasSeenOnboarding`/`init`), and
+    /// on demand afterward via Main Menu's "How to Play" (`showOnboarding()`).
     enum Screen {
+        case onboarding
         case mainMenu
         case playing
     }
@@ -57,7 +63,14 @@ final class WorldViewModel: ObservableObject {
     /// Raised 3.6 -> 5.0 (ADR-039, "rod casting nya kurang jauh"): max-power ballistic range goes
     /// from ~13 m to ~24 m. `FishFightController.maxExpectedCastDistance` was retuned to match.
     private let castSpeed: Float = 5.0
-    private let reelSpeed: Float = 3.0
+    /// m/s-per-unit-`reelSpeed` multiplier converting Rod's normalized `0...1` reel input into the
+    /// actual hook-closing speed used by `reelHook(deltaTime:)`'s tug-of-war math. Raised 3.0 ->
+    /// 4.5 (ADR-039 retune, "ketika reel, jarak ikan ke tariknya terlalu pelan") — the reported
+    /// slowness was the player's own pull speed against the fish, not the fish's pull against the
+    /// player (`FishFightConfig.basePullSpeed`, tuned down separately in the same pass) — then cut
+    /// a further 25% -> **3.375** ("kurangin keduanya by 25%"), same follow-up pass as
+    /// `basePullSpeed`'s own further 25% cut.
+    private let reelSpeed: Float = 3.375
 
     /// Half-angle (radians) of the allowed cast cone around the camera's fixed forward direction
     /// (-Z, per `makePlayerCamera()` — the camera never rotates dynamically, so this stays a
@@ -249,6 +262,7 @@ final class WorldViewModel: ObservableObject {
         transport: TransportHost
     ) {
         self.transport = transport
+        screen = Self.hasSeenOnboarding ? .mainMenu : .onboarding
 
         transport.onStateChange = { [weak self] state in
             Task { @MainActor in
@@ -332,6 +346,30 @@ final class WorldViewModel: ObservableObject {
     /// curve without reinstalling or clearing app data by hand.
     func resetProgression() {
         fishFight.resetProgression()
+    }
+
+    // MARK: - Onboarding (ADR-064)
+
+    private static let hasSeenOnboardingKey = "world.hasSeenOnboarding"
+
+    private static var hasSeenOnboarding: Bool {
+        UserDefaults.standard.bool(forKey: hasSeenOnboardingKey)
+    }
+
+    /// Called from `OnboardingView`'s final page — persists so onboarding is never shown
+    /// automatically again (see `init`), then returns to the normal Main Menu, which itself
+    /// takes over with live calibration guidance if the rod isn't calibrated yet.
+    func completeOnboarding() {
+        UserDefaults.standard.set(true, forKey: Self.hasSeenOnboardingKey)
+        screen = .mainMenu
+    }
+
+    /// Main Menu's "How to Play" — lets a returning player revisit the intro pages on demand.
+    /// Deliberately does not touch the persisted flag or any calibration state; only reachable
+    /// from `.mainMenu` so it can't interrupt an active session.
+    func showOnboarding() {
+        guard screen == .mainMenu else { return }
+        screen = .onboarding
     }
 
     /// Called once from `ContentView`'s `RealityView` `make` closure. Subscribes to the scene's
@@ -875,8 +913,11 @@ final class WorldViewModel: ObservableObject {
             // check in `updateFight`, weak reeling against a strong fish is now a losing strategy
             // rather than a slow guaranteed win. Empty retrieves (`fishPullSpeed` is 0 with no fish)
             // behave exactly as before. Only applies outside the lift zone — inside it, the catch
-            // resolves immediately instead of continuing this tug-of-war math (see above).
-            let playerSpeed = max(0.35, rodState.reelSpeed * reelSpeed)
+            // resolves immediately instead of continuing this tug-of-war math (see above). The
+            // minimum-guaranteed floor was raised 0.35 -> 0.525 in the same retune as `reelSpeed`
+            // above, so even light reeling gets the full 50% boost, not just full-speed reeling —
+            // then cut a further 25% -> 0.39375 alongside `reelSpeed`'s own further 25% cut.
+            let playerSpeed = max(0.39375, rodState.reelSpeed * reelSpeed)
             let netSpeed = playerSpeed - fishFight.fishPullSpeed
             let step = netSpeed * deltaTime
 

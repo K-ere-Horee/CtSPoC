@@ -45,7 +45,11 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
     /// m/s the hooked fish pulls the hook away from the rod at `resistance == 0` — both while the
     /// player isn't reeling (drift) and, subtracted from the player's reel speed, while they are
     /// (so a strong fish can still gain line against weak reeling). Species/tier difficulty comes
-    /// from `pullSpeedResistanceMultiplier`, not this floor.
+    /// from `pullSpeedResistanceMultiplier`, not this floor. Halved 0.7 -> 0.35 (ADR-039 retune,
+    /// "fish pull speed rasanya terlalu kencang"), then cut a further 25% -> **0.2625** ("kurangin
+    /// keduanya by 25%") — since `fishPullSpeed` is `basePullSpeed * (1 + resistance *
+    /// pullSpeedResistanceMultiplier)`, scaling only this term keeps the reduction uniform across
+    /// every resistance/tier, without needing to also touch `pullSpeedResistanceMultiplier`.
     public var basePullSpeed: Float
     /// How strongly `resistance` scales `fishPullSpeed` on top of `basePullSpeed`:
     /// `fishPullSpeed = basePullSpeed * (1 + resistance * pullSpeedResistanceMultiplier)`. Same
@@ -120,7 +124,7 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
         baseFishPullRate: Float = 0.15,
         baseReelTensionRate: Float = 0.6,
         pullRateResistanceMultiplier: Float = 3.0,
-        basePullSpeed: Float = 0.7,
+        basePullSpeed: Float = 0.2625,
         pullSpeedResistanceMultiplier: Float = 1.8,
         escapeDistanceAllowance: Float = 6.0,
         escapeAllowanceResistancePenalty: Float = 3.5,

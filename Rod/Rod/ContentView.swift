@@ -78,7 +78,10 @@ struct ContentView: View {
                     } label: {
                         Label(calibrationButtonTitle, systemImage: "scope")
                     }
-                    .disabled(!viewModel.hasMotionSample || viewModel.isFishing)
+                    // ADR-064: recalibration is now available any time the hook itself isn't
+                    // mid-cast/fight (hookPhase == .idle), not just before ever pressing "Start
+                    // Fishing" — matches `RodViewModel.calibrateMotion()`'s own relaxed guard.
+                    .disabled(!viewModel.hasMotionSample || viewModel.hookPhase != .idle)
                 }
             }
         }
@@ -144,8 +147,10 @@ struct ContentView: View {
     /// comment) rather than casting always being live off ordinary phone motion. Disabled once
     /// `hookPhase` is neither `.idle` nor `.result` (per `HookPhase.allowsCasting` plus the
     /// ADR-061 exception that also allows arming from `.result`, doubling as World's old
-    /// "Continue Fishing" tap) or once already armed, so re-pressing mid-charge does nothing
-    /// rather than looking like a second, independent arm.
+    /// "Continue Fishing" tap), once already armed, or while mid-recalibration (ADR-064 —
+    /// recalibrating resets `profile.isComplete` to `false`, which already makes a cast attempt a
+    /// silent no-op at the interpreter level; disabling here just keeps the button's own state
+    /// honest instead of reading "Start Casting" for an attempt that can't do anything yet).
     private var startCastingButton: some View {
         Button {
             viewModel.startCasting()
@@ -155,7 +160,11 @@ struct ContentView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.large)
-        .disabled((viewModel.hookPhase != .idle && viewModel.hookPhase != .result) || viewModel.isCastingArmed)
+        .disabled(
+            (viewModel.hookPhase != .idle && viewModel.hookPhase != .result)
+                || viewModel.isCastingArmed
+                || viewModel.calibrationStep != .complete
+        )
     }
 
     private var developerDetails: some View {

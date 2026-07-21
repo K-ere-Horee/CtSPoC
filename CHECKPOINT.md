@@ -6221,3 +6221,177 @@ once the root cause was found and fixed — kept only what has lasting diagnosti
 - Not yet re-confirmed on the reporter's own two-device setup that a cast now actually reaches
   World and launches the hook — this fix directly addresses the exact byte counts captured live
   from their device, but the loop hasn't been closed with a final "it works now" from them yet.
+
+## Feature: Onboarding Flow, Live Calibration Guidance in World, Calibration Any Time Idle (ADR-064)
+
+Date: 2026-07-21.
+
+Requested directly: add an onboarding flow before the player jumps into play (game explanation,
+main goal, levels, calibration tutorial); change calibration so it's available whenever
+`HookPhase == .idle` instead of only when World is at the Main Menu; add live calibration tutorial
+text in World, including which button to press. Recorded as ADR-064 in `ARCHITECTURE_DECISIONS.md`
+— closes the "World Main Menu + Tutorial + Calibration instructions" gap flagged open since
+ADR-029/038 (Main Menu itself already closed by ADR-036; Tutorial and Calibration-in-World were
+the still-open halves).
+
+### Shared: CalibrationStep moves out of Rod
+
+- New `Shared/Sources/Shared/Models/Rod/CalibrationStep.swift`: `Codable`/`Sendable`/`Equatable`
+  enum, `.idle`/`.cast`/`.reel`/`.complete` — same cases as the `MotionCalibrationStep` it
+  replaces, which was previously a Rod-local, non-transmittable enum.
+- `Shared/Sources/Shared/Models/Rod/RodState.swift`: added `calibrationStep: CalibrationStep`
+  (short wire key `"cal"`, following ADR-063's compact-`CodingKeys` convention). Verified via a
+  standalone encode test that a populated-`castSolution` payload (the largest `RodState` gets)
+  stays comfortably under ADR-063's 512-byte one-chunk BLE budget: 436 bytes measured, ~76 bytes
+  of margin.
+
+### Rod: calibration gating relaxed, field wired through
+
+- `Rod/Rod/ViewModel/RodViewModel.swift`: removed the local `MotionCalibrationStep` enum
+  (`calibrationStep` now typed `CalibrationStep`). `calibrateMotion()` gained a `hookPhase == .idle`
+  guard (previously ungated beyond `hasMotionSample`) — this is what actually makes recalibration
+  reachable mid-session, not just a UI-level change. All three `RodState(...)` construction sites
+  (`handle(_:)`'s `.idle`-hookPhase reset, `publishState()`, `updateAction()`) now pass
+  `calibrationStep: calibrationStep`.
+- `Rod/Rod/ContentView.swift`: Calibrate toolbar button's `.disabled(...)` changed from
+  `!hasMotionSample || isFishing` to `!hasMotionSample || hookPhase != .idle`. `startCastingButton`
+  gained an additional `calibrationStep != .complete` disabled condition — not a correctness fix
+  (a cast attempt mid-recalibration already silently can't do anything, since re-entering the
+  calibration sequence sets `profile.isComplete = false`), just keeps the button's own label
+  honest now that this state is newly reachable.
+
+### World: live calibration guidance + onboarding
+
+- New `World/World/Views/CalibrationGuidanceView.swift`: per-`CalibrationStep` title/instruction
+  text plus a "Press \u{201C}<label>\u{201D} on your Rod" callout (except at `.complete`), the
+  label hand-matched to Rod's own `calibrationButtonTitle` switch so the two can't drift apart.
+- `World/World/Views/MainMenuView.swift`: gained a `calibrationStep: CalibrationStep` parameter;
+  the "press Start Fishing" status row is replaced by `CalibrationGuidanceView` whenever
+  `isRodReady && calibrationStep != .complete`. Also gained a "How to Play" button
+  (`onShowOnboarding: () -> Void`).
+- `World/World/ContentView.swift`: added a `recalibrationOverlay` (scrim + centered card, matching
+  `ResultView`'s own treatment) shown whenever `screen == .playing && hookPhase == .idle &&
+  rodState.calibrationStep != .complete` — the mid-session recalibration case the Rod-side gating
+  change just made reachable. `MainMenuView(...)` call site updated with the two new parameters.
+- New `World/World/Views/OnboardingView.swift`: three static, manually-paged screens (page-style
+  `TabView` is an iOS idiom, this is a macOS app) — Welcome/two-device explanation, Main Goal
+  (catch fish, ultimately catch Scott), Levels & Fish Tiers (real `ProgressionStore` thresholds:
+  3/5/10/1 small/medium/big/boss) — with Back/Next, a page-dot indicator, a "Skip Intro" escape
+  hatch, and a final "Let's Calibrate" button. Deliberately does not embed calibration instructions
+  itself; its completion just returns to `.mainMenu`, where `MainMenuView`'s own guidance (above)
+  takes over automatically for a first-time player.
+- `World/World/ViewModels/WorldViewModel.swift`: `Screen` gains `.onboarding`. `init` sets the
+  initial `screen` from a new persisted `world.hasSeenOnboarding` `UserDefaults` flag —
+  `.onboarding` on a fresh install, `.mainMenu` on every later launch. Added `completeOnboarding()`
+  (persists the flag, returns to `.mainMenu`) and `showOnboarding()` (Main Menu's "How to Play,"
+  guarded to only fire from `.mainMenu` so it can't interrupt an active session).
+
+### Incidental fix
+
+- `World/World/Gameplay/ProgressionStore.swift`: fixed the class doc comment, which described an
+  older 10/10, three-level progression that no longer matches the shipped 3/5/10/1, four-level
+  code — found and fixed while writing the onboarding Levels page, which needed the real numbers.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-064; appended a short "Closed by ADR-064" note to
+  ADR-029's own historical "known gap" paragraph rather than rewriting it.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added a full "Onboarding & Live Calibration Guidance
+  (ADR-064)" section; updated the World Main Menu flow diagram to include `.onboarding`; appended
+  the same "Closed by ADR-064" note to its own matching "known gap" paragraph.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-ios17.0-simulator` and an `arm64-apple-macosx26.0`
+  module (`-emit-module -emit-library`) directly from `find Sources/Shared -name "*.swift"` — no
+  errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `Rod/Rod` file list (iOS 17 simulator)
+  and the full `World/World` file list (macOS 26, including both new view files) — both exit code
+  0, no errors.
+- Standalone encode test (see above) confirming the payload-size margin empirically.
+- `git diff --check` clean.
+- Not run: any live session on physical devices. Unverified in particular: onboarding pacing/copy,
+  and whether recalibrating mid-session is actually discoverable in practice — there's no
+  in-gameplay hint pointing at Rod's Calibrate button until a recalibration is already underway.
+
+## Retune: Fish Pull Speed -50%, Player Reel-Pull Speed +50% (ADR-039 amendment)
+
+Date: 2026-07-21.
+
+Requested directly as two feel notes: "fish pull speed rasanya terlalu kencang. kurangi 50% di
+semua difficulty" and "ketika reel, jarak ikan ke tariknya terlalu pelan. tingkatkan 50% juga di
+semua difficulty." Amended ADR-039 in place (same precedent as its earlier live-tested
+corrections) rather than a new ADR — this is a pure retune of already-established, already-tunable
+values, not a new decision.
+
+### Shared: FishFightConfig
+
+- `basePullSpeed` default `0.7` -> `0.35`. Since `fishPullSpeed = basePullSpeed * (1 + resistance *
+  pullSpeedResistanceMultiplier)`, halving only the base term scales the fish's pull speed down
+  50% uniformly at every resistance/tier — `pullSpeedResistanceMultiplier` (1.8) untouched, so
+  tier differentiation is preserved, just against a lower floor.
+
+### World: WorldViewModel
+
+- `reelSpeed` (the private constant converting Rod's normalized `0...1` reel input into m/s for
+  `reelHook(deltaTime:)`'s tug-of-war) `3.0` -> `4.5`.
+- The paired minimum-guaranteed floor in the same function, `max(0.35, ...)` -> `max(0.525, ...)`
+  — raised by the same 50% so light reeling gets the full boost too, not just full-speed reeling.
+
+Both changes are difficulty-independent by construction: `basePullSpeed`'s scaling is
+multiplicative across every `resistance` value, and `reelSpeed`/its floor never read `resistance`
+at all — "di semua difficulty" fell out automatically from where each number already lived, no
+per-tier special-casing needed.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: appended a "Live-tested retune" paragraph to ADR-039's `Decision`
+  section, in place.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the `fishPullSpeed`/`basePullSpeed` paragraph's
+  stated value (`0.7` -> `0.35`) and added the `reelSpeed`/floor retune alongside it.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-ios17.0-simulator` and an `arm64-apple-macosx26.0`
+  module — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `Rod/Rod` and `World/World` file
+  lists — both exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session. Whether -50%/+50% actually lands at "feels right" (as opposed to
+  overshooting into "too easy now") is unverified until tried physically, per this project's own
+  standing caveat for every feel-tuning change.
+
+## Retune: Both Cut a Further 25% (ADR-039 amendment, same day)
+
+Date: 2026-07-21.
+
+Same-day follow-up to the -50%/+50% retune above. Requested directly: "oke kurangin keduanya by
+25%" — "both" referring back to the two values just retuned (fish pull speed, player reel-pull
+speed), not a reversal of either one's direction. Amended ADR-039 in place again, same paragraph.
+
+### Shared: FishFightConfig
+
+- `basePullSpeed` `0.35` -> `0.2625` (a further 25% cut on top of the prior 50% cut).
+
+### World: WorldViewModel
+
+- `reelSpeed` `4.5` -> `3.375`.
+- `reelHook(deltaTime:)`'s paired minimum-guaranteed floor `0.525` -> `0.39375`.
+
+Both moved by the same 25% as `basePullSpeed`, same reasoning as the prior pass: both scale
+uniformly regardless of `resistance`, so no per-tier adjustment was needed.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: appended a second "Same-day follow-up" paragraph to ADR-039's
+  `Decision` section, directly after the prior retune paragraph.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the `fishPullSpeed`/`basePullSpeed`/`reelSpeed`
+  paragraph to show both retune passes in sequence (`0.7 -> 0.35 -> 0.2625`, `3.0 -> 4.5 -> 3.375`,
+  `0.35 -> 0.525 -> 0.39375`).
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module — no errors.
+- `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session — same standing caveat as every feel-tuning change in this project.
