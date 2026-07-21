@@ -7,17 +7,18 @@ import Foundation
 import Shared
 
 /// Tracks cumulative catches per tier and derives the player's current level from them,
-/// persisting across launches the same way `FishRecordStore` does. Player-specified thresholds
-/// (ADR-037): 10 catches of the current tier's fish unlocks the next one.
+/// persisting across launches the same way `FishRecordStore` does. Actual shipped thresholds —
+/// see `thresholds` below, the source of truth (this doc comment previously described an older
+/// 10/10, three-level version that no longer matches the code; fixed while writing ADR-064's
+/// onboarding copy, which needed the real numbers):
 ///
 /// ```text
-/// Level 1 (start):        .small catchable
-/// -> 10 small caught  ->  Level 2: .medium also catchable
-/// -> 10 medium caught ->  Level 3: .big AND .boss (Scott) also catchable
+/// Level 1 (start):     .small catchable
+/// -> 3 small caught  -> Level 2: .medium also catchable
+/// -> 5 medium caught -> Level 3: .big also catchable
+/// -> 10 big caught   -> Level 4: .boss (Scott) also catchable
+/// -> 1 Scott caught  -> progressTowardNextLevel returns nil (nothing further to unlock)
 /// ```
-///
-/// Catching `.big`/`.boss` fish is tracked for future use but doesn't unlock anything further —
-/// there's no Level 4 yet.
 final class ProgressionStore {
 
     private static let storageKey = "world.progression"

@@ -11,7 +11,46 @@ to revise them.
 
 ------------------------------------------------------------------------
 
-# ADR-072 --- A Dedicated Cutscene-Only Line Stretches From the Hook to the Rod Tip
+# ADR-077 --- Cutscene Line Removed — Read as a Rigid Pole, Not a Fishing Line
+
+## Decision
+
+`cutsceneLineEntity` (ADR-076's thin cylinder connecting the hook to the live rod tip) is removed
+entirely: the property, its creation in `makeSceneEntity()`, `updateCutsceneLine(from:)`, and every
+call site (`beginCatchCutscene(from:)`, `updateCatchCutscene(deltaTime:)`, the end-of-cutscene
+cleanup, `returnToMenu()`). The hook itself (ADR-070's mouth-attachment fix) and its line-tension
+value (ADR-070's `catchCutsceneLineTension`) are untouched — only the new geometry from ADR-076 is
+reverted.
+
+## Rationale
+
+Two live screenshots in immediate succession. The first, right after ADR-076 shipped: "ini lebih ke
+tongkat ketimbang tali, pakai tali dari rod aja bisa ga" (this reads more like a stick than a line,
+can we use the rod's own line instead?) — a straight, rigid, constant-radius cylinder spanning the
+full ~2.6+ m gap read as a pole, not a flexible fishing line, exactly the risk flagged as unconfirmed
+in ADR-076's own Status section. Asked to try the actual `rod_line.usdz` rig instead; before that
+work started, a second message arrived: "tali nya hapus dulu aja deh, makin jelek pakai tali itu"
+(just remove the line for now, it looks worse with it) — superseding the "try the real rig" request
+entirely in favor of simply reverting.
+
+Not attempted as a follow-up in this pass: driving `rod_line.usdz`'s actual skinned rig to reach the
+cutscene's hook position (the original idea behind the user's first message). ADR-076 already
+documented why that's harder than a placeholder cylinder (mesh-tearing risk on a skinned asset pushed
+beyond its authored length, per this project's own asset-repo lessons) — with the feature now off
+entirely rather than mid-iteration, that work is deferred rather than pursued under pressure to
+"fix it now."
+
+## Status
+
+Accepted. Verified via `swiftc -typecheck` against `World`, `Rod`, and `Shared` (all three, since
+this reversal landed alongside an in-progress `origin/main` merge — see the matching `CHECKPOINT.md`
+entry) — exit code 0 on all three. The catch cutscene now shows the fish and the mouth-attached hook
+only, no line — matches the pre-ADR-076 visual, confirmed intentional per the second message above,
+not yet re-confirmed live.
+
+------------------------------------------------------------------------
+
+# ADR-076 --- A Dedicated Cutscene-Only Line Stretches From the Hook to the Rod Tip
 
 ## Decision
 
@@ -37,7 +76,7 @@ cutscene's framing — confirmed as the root cause of the reported missing line,
 
 ## Rationale
 
-Requested directly, immediately after the hook-placement fix (ADR-071) was confirmed close: "kalo
+Requested directly, immediately after the hook-placement fix (ADR-075) was confirmed close: "kalo
 tambahin tali pancing nya bisa ga" (can we add the fishing line?) — the screenshot showed the hook
 floating with no visible connection to anything.
 
@@ -47,7 +86,7 @@ without visibly distorting/tearing the mesh is a materially harder problem (this
 repo `AGENTS.md` §13 documents exactly this class of failure — "Animating Multiple Bone Chains" —
 for the fish rigs, and the same risk applies to any skinned asset) than drawing a fresh, purpose-built
 line for a moment that doesn't need the gameplay rig's own sag/tension behavior anyway — the cutscene
-already forces `catchCutsceneLineTension` to a fixed, constant value (ADR-070), so the mid-fight
+already forces `catchCutsceneLineTension` to a fixed, constant value (ADR-074), so the mid-fight
 rig's whole reason for being code-driven (dynamic tension response) isn't even in play here. A thin
 cylinder, stretched and oriented by simple vector math each frame, gets the same visual result
 (something connecting hook to rod) with far less risk.
@@ -64,19 +103,23 @@ cylinder reads convincingly as a fishing line at this scale/thickness, and wheth
 ~2.6+ m gap to the rod tip (rather than, say, a shorter, more stylized line) looks correct once
 actually rendered, are both unconfirmed.
 
+**Superseded by ADR-077.** The very first live look confirmed the unconfirmed risk above: a straight
+constant-radius cylinder read as a rigid pole, not a line. Removed entirely rather than iterated on
+further — see ADR-077.
+
 ------------------------------------------------------------------------
 
-# ADR-071 --- Cutscene Retuned to Exactly 5 Real Seconds; Hook Repositioned/Rescaled to the Actual Mouth
+# ADR-075 --- Cutscene Retuned to Exactly 5 Real Seconds; Hook Repositioned/Rescaled to the Actual Mouth
 
 ## Decision
 
-Direct response to a live screenshot (fish correctly vertical/broadside, "CATCH!" showing — ADR-069
+Direct response to a live screenshot (fish correctly vertical/broadside, "CATCH!" showing — ADR-073
 confirmed working) and its accompanying feedback: total real time and the hook's placement/size both
 needed fixing.
 
-**1. `catchCutsceneSettleDuration`: `1.85` -> `0.83`, targeting exactly 5 s real time.** ADR-070's
+**1. `catchCutsceneSettleDuration`: `1.85` -> `0.83`, targeting exactly 5 s real time.** ADR-074's
 `1.85` was a flat "+1.5 s" applied to the *story*-time duration, without accounting for how much the
-slow-motion dilation (ADR-066/070) multiplies that into real wall-clock time — the actual result was
+slow-motion dilation (ADR-070/074) multiplies that into real wall-clock time — the actual result was
 ~7+ s, confirmed too long ("jadiin 5 detik deh"). Solved properly this time: for a phase of story
 duration `D` using the shared ease-in/hold/ease-out dilation shape, real time is exactly `D * C`
 where `C = ∫₀¹ du/dilation(u)` is a constant depending only on `catchCutsceneSlowMotionFactor`/
@@ -89,7 +132,7 @@ peak-alignment math in `catchCutsceneFishAnimationSpeed`, which depends on those
 only the ending's dip got shorter.
 
 **2. `caughtFishHeadOffset`: `0.6` -> `1.0` -> `1.15`, sourced from the mesh's actual extent, not a
-bone position.** ADR-070's `0.6` came from the `Head` *joint's* bind-pose position — but a joint is a
+bone position.** ADR-074's `0.6` came from the `Head` *joint's* bind-pose position — but a joint is a
 skeletal pivot, not the mesh's visible extremity. The first live screenshot showed the hook sitting
 on/over the fish's eye and head, not out past the snout. Re-inspected the exact same `.usdz` for its
 `extent` attribute (the mesh's actual measured bounding box, not the skeleton): `[(-0.26, -1.00,
@@ -97,11 +140,11 @@ on/over the fish's eye and head, not out past the snout. Re-inspected the exact 
 −1.0, well past the `Head` joint's −0.6. A *second* live screenshot at `1.0` showed the hook still
 slightly short of the actual snout tip ("dikiiittt lagi" — just a little more) — nudged to `1.15`, a
 small clearance past the measured extent rather than sitting flush with it, matching the same
-"measured bound plus a small margin" pattern ADR-043 already used for the dock-clearance offset.
+"measured bound plus a small margin" pattern ADR-047 already used for the dock-clearance offset.
 
 **3. `hookEntity` now scales with the fish.** Previously fixed at its base `0.07` m radius regardless
 of the fish's own display scale (which ranges `0.35`–`1.0` depending on the rolled catch length,
-ADR-064) — on a smaller catch, a full-size hook visibly dwarfed the scaled-down head, part of the
+ADR-068) — on a smaller catch, a full-size hook visibly dwarfed the scaled-down head, part of the
 reported "masih agak broken" look. `hookEntity.scale` is now set to match `caughtFishEntity.scale` in
 `beginCatchCutscene`, and reset to `1` in `launchHook` so the next cast's hook isn't left at whatever
 scale the previous catch's cutscene set.
@@ -110,7 +153,7 @@ scale the previous catch's cutscene set.
 
 All three fixes trace directly to the same screenshot/feedback: "jadiin 5 detik deh, lalu masih aga
 broken begini bomber nya" (make it 5 seconds, and the bobber is still kind of broken like this). The
-duration fix corrects a real modeling gap in ADR-070 (conflating story-time and real-time durations)
+duration fix corrects a real modeling gap in ADR-074 (conflating story-time and real-time durations)
 rather than just picking a smaller number by feel — the derivation generalizes cleanly if the
 dilation shape constants ever change again. The hook placement/size fixes both follow this whole
 feature's established pattern of reading the asset's actual data (bind transforms for orientation,
@@ -123,14 +166,14 @@ Accepted, iterated once against a second live screenshot (`1.0` -> `1.15`) — v
 -typecheck` against the `World` target, plus the duration math independently checked by numeric
 integration (`python3`/`numpy`, not hand arithmetic) confirming the `5.0` s target exactly at the
 chosen `0.83` s settle value (see the matching `CHECKPOINT.md` entry). The orientation itself
-(vertical, broadside — ADR-069) is now screenshot-confirmed correct. Still not independently
+(vertical, broadside — ADR-073) is now screenshot-confirmed correct. Still not independently
 re-confirmed by a third screenshot: whether `1.15` lands the hook cleanly at the snout tip or needs
 another small nudge, and whether the `5.0` s total duration itself (not just its arithmetic) reads
 well once actually played.
 
 ------------------------------------------------------------------------
 
-# ADR-070 --- A Second Slow-Motion Dip Extends the Ending; Hook and Line Stay Attached to the Fish
+# ADR-074 --- A Second Slow-Motion Dip Extends the Ending; Hook and Line Stay Attached to the Fish
 
 ## Decision
 
@@ -143,7 +186,7 @@ same ease-in/hold/ease-out shape to *either* the freeze phase or the settle phas
 `elapsed` currently falls in, reusing the same `catchCutsceneSlowMotionFactor`/
 `catchCutsceneSlowMotionEaseFraction` constants for both so the two dips feel consistent. Since
 `updateCameraFollow`'s push-in and `caughtFishEntity`'s own animation speed both already derive from
-this one dilation value every frame (ADR-051/066), extending it into the settle phase automatically
+this one dilation value every frame (ADR-048/070), extending it into the settle phase automatically
 slows the ending's descent, the camera, and the fish's animation together — no separate changes
 needed anywhere else.
 
@@ -178,7 +221,7 @@ control-flow generalization, not new math.
 Attaching the hook to the fish's head rather than, say, hiding it and only showing the fish alone was
 the direct, literal ask — a hooked fish should visibly still have the hook (and by extension, a taut
 line) in it during the reveal, not float free with the tackle nowhere to be seen. `caughtFishHeadOffset`
-was derived from the same `bindTransforms` reading already used for orientation (ADR-065/069) rather
+was derived from the same `bindTransforms` reading already used for orientation (ADR-069/073) rather
 than eyeballed, keeping with this whole feature's pattern of reading the asset's actual data instead
 of guessing.
 
@@ -187,7 +230,7 @@ of guessing.
 Accepted, pending live confirmation — verified via `swiftc -typecheck` against the `World` target
 only (see the matching `CHECKPOINT.md` entry). Not yet played, and flagged explicitly: the settle
 phase's slow-motion dip roughly *multiplies* its real wall-clock length well beyond the nominal +1.5 s
-story-time extension (the same dilation-integral effect ADR-066 already produced for the freeze
+story-time extension (the same dilation-integral effect ADR-070 already produced for the freeze
 phase) — back-of-envelope, total cutscene real time is now in the region of 7+ seconds, up from ~3 s
 before this pass. Whether that reads as "a satisfying extended finish" or "too long a wait before
 `ResultView`" is exactly the kind of question only a live session can answer, and is the single
@@ -196,11 +239,11 @@ lands right at the mouth vs. slightly off) is also unconfirmed on-device.
 
 ------------------------------------------------------------------------
 
-# ADR-069 --- Caught Fish Reverts to a Fixed Vertical "Hooked and Hanging" Pose, Broadside to Camera
+# ADR-073 --- Caught Fish Reverts to a Fixed Vertical "Hooked and Hanging" Pose, Broadside to Camera
 
 ## Decision
 
-`catchCutsceneFishOrientation` (ADR-068's constant `fishOrientation(facing: [1, 0, 0])`, a fixed
+`catchCutsceneFishOrientation` (ADR-072's constant `fishOrientation(facing: [1, 0, 0])`, a fixed
 horizontal pose) is replaced with a direct rotation-matrix construction that points the fish's head
 straight up: local `-Y` (head) maps to world `+Y`, local `X` (the fish's lateral/width — its "thin"
 dimension) maps to world `-Z`, and local `Z` (dorsal) maps to a third target computed as the cross
@@ -211,7 +254,7 @@ confirming the pose is vertical as intended, and the fish's lateral axis lands a
 the fish's *thin* dimension and sees its full length/height broadside silhouette while it hangs
 vertically, not a foreshortened view.
 
-`fishOrientation(facing:)` (ADR-065/068) is not reused here — its two-step shortest-arc-plus-roll
+`fishOrientation(facing:)` (ADR-069/072) is not reused here — its two-step shortest-arc-plus-roll
 construction becomes degenerate when the facing direction is exactly world-up (the "desired up minus
 its projection onto forward" term collapses to zero, since forward and up are then the same vector),
 so it silently falls back to returning the unrolled shortest-arc rotation alone in that case. A
@@ -222,19 +265,19 @@ for now.
 
 ## Rationale
 
-Directly reverses ADR-068, one iteration after it shipped. Live feedback on ADR-068's horizontal pose:
+Directly reverses ADR-072, one iteration after it shipped. Live feedback on ADR-072's horizontal pose:
 "ikannya kaya berenang, harusnya kepala nya di [atas], vertical, skrg horizontal kaya posisi
 berenang" (the fish looks like it's swimming — the head should be up, vertical — right now it's
-horizontal like a swimming position). ADR-068's own reasoning — a fixed direction guaranteed
+horizontal like a swimming position). ADR-072's own reasoning — a fixed direction guaranteed
 perpendicular to the camera's view axis reads reliably broadside on screen — was sound and is kept
 here (the lateral-axis-to-camera-view-axis alignment is exactly the same principle, just applied to
 a vertical pose instead of a horizontal one); what was wrong was the *choice* of horizontal at all —
 a horizontal, dorsal-up pose reads as an ordinary swim cycle silhouette (which is, not coincidentally,
 literally the same body orientation this asset's `Cruise` state would already show), not a fish being
-held up by a hook through its mouth. A caught fish hanging from a line is a vertical pose; ADR-065's
+held up by a hook through its mouth. A caught fish hanging from a line is a vertical pose; ADR-069's
 original (broken) attempt at facing the rod tip was conceptually reaching for this same vertical
 "hooked" read, it just implemented it as an unpredictable, tip-position-dependent direction instead
-of a fixed one. This ADR keeps ADR-068's fix to *that* specific problem (fixed, not dynamic) while
+of a fixed one. This ADR keeps ADR-072's fix to *that* specific problem (fixed, not dynamic) while
 correcting the direction itself back to vertical.
 
 ## Status
@@ -245,15 +288,15 @@ confirm the head-up and broadside-to-camera claims numerically, not just by deri
 matching `CHECKPOINT.md` entry). Not yet played: which world direction the fish's dorsal fin/lateral
 axis specifically face (`-X`/`-Z` here, both arbitrary choices between two options once "head up,
 broadside to camera" is satisfied) is unconfirmed to look correct — same class of open question
-ADR-068 already flagged for its own axis choice, now inherited here.
+ADR-072 already flagged for its own axis choice, now inherited here.
 
 ------------------------------------------------------------------------
 
-# ADR-068 --- Caught Fish Uses a Fixed Horizontal Showcase Pose Instead of Facing the Rod
+# ADR-072 --- Caught Fish Uses a Fixed Horizontal Showcase Pose Instead of Facing the Rod
 
 ## Decision
 
-`catchCutsceneFishOrientation` (ADR-065's `catchCutsceneFishOrientation(at:)`, which computed a
+`catchCutsceneFishOrientation` (ADR-069's `catchCutsceneFishOrientation(at:)`, which computed a
 direction from the fish's current position toward `rodRig.tipEntity`'s live position every frame) is
 replaced with a constant computed property that always faces the fish's head along world `[1, 0, 0]`
 (`+X`) — reusing `fishOrientation(facing:)`'s existing two-step construction (shortest-arc head
@@ -268,7 +311,7 @@ fallback lookup that direction previously required is removed entirely — no lo
 Reported directly after a live look: "animasi ngamuk nya masih belum bener, ikannya masih normal
 vertical belum horizontal seperti kondisi ditangkep" (the raging animation still isn't right, the
 fish is still normal/vertical, not horizontal like when it's actually caught). Tracing the previous
-(ADR-065) design: the fish's fixed cutscene position (`hookLiftTargetPosition`, `[0.22, 1.95, -4.7]`,
+(ADR-069) design: the fish's fixed cutscene position (`hookLiftTargetPosition`, `[0.22, 1.95, -4.7]`,
 only its Y height varies during the jump) and the rod tip's live position both sit close to the same
 X, with the tip's actual height depending on the rod rig's current live bend (`rodState.orientation`,
 whatever the player's phone was doing last) — not a fixed, predictable relationship. Facing the fish
@@ -296,6 +339,240 @@ the fish ends up facing away from camera/off-screen instead of broadside.
 
 ------------------------------------------------------------------------
 
+# ADR-067 --- fish_catched SFX, Tension-Slacking Eased 30%, Idle-Loop Coverage Confirmed
+
+## Decision
+
+Three requests in one message.
+
+**Idle loop during `.hookInWater` — already correct, no change needed.** "Play idle music itu
+selama hook masih inWater juga, jangan langsung di stop" describes exactly what
+`WorldViewModel.tick()`'s existing `sounds.updateIdleLoop(active: screen == .playing &&
+(hookPhase == .idle || hookPhase == .hookInWater))` (ADR-065's revision) already does, and
+`FishingSounds.handlePhaseChange(_:)`'s idle safety-stop already excludes `.hookInWater` too.
+Verified both call sites directly rather than assuming; neither needed editing.
+
+**New `fish_catched.wav` plays alongside `catchSplash` on every catch.** The player supplied the
+asset directly under `World/World/Assets/SFX/`. `SoundManager.Sound` gains `.fishCatched`
+("fish_catched"), default `.wav`/`0.85` volume (the standard one-shot tier — no specific volume
+was requested this time, unlike `idle`/`reelFight`'s explicit ~30%). `FishingSounds.handle(_:)`'s
+`.catchFish` case gains `sounds.play(.fishCatched)` alongside the existing `sounds.play
+(.catchSplash)` — additive, not a replacement, matching "tambahin" (add).
+
+**Tension-slacking eased 30%.** `FishFightConfig.baseFishPullRate` (tension/sec drained by the
+fish while not actively countered — "slack" building up) `0.15 -> 0.105`.
+`pullRateResistanceMultiplier` (tier differentiation, unaffected) is untouched, matching this
+session's established pattern (`basePullSpeed` earlier) of scaling only the base term so easier
+tiers stay easier proportionally rather than compressing every tier's difficulty uniformly.
+
+## Rationale
+
+Requested directly: "play idle music itu selama hook masih inWater juga, jangan langsung di stop.
+terus, tambahin music fish_catched ketika ikan berhasil ditangkap. terus, benerin sedikit
+mekanisme fish pull nya, dengan mengurangi sedikit speed tension (maybe kurangi tension slacking
+sebesar 30%)." The first item turned out to already be satisfied by ADR-065's revision earlier the
+same day — checked the actual current source before making any change, rather than assuming a
+regression and re-editing blind.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against the
+`arm64-apple-macosx26.0` `Shared` module and the full `World/World` file list; not yet played on a
+physical device.
+
+------------------------------------------------------------------------
+
+# ADR-066 --- Cast Distance Floor Raised So Short Casts Clear the Dock
+
+## Decision
+
+`WorldViewModel.launchHook(solution:)`'s speed-vs-power formula changes from
+`castSpeed * (0.5 + power * 1.5)` to `castSpeed * (1.4 + power * 0.6)`. The `power = 1` ceiling is
+unchanged (`castSpeed * 2.0` either way, `castSpeed = 5.0` untouched) — only the `power = 0` floor
+rises, from `castSpeed * 0.5` to `castSpeed * 1.4`. Launch angle (`CastConfig.minimumLaunchAngle`/
+`maximumLaunchAngle`, 0.15-0.65 rad) and every other part of the pipeline are untouched.
+
+Verified numerically (`speed^2 * sin(2*angle) / gravity`, `gravity = 4.0`):
+
+```text
+              old formula          new formula
+power 0.00    speed 2.50, 0.46 m   speed 7.00, 3.62 m
+power 0.33    speed 4.97, 3.65 m   speed 7.99, 9.40 m
+power 0.66    speed 7.45, 11.37 m  speed 8.98, 16.51 m
+power 1.00    speed 10.00, 24.09 m speed 10.00, 24.09 m  <- unchanged
+```
+
+Since the cast meter's green/yellow/red bands are equal power thirds (0-0.33/0.33-0.66/0.66-1,
+`CastMeterView`/ADR-063's `castZone`), this reads as: the shortest green-zone cast used to land at
+0.46 m and now lands at 3.62 m; what used to be roughly yellow's distance range (3.65-11.37 m) is
+now roughly green's own range (3.62-9.40 m); red's ceiling is exactly unchanged (24.09 m) while its
+floor rose to 16.51 m, leaving 9.40-16.51 m for the new yellow band in between.
+
+## Rationale
+
+Reported directly: "jarak si cast nya, bisa di perbaiki ga? jadi kuning sekarang distancenya
+hijau, merah tetap, dan kuning yang baru itu between hijau dan merah (biar gaada lagi case cast di
+hijau tapi nembus pier kebawah)." Root cause: the dock's own measured mesh footprint extends to
+`Z = -4.5` (ADR-043's own measurement), starting from roughly the rod's held position around
+`Z = -2.1` — any hook landing closer than ~2.4 m from the rod lands *inside* the dock's solid
+geometry instead of splashing in open water beyond it, since the ballistic simulation has no
+collision awareness of the dock mesh at all. At the old floor, the bottom of the green zone
+(0.46-3.65 m) mostly fell short of that clearance; at the new floor, the entire range clears it
+with margin. Compressing the low end while holding the high end fixed (rather than, say, uniformly
+scaling the whole curve up, which would have also pushed red's ceiling past its current value,
+violating "merah tetap") was the natural way to satisfy both constraints from one parameter change.
+
+Deliberately left `CastMeterConfig` (Rod's own displayed distance *estimate* during charging,
+`shortMaximum`/`mediumMaximum`/`longMaximum` = 6/12/18) untouched — it was already documented as
+disconnected from real launch physics before this change (a decorative preview, not a measurement),
+and updating it wasn't necessary to fix the reported bug. It's now a slightly larger
+underestimate at the low end than before (was already inaccurate); revisit only if that specific
+mismatch gets reported.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against the
+`arm64-apple-macosx26.0` `Shared` module and a standalone numeric check of the projectile-range
+formula (both matched the table above). Not yet played on a physical device — in particular
+whether 3.62 m of clearance is enough margin in practice (vs. the dock's exact 2.4 m minimum) is
+unverified, and the simplified equal-launch-height range formula slightly *underestimates* true
+range here (the tip launches above `waterHeight`, adding hang time), so real clearance should be
+at least as good as calculated, not worse.
+
+------------------------------------------------------------------------
+
+# ADR-065 --- Two New SFX: Idle Ambience Loop, Fish-Fight Music Loop With Fade-Out
+
+## Decision
+
+The player supplied two new assets directly under `World/World/Assets/SFX/` (auto-bundled, no
+pbxproj entry needed, per `SoundManager`'s existing convention): `idle.wav` and `reel_fight.wav`.
+Both wired into `SoundManager.Sound` (rawValue matching the filename) at `defaultVolume: 0.3` (the
+requested ~30%) alongside the existing catalog.
+
+**`idle.wav` loops while the hook has no fish on it** — `HookPhase.idle` or `.hookInWater`, and
+`screen == .playing` — a state-specific ambient layer distinct from `ambienceLake` (the game-wide
+lake ambience, which also plays at the Main Menu per `FishingSounds.Config.ambiencePlaysInMenu`).
+`FishingSounds` gains `updateIdleLoop(active:)`, frame-driven, same pattern as the existing
+`updateReelLoop(active:)`; `WorldViewModel.tick()` computes the active condition and calls it
+every tick, since `FishingSounds` doesn't track `screen`/`hookPhase` itself. Belt-and-suspenders
+instant-stops in `handlePhaseChange(_:)` and `handleScreenChange(isPlaying:)`, mirroring the
+existing safety-stop pattern for `reelLoop`/`fishInterestedLoop`.
+
+**`reel_fight.wav` loops while a fish is actually hooked** (`HookPhase.fishOnHook`/`.reeling`),
+**fading out over 1.5s** rather than cutting instantly once the fight ends — by catch, escape, or
+line break alike. `FishingSounds` gains `updateReelFightLoop(active:)`, same frame-driven pattern,
+whose *stop* path calls a new `SoundManager.stopLoop(_:fadeDuration:)` overload
+(`AVAudioPlayer.setVolume(_:fadeDuration:)`, then an `async`-scheduled actual `.stop()` once the
+fade completes, restoring the player's volume for the next `startLoop`). The belt-and-suspenders
+safety stops in `handlePhaseChange(_:)`/`handleScreenChange(isPlaying:)` use the instant (no-fade)
+path deliberately — those cover abrupt resets ("End Fishing" mid-fight, disconnect), not the
+natural end-of-fight transition, which the frame-driven stop already fades on its own every tick.
+
+**Revision, same day: `reel_fight.wav` redefined from a star-gated flourish to fight music.**
+Originally landed (see this same ADR's first version) as a one-shot flourish for landing a 4+ star
+fish, layered on top of `catchSplash`. Reported directly, immediately after: "reel fight music
+harusnya hanya played ketika hook status nya ada fish. selama hook idle/inWater aja, play music
+idle. ketika berhasil catch fish, matikan perlahan music reel fight, dan kembali ke idle" — a
+complete redesign into a state-driven music pair (idle vs. fight), not a per-catch flourish. The
+star-based trigger (`FishFightController.lastCatchResult?.stars >= 4`) and the `bigCatch()`
+one-shot method were both removed outright, replaced by the loop/fade design described above.
+
+## Rationale
+
+Requested directly, across the original message and the same-day revision above. Both additions
+follow ADR-040's existing "World-side audio mirrors the Rod haptics router" architecture — a new
+`Sound` case plus thin `FishingSounds` methods — no new architectural pattern was needed beyond the
+fade-capable `stopLoop` overload, which is itself a narrow, backward-compatible addition (existing
+call sites default to `fadeDuration: 0`, identical to the prior instant-stop behavior).
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` against the
+`arm64-apple-macosx26.0` `Shared` module; not yet played on a physical device. Unverified in
+particular: whether 30% lands at the intended perceived loudness, whether 1.5s reads as a
+deliberate fade rather than "the music lagged," and whether the loop start/stop timing feels
+seamless at hook-phase transition boundaries.
+
+------------------------------------------------------------------------
+
+# ADR-064 --- Onboarding Flow, Live Calibration Guidance in World, Calibration Available Any Time the Hook Is Idle
+
+## Decision
+
+Three related pieces, closing the "World Main Menu + Tutorial + Calibration instructions" gap
+flagged open since ADR-029/038:
+
+**1. Calibration is available whenever `HookPhase == .idle`, not only before the first "Start
+Fishing."** Requested directly. Previously gated to `!isFishing` in practice (Rod's Calibrate
+button disabled while fishing; since `screen == .mainMenu` and `isFishing == false` are the same
+condition per ADR-038, this meant "World must be at the Main Menu"). Two changes: Rod's Calibrate
+toolbar button's `.disabled(...)` changed from `!hasMotionSample || isFishing` to
+`!hasMotionSample || hookPhase != .idle`; `RodViewModel.calibrateMotion()` itself gained the same
+guard (not just the button — this is what actually makes recalibration reachable mid-session, e.g.
+between casts, not only from the Main Menu). No changes were needed to prevent a cast firing
+mid-recalibration: re-entering the sequence already sets `motionInterpreter.profile.isComplete =
+false`, which already makes the interpreter report `.invalid` regardless of arming state until
+calibration finishes again — Rod's "Start Casting" button did gain one new disabled condition
+(`calibrationStep != .complete`) purely so its own label doesn't lie about what a press would do.
+
+**2. World renders live calibration guidance, closing the "Calibration instructions appear
+entirely in World" gap.** `MotionCalibrationStep` moves from a Rod-local enum to `Shared`'s
+`CalibrationStep` (`Codable`/`Sendable`/`Equatable`, same four cases). `RodState` gains a
+`calibrationStep: CalibrationStep` field (short wire key `"cal"`, ADR-063's convention), populated
+at all three `RodState` construction sites, transmitted continuously like every other field.
+`World/World/Views/CalibrationGuidanceView.swift` is a new reusable component — per-step
+title/instruction text plus an explicit "Press \u{201C}<label>\u{201D} on your Rod" callout, the
+label mirroring Rod's own `calibrationButtonTitle` switch so the two can't tell the player
+different things. Shown in two places, both driven by the same live `rodState.calibrationStep`:
+inline in `MainMenuView` (replacing the "press Start Fishing" status row whenever connected but
+not yet calibrated) and as a scrim+card overlay in `ContentView` (matching `ResultView`'s own
+treatment) whenever `screen == .playing && hookPhase == .idle && calibrationStep != .complete` —
+the mid-session recalibration case that item 1 just made reachable. Rod's own existing
+`calibrationInstruction`/button-label text was deliberately kept, not removed, despite the product
+doc's "Rod must not display tutorial content" framing — the player is physically holding Rod
+during each gesture and may not be looking at World's screen at that exact moment; Rod's text is
+what's literally in their hands, World's is the richer exposition layer, and both read the same
+underlying step so they can't contradict each other.
+
+**3. A new onboarding flow explains the game before the player reaches Main Menu for the first
+time.** Requested directly: an intro covering the game, main objective, levels, and a calibration
+walkthrough, shown before jumping straight into play. `WorldViewModel.Screen` gains `.onboarding`;
+`init` sets the initial `screen` from a persisted `world.hasSeenOnboarding` `UserDefaults` flag —
+`.onboarding` on a fresh install, `.mainMenu` on every later launch. `World/World/Views/
+OnboardingView.swift`: three static, manually-paged screens (Welcome/two-device explanation, Main
+Goal/catch Scott, Levels & Fish Tiers), a "Skip Intro" escape hatch, and a final "Let's Calibrate"
+button (`completeOnboarding()`) that persists the flag and returns to `.mainMenu` — where item 2's
+calibration guidance takes over automatically, since a first-time player's `calibrationStep` is
+still `.idle` at that point. A "How to Play" button on `MainMenuView` (`showOnboarding()`, only
+reachable from `.mainMenu` so it can't interrupt an active session) lets a returning player revisit
+the pages without touching the persisted flag. Onboarding deliberately does not embed calibration
+guidance itself — reusing item 2's already-built, already-live component instead of duplicating
+per-step instructional text in two places.
+
+The Levels page's copy comes from `ProgressionStore.swift`'s actual code (3 small -> unlock
+medium, 5 medium -> unlock big, 10 big -> unlock Scott, 1 Scott catch completes it), not from that
+file's own doc comment or ADR-037's original prose — both describe an older 10/10, three-level
+version that no longer matches what's shipped; fixed `ProgressionStore`'s doc comment in the same
+pass since writing accurate onboarding copy required reading the real thresholds anyway.
+
+## Rationale
+
+All three came from one request, and are genuinely one coherent change: the product doc
+(`GAMEPLAY_ARCHITECTURE_V1.md`) has said since its own first version that World owns "Main Menu,
+Tutorial, Calibration Instructions" — Main Menu shipped in ADR-036, but Tutorial and
+Calibration-instructions-in-World were both flagged open and left unaddressed across every session
+since (ADR-029's own rationale text, restated verbatim in `SOFTWARE_ARCHITECTURE_DOCUMENT.md`).
+This closes both halves in one pass, plus the specific UX complaint (calibration locked to
+"before you ever start fishing," even though a rod's calibration can reasonably drift or need a
+redo mid-session) that prompted revisiting the area at all.
+
+`CalibrationStep` moving to `Shared` rather than duplicating an equivalent enum in World mirrors
+`HookPhase`'s own precedent — any state Rod owns that World needs to react to lives in `Shared` and
+travels over `RodState`, never a parallel local re-derivation.
+
+Status: Accepted, pending live confirmation — verified via `swiftc -typecheck` (`Shared` rebuilt
+for both `arm64-apple-ios17.0-simulator` and `arm64-apple-macosx26.0`, full `Rod`/`World` file
+lists against each) and an empirical encode test confirming the new field keeps a
+populated-`castSolution` payload comfortably under ADR-063's 512-byte one-chunk budget (436 bytes
+measured, ~76 bytes of margin). Not yet played on physical devices — in particular, the onboarding
+copy/pacing and whether recalibrating mid-session actually feels discoverable (there's no
+in-gameplay hint pointing at Rod's Calibrate button beyond the overlay that appears once
+recalibration is already underway) are unverified until tried live.
 # ADR-063 --- RodState Gets Short Wire Keys — Every Cast Was Silently Dropped Over BLE
 
 ## Decision
@@ -1198,23 +1475,23 @@ Status: Accepted, pending live confirmation — verified via `swiftc -typecheck`
 `World` (macOS) and `Rod` (iOS simulator) targets (see the matching `CHECKPOINT.md` entry), not yet
 played with two physical devices.
 
-# ADR-067 --- New "Caught" Clip Integrated; Animation Speed Derived to Center Its Peak in the Slow-Motion Dip
+# ADR-071 --- New "Caught" Clip Integrated; Animation Speed Derived to Center Its Peak in the Slow-Motion Dip
 
 ## Decision
 
-The Blender-side handoff (ADR-066's own follow-up, `new-blender-project/FishAssets/
+The Blender-side handoff (ADR-070's own follow-up, `new-blender-project/FishAssets/
 APP_TEAM_HANDOFF_CAUGHT_STRUGGLE.md`) delivered a re-authored `Caught` clip for
 `Fish06_MekongGiantCatfish` — same model/rig (confirmed byte-identical `bindTransforms` to the
 previous file: same 11-joint hierarchy, same local axes, same `upAxis = "Z"`), only the animation
 itself replaced with a genuinely more violent thrash/arch/ease structure, per that handoff's spec.
-Copied into `World/World/Assets/FishCaught/mekong_catfish_caught.usdz` (overwriting the ADR-064
+Copied into `World/World/Assets/FishCaught/mekong_catfish_caught.usdz` (overwriting the ADR-068
 file), `shasum -a 256`-verified identical to the source repo's copy.
 
 **`catchCutsceneFishAnimationSpeed` changed from a hardcoded `1.4` constant to a computed property**,
 derived so the new clip's single most dramatic beat (a full-body arch at frame 44 of a 90-frame/24fps
 clip, ≈1.83 s in — `caughtFishAnimationPeakTime`) lands exactly at the freeze phase's story-time
 midpoint (`catchCutsceneRiseDuration + catchCutsceneFreezeDuration / 2`) — the deepest, most
-sustained point of ADR-066's slow-motion dip, by construction, regardless of the dip's specific
+sustained point of ADR-070's slow-motion dip, by construction, regardless of the dip's specific
 `catchCutsceneSlowMotionFactor`/`catchCutsceneSlowMotionEaseFraction` shape (a symmetric envelope's
 center is always its deepest point). At the current rise/freeze durations (0.35 s / 0.9 s), this
 computes to `1.83 / (0.35 + 0.45) = 2.2875`.
@@ -1235,7 +1512,7 @@ landed (frame 44, ≈1.83 s, ≈49% through — deliberately centered in the cli
 handoff's own spec). Rather than picking a new speed by feel, the relationship between playback speed
 and where the peak lands in *story* time was derived directly:
 
-Both `cutscene.elapsed`'s advancement (`deltaTime * dilation`, ADR-066) and the animation
+Both `cutscene.elapsed`'s advancement (`deltaTime * dilation`, ADR-070) and the animation
 controller's own `.speed` (`catchCutsceneFishAnimationSpeed * dilation`) are scaled by the *identical*
 per-frame dilation value each tick. Clip-time consumed per unit of *real* time is
 `catchCutsceneFishAnimationSpeed * dilation`; story-time consumed per unit of real time is `dilation`.
@@ -1249,7 +1526,7 @@ curve — and why the resulting formula doesn't need to reference `catchCutscene
 Making this a computed property rather than re-solving the arithmetic by hand and hardcoding the
 result was deliberate: a future retune of `catchCutsceneRiseDuration`/`catchCutsceneFreezeDuration`
 (or another new clip with a different peak time) automatically keeps the peak centered without
-anyone needing to remember to redo this specific calculation — the previous approach (ADR-065's
+anyone needing to remember to redo this specific calculation — the previous approach (ADR-069's
 hardcoded `1.4`, picked for a different reason entirely — compensating for the *old* clip's
 deliberately gentle authored tempo) had no such self-correcting property and was already stale the
 moment the underlying clip changed.
@@ -1260,7 +1537,7 @@ give the peak time to arrive naturally. Rejected because the real wall-clock cos
 duration is amplified by the slow-motion dilation itself — a back-of-envelope estimate put total
 cutscene length at roughly 8+ seconds for a freeze duration that would land the peak at 1.0x speed,
 which is not viable for a moment that repeats on every single catch. Raising playback speed instead
-keeps total cutscene length at roughly the same ~3 s ADR-066 already established.
+keeps total cutscene length at roughly the same ~3 s ADR-070 already established.
 
 ## Status
 
@@ -1275,7 +1552,7 @@ speed necessarily looks good.
 
 ------------------------------------------------------------------------
 
-# ADR-066 --- Catch Cutscene Gains an In-Code Slow-Motion Envelope During the Freeze Phase
+# ADR-070 --- Catch Cutscene Gains an In-Code Slow-Motion Envelope During the Freeze Phase
 
 ## Decision
 
@@ -1325,7 +1602,7 @@ a hard speed discontinuity right at a phase boundary would read as a stutter, no
 slow-motion effect.
 
 Retargeting `caughtFishAnimationController.speed` every frame (rather than only at
-`beginCatchCutscene`, as ADR-065 originally did) was necessary specifically because the whole point
+`beginCatchCutscene`, as ADR-069 originally did) was necessary specifically because the whole point
 of this ADR is that the fish's own struggle visibly slows down too — leaving the animation at a fixed
 `1.4`x throughout while the world-space motion and camera slowed around it would have made the two
 visibly disagree (a slow-drifting fish still flapping at normal-ish speed), undermining the "genuine
@@ -1341,11 +1618,11 @@ long a wait before `ResultView` appears is an open question a live session would
 
 ------------------------------------------------------------------------
 
-# ADR-065 --- Caught Fish Orients to Face the Rod, and Plays Its Struggle Clip Faster
+# ADR-069 --- Caught Fish Orients to Face the Rod, and Plays Its Struggle Clip Faster
 
 ## Decision
 
-Two fixes to `caughtFishEntity` (ADR-064), both reported directly after the first live look at the
+Two fixes to `caughtFishEntity` (ADR-068), both reported directly after the first live look at the
 cutscene: "ikannya masih make animasi preview, kurang cocok, harusnya animasi ikan ngamuk ketika
 ditangkep, ngepak ngepak dan orientasi nya ngikuti arah pancing" (the fish still reads like it's
 using the preview animation — it should look like it's thrashing/struggling on the line, flapping,
@@ -1420,7 +1697,7 @@ first-pass choices pending a second live look.
 
 ------------------------------------------------------------------------
 
-# ADR-064 --- Catch Cutscene Plays a Real Animated Fish, One Species Only, Scaled to the Rolled Catch Length
+# ADR-068 --- Catch Cutscene Plays a Real Animated Fish, One Species Only, Scaled to the Rolled Catch Length
 
 ## Decision
 
@@ -1526,7 +1803,6 @@ none) are all unverified on-device. The CC-BY attribution gap above is a known, 
 an oversight.
 
 ------------------------------------------------------------------------
-
 # ADR-048 --- Catch Cutscene Gains Letterboxing, a Camera Push-In, and a Title Flourish
 
 ## Decision
@@ -2161,6 +2437,68 @@ pulse is kept from going stale. This implements `GAMEPLAY_ARCHITECTURE_V1.md`'s
 "resistance through rhythm as well as intensity" haptic spec, driven by live tension rather
 than static fish size — a stronger fish reaches the higher bands faster and holds them longer,
 so the rhythm still communicates the fish, but through the fight's actual state.
+
+**Live-tested retune, much later: fish pull speed halved, player reel-pull speed raised 50%.**
+Reported directly as two separate feel notes: "fish pull speed rasanya terlalu kencang. kurangi
+50% di semua difficulty" (fish pull speed feels too fast, reduce 50% across all difficulty) and
+"ketika reel, jarak ikan ke tariknya terlalu pelan. tingkatkan 50% juga di semua difficulty" (when
+reeling, the distance the fish gets pulled in is too slow, increase 50% too across all difficulty)
+— two sides of the same tug-of-war math, tuned independently since they're genuinely different
+terms. `FishFightConfig.basePullSpeed` 0.7 -> **0.35**: since `fishPullSpeed = basePullSpeed * (1
++ resistance * pullSpeedResistanceMultiplier)`, halving only the base term scales the fish's pull
+speed down 50% uniformly at every resistance/tier, without touching
+`pullSpeedResistanceMultiplier` (which still differentiates tiers the same way, just against a
+lower floor). `WorldViewModel.reelSpeed` (the player-input-to-m/s multiplier in `reelHook
+(deltaTime:)`'s tug-of-war) 3.0 -> **4.5**, and its paired minimum-guaranteed floor 0.35 -> **0.525**
+— both raised by the same 50% so light reeling gets the full boost too, not only full-speed
+reeling. Both changes are difficulty-independent by construction (`basePullSpeed`'s scaling is
+multiplicative across every resistance value; `reelSpeed`/its floor never read `resistance` at
+all), so "di semua difficulty" fell out automatically from where each number lives rather than
+needing separate per-tier adjustments.
+
+**Same-day follow-up: both cut a further 25%.** Requested directly: "kurangin keduanya by 25%" —
+"both" referring back to the two values just retuned above, not a reversion of either one's
+direction. `basePullSpeed` `0.35` -> **`0.2625`**; `reelSpeed` `4.5` -> **`3.375`** and its paired
+floor `0.525` -> **`0.39375`**. Same reasoning as the pass above applies unchanged (both scale
+uniformly regardless of `resistance`), just compounded on top of the already-retuned values rather
+than the original ADR-039 defaults.
+
+**Same-day follow-up: fight-direction penalty eased, reel-in speed made tension-scaled
+risk/reward.** Two related requests: "kurangin pull dari state ketika 'Fish Pulling' terjadi" and
+"balance pull nya dengan cara: ketika hijau, 1 rotasi reel misalnya narik 0.5m/s, dan ketika ke
+merah reel distance nya naik jadi 1m/s gitu, jadi ada reward untuk player yang berani stay di red
+zone."
+
+*Fight-direction penalty halved.* "Fish pulling" is `LineTensionView`'s own label for the
+left/right juking sub-phase (ADR-053) — shown whenever `fightDirection != nil`. `FishFightConfig.
+fightDirectionPenalty` (the tension/sec penalty applied while not correctly countering the fish's
+current juke direction) `0.20` -> **`0.10`**. `fightDirectionCounterRelief` (the reward for
+countering correctly) is unchanged — only the punishment side was eased. No explicit percentage
+was given for this one; halved to match this session's own established retune magnitude, flagged
+as a first guess pending live feedback.
+
+*Reel-in speed now scales with tension, rewarding holding the danger zone.* Previously a flat
+`WorldViewModel.reelSpeed` constant multiplied every reel input regardless of `lineTension`. Now
+`FishFightController` gains a `reelPullSpeed` computed property: `config.reelPullSpeedSafe` (0.5
+m/s per full reel input) while `lineTension` is at/below `config.reelSpeedSafeTension` (0.7 —
+matches `LineTensionView`'s own `safeHigh`, the green zone's upper edge, though the two constants
+aren't code-shared, just numerically aligned), linearly interpolating up to
+`config.reelPullSpeedDanger` (1.0 m/s) once `lineTension` reaches `config.reelSpeedDangerTension`
+(0.85 — matches `LineTensionView`'s `dangerHigh`, the near-snap red edge). `WorldViewModel.
+reelHook(deltaTime:)` reads this in place of the flat constant **only while a fish is actually
+hooked** — `pullSpeedPerUnit = fishFight.hasFishOnHook ? fishFight.reelPullSpeed : reelSpeed`, so
+empty-line retrieves (no tension to manage) keep the old flat `reelSpeed` (3.375) unaffected. The
+minimum-guaranteed floor also dropped to a flat `0.1` (from `0.39375`), since the new 0.5-1.0 m/s
+range is itself much smaller than the old flat constant's 3.375 m/s ceiling — the old floor would
+have dominated almost the entire new range otherwise.
+
+**Same-day follow-up #2: 0.5/1.0 m/s was unplayably slow — retuned to 2.0/4.0 m/s.** Reported
+directly, immediately after trying it: "fish reel speed nya kekecilan, the gameplay is not even
+playable now. coba base nya 2 m/s instead of 0.5 - 1. dan dari 2 m/s di area green, naik jadi 4
+m/s di area merah." `reelPullSpeedSafe` `0.5 -> 2.0`, `reelPullSpeedDanger` `1.0 -> 4.0` — same 2x
+safe-to-danger ratio, both explicit numbers from the request. The interpolation thresholds
+(`reelSpeedSafeTension`/`reelSpeedDangerTension`, 0.7/0.85) are untouched; only the two speed
+endpoints moved.
 
 ## Rationale
 
@@ -3027,6 +3365,12 @@ captures..." Rod's `calibrationInstruction` text (unchanged from before
 this sprint) still lives on Rod, not World. This is pre-existing, not
 introduced here, and is tracked as part of the still-open "World Main
 Menu + Tutorial + Calibration instructions" gap.
+
+**Closed by ADR-064**, several windows later: `RodState.calibrationStep` now transmits live so
+World can render its own calibration guidance (`CalibrationGuidanceView`) directly, alongside a
+new onboarding flow covering the rest of the still-open "Tutorial" half of this gap. Rod's own
+`calibrationInstruction` text was left in place rather than removed (see ADR-064's own rationale)
+— this paragraph is kept as an accurate record of the gap as it stood at the time.
 
 ### Fish Interested
 

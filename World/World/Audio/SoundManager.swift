@@ -29,6 +29,16 @@ final class SoundManager {
         case reelLoop = "reel_loop"
         case catchSplash = "catch_splash"
         case ambienceLake = "ambience_lake"
+        /// Loops while the hook has no fish on it (`HookPhase.idle`/`.hookInWater`) — see
+        /// `FishingSounds.updateIdleLoop(active:)`.
+        case idle = "idle"
+        /// Loops while a fish is actually hooked (`HookPhase.fishOnHook`/`.reeling`), fading out
+        /// (not cutting instantly) once the fight ends — see
+        /// `FishingSounds.updateReelFightLoop(active:)`.
+        case reelFight = "reel_fight"
+        /// One-shot, alongside (not replacing) `catchSplash`, the moment a fish is landed — see
+        /// `FishingSounds.handle(_:)`'s `.catchFish` case.
+        case fishCatched = "fish_catched"
 
         var category: Category {
             switch self {
@@ -46,6 +56,7 @@ final class SoundManager {
             switch self {
             case .ambienceLake: return 0.35
             case .fishInterestedLoop, .reelLoop: return 0.5
+            case .idle, .reelFight: return 0.3
             default: return 0.85
             }
         }
@@ -105,10 +116,25 @@ final class SoundManager {
         player.play()
     }
 
-    func stopLoop(_ sound: Sound) {
+    /// `fadeDuration` (seconds) > 0 ramps the volume down smoothly before actually stopping,
+    /// instead of cutting the loop instantly — used for `reelFight`, which should fade out rather
+    /// than abruptly cut off the instant a fight ends. The player's volume is restored to its
+    /// normal effective volume once stopped, so the next `startLoop` isn't silently silent.
+    func stopLoop(_ sound: Sound, fadeDuration: TimeInterval = 0) {
         guard let player = players[sound], player.isPlaying else { return }
-        player.stop()
-        player.currentTime = 0
+        guard fadeDuration > 0 else {
+            player.stop()
+            player.currentTime = 0
+            return
+        }
+        let restoreVolume = effectiveVolume(for: sound)
+        player.setVolume(0, fadeDuration: fadeDuration)
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(fadeDuration))
+            player.stop()
+            player.currentTime = 0
+            player.volume = restoreVolume
+        }
     }
 
     func stopAllLoops() {

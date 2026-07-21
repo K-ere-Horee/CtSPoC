@@ -253,9 +253,11 @@ the settle back into the water its own dramatic pause rather than cutting
 straight from the peak hold to the result screen. Total cutscene length is
 tuned to a fixed 5 seconds, real time, catch to result. The hook stays
 visibly attached at the fish's mouth throughout the whole cutscene, sized to
-match the fish itself, with a visible line stretching from it back to the
-held rod, instead of the fish appearing to float free the moment it takes
-over.
+match the fish itself, instead of the fish appearing to float free the
+moment it takes over. A placeholder line connecting the hook back to the
+rod was tried and removed after a live look — a plain straight cylinder
+read as a rigid pole, not a fishing line; the cutscene currently shows no
+line at all, a known gap pending a better approach.
 
 ## Catch Result and Continue
 
