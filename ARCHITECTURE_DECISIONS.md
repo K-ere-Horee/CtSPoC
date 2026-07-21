@@ -2992,7 +2992,7 @@ Status: Accepted
 
 ------------------------------------------------------------------------
 
-# ADR-030 --- World Explicitly Authors the First-Person Camera
+# ADR-058 --- World Explicitly Authors the First-Person Camera
 
 ## Decision
 
@@ -3019,7 +3019,7 @@ Status: Accepted
 
 ------------------------------------------------------------------------
 
-# ADR-031 --- Transport Delivery Mode Matches Message Freshness, Not a Blanket Default
+# ADR-059 --- Transport Delivery Mode Matches Message Freshness, Not a Blanket Default
 
 ## Decision
 

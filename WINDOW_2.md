@@ -151,10 +151,10 @@ guess, not a tuned value.
 
 ## Known issues, carried over or newly flagged
 
-- **ADR-030/031 numbering collision** (flagged in `Archive/WINDOW_1.md`, still unfixed): two
-  unrelated ADR-030s and two unrelated ADR-031s exist in `ARCHITECTURE_DECISIONS.md` from
-  different branches merged long ago. Cheap to fix (pure renumbering), flagged repeatedly across
-  multiple windows now, still not done.
+- ~~**ADR-030/031 numbering collision**~~ **RESOLVED 2026-07-21.** The merge-introduced pair
+  (camera authoring, transport delivery mode) was renumbered to ADR-058/059; the gameplay-
+  progression pair (Resistance/Cast Distance) kept 030/031 unchanged. See `CHECKPOINT.md`'s
+  "Documentation Fix: ADR-030/031 Numbering Collision Resolved" entry for the full reasoning.
 - **`FishCatalog.swift`'s tier resistance values have kept moving** past what this session last
   set. Current values as of this writing: `fish_a` 0.35, `fish_b` 0.50, `fish_c` 0.65, `scott`
   0.70 — check the file directly rather than trusting any ADR's stated numbers, since this has
@@ -179,8 +179,7 @@ guess, not a tuned value.
 3. If the fight-direction mechanic (ADR-053) gets played: the roll threshold
    (`fightDirectionRollThreshold`, 0.15 rad) and the relief/penalty magnitudes are pure guesses —
    check whether countering the fish's pull actually reads as achievable/rewarding.
-4. The ADR-030/031 numbering collision above — still cheap, still not done, now flagged in a
-   third handoff document.
+4. ~~The ADR-030/031 numbering collision~~ — done, see the known-issues section above.
 5. `MIGRATION_transport_to_corebluetooth.md`'s own Wi-Fi-off acceptance criteria (from way back,
    ADR-035) have still never been checked, per every prior window's own notes. Worth doing before
    trusting the transport layer beyond "it typechecks."

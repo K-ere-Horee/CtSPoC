@@ -5875,3 +5875,51 @@ every cross-reference, documented in its own dated entry earlier in this file).
 
 No verification needed beyond confirming the file exists and reads correctly — pure documentation,
 no code path affected.
+
+## Documentation Fix: ADR-030/031 Numbering Collision Resolved (-> ADR-058/059)
+
+Date: 2026-07-21.
+
+Requested directly: "Beresin dulu known issue under WINDOW_2.md nya" (fix the known issue flagged
+in `WINDOW_2.md` first). Picked the ADR-030/031 numbering collision — flagged repeatedly across
+`Archive/WINDOW_1.md`, `WINDOW_2.md`, and multiple earlier `CHECKPOINT.md` entries (e.g. the
+"Documentation Cleanup" entry around line 4601) as cheap but never actually done.
+
+### Which pair moved, and why
+
+Two independent ADR-030s and two independent ADR-031s existed in `ARCHITECTURE_DECISIONS.md`:
+
+- **Gameplay-progression set (kept as-is):** ADR-030 "Resistance Scales With Rolled Size, Not Just
+  Species" and ADR-031 "Cast Distance, Fight Distance, and Search-Phase Reel State Fixes." Both sit
+  inside the tight, continuous ADR-029 -> ADR-057 chronological sequence and are cross-referenced by
+  several later entries (ADR-042's own text, `SOFTWARE_ARCHITECTURE_DOCUMENT.md`,
+  `FishFightConfig.swift`'s doc comment) — renumbering these would have touched far more call sites
+  than the alternative below, for no benefit.
+- **Merge-introduced set (renumbered):** ADR-030 "World Explicitly Authors the First-Person Camera"
+  and ADR-031 "Transport Delivery Mode Matches Message Freshness, Not a Blanket Default." Per this
+  file's own "Merge: `feat/asset-integration` synced onto `origin/main`" entry, the camera decision
+  started life as ADR-016 and got stamped "one past the highest existing number" during that merge
+  (029 at the time) without anticipating the gameplay track would later reach 029 -> 030 -> 031 on
+  its own. The transport-delivery decision was numbered the same way at a separate point. Renamed
+  in place to **ADR-058** and **ADR-059** (one past the current highest, 057) — same pattern this
+  project already used for the ADR-044 collision (renumbered to 049-052, see the "Merge origin/main
+  into dev" entry above).
+
+### Changes
+
+- `ARCHITECTURE_DECISIONS.md`: renamed the two headers in place; decision/rationale text untouched.
+  Checked both full entries for internal cross-references to their own old numbers — found none;
+  both only ever referenced `CHECKPOINT.md` by section title, never by ADR number.
+- Grepped every "ADR-030"/"ADR-031" hit repo-wide before touching anything: all remaining mentions
+  in `ARCHITECTURE_DECISIONS.md`, `SOFTWARE_ARCHITECTURE_DOCUMENT.md`, and `FishFightConfig.swift`
+  resolved to the surviving gameplay pair (Resistance/Cast Distance), so none needed updating.
+- Left the historical "Merge: `feat/asset-integration`..." entry's own narrative (the ADR-016 -> 030
+  rename story) untouched — it's an accurate record of what happened at that point in time, not a
+  live cross-reference; rewriting "renumbered as ADR-030 (one past the highest existing number, 029)"
+  to say 058 would misstate the actual history.
+- `WINDOW_2.md`: marked the known-issue line resolved, pointing back to this entry.
+
+### Verification
+
+- `git diff --check` clean.
+- Pure documentation — no Swift, Xcode project, or asset changes; nothing to typecheck.
