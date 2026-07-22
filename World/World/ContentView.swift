@@ -148,9 +148,7 @@ struct ContentView: View {
             Group {
                 LineTensionView(
                     isFighting: fishFight.hasFishOnHook,
-                    tension: fishFight.lineTension,
-                    isQTEActive: fishFight.isQTEActive,
-                    qteProgress: fishFight.qteProgress
+                    tension: fishFight.lineTension
                 )
 
                 BiteAlertView(

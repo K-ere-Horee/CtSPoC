@@ -72,24 +72,12 @@ final class HapticManager {
         playTransient(intensity: 1.0, sharpness: 0.2)
     }
 
-    /// A sharp, fast double-tap alerting the player to flick now (ADR-078's QTE mechanic) —
-    /// deliberately quicker and crisper than `fishBite()`'s slower 4-pulse pattern (0.18s+ between
-    /// taps) so the two can't be confused: this needs to read as "act immediately," not "something
-    /// happened."
-    func qtePrompt() {
-        playPattern([
-            (1.0, 0.85, 0),
-            (1.0, 0.85, 0.08)
-        ])
-    }
-
     /// The single most insistent pattern Rod has (ADR-088, "haptics nya gedein, jadi user tau
     /// kalo hook nya lagi digigit ikan") — a fish is testing the bait *right now* and the player
     /// has a short window to flick the rod forward before this attempt is lost. Five sharp,
-    /// tightly-spaced pulses at maximum sharpness, deliberately bigger/faster than both
-    /// `fishBite()` (a softer, slower 4-pulse *confirmation* once the hook is actually set) and
-    /// `qtePrompt()` (a quick double-tap for a routine mid-fight reaction) — this one needs to be
-    /// impossible to miss.
+    /// tightly-spaced pulses at maximum sharpness, deliberately bigger/faster than `fishBite()`
+    /// (a softer, slower 4-pulse *confirmation* once the hook is actually set) — this one needs
+    /// to be impossible to miss.
     func biteAlert() {
         playPattern([
             (1.0, 1.0, 0),

@@ -6,9 +6,9 @@
 import SwiftUI
 
 /// Shown while a bite window is open (ADR-088), before the fish is actually hooked — the visual
-/// half of "haptics nya gedein, jadi user tau kalo hook nya lagi digigit ikan," mirroring
-/// `LineTensionView`'s own QTE banner (same shrinking-progress-bar treatment) but for the
-/// pre-hook attempt instead of a mid-fight prompt.
+/// half of "haptics nya gedein, jadi user tau kalo hook nya lagi digigit ikan." The only timed
+/// prompt left in the fishing loop after ADR-089 removed the mid-fight QTE prompt/reaction window
+/// (flicking during an actual fight is now always meaningful, no prompt to show a banner for).
 struct BiteAlertView: View {
     let isActive: Bool
     /// `1.0` right when a bite window opens, ticking down to `0.0` as `FishFightConfig.
