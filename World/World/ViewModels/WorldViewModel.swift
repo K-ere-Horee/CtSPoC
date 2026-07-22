@@ -720,10 +720,13 @@ final class WorldViewModel: ObservableObject {
             switch fishFight.updateSearching(deltaTime: deltaTime) {
             case .interested:
                 emit(.fishInterested)
-            case .bite:
-                setHookPhase(.fishOnHook)
-                ensureFightDistance()
-                emit(.fishBite)
+            case .biteAlert:
+                // ADR-088: a bite window just opened — Rod plays a strong haptic and starts
+                // listening for the same forward-flick gesture as a cast release. Hooking itself
+                // happens in `handle(_:)`'s `.hookSet` case, not here.
+                emit(.biteAlert)
+            case .gaveUp:
+                emit(.fishGaveUp)
             case nil:
                 break
             }
@@ -1333,6 +1336,15 @@ final class WorldViewModel: ObservableObject {
             // other case flows World -> Rod. A no-op whenever no QTE prompt is currently active,
             // per `FishFightController.handleQTEFlick()`'s own guard.
             fishFight.handleQTEFlick()
+        case .fishingEvent(.hookSet):
+            // ADR-088: Rod reported a forward flick during an active bite window. A no-op if no
+            // window is currently open, per `handleHookSetFlick()`'s own guard — mirrors the
+            // `.qteFlick` handling above exactly.
+            if fishFight.handleHookSetFlick() {
+                setHookPhase(.fishOnHook)
+                ensureFightDistance()
+                emit(.fishBite)
+            }
         default:
             break
         }

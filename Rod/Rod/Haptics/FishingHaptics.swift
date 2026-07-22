@@ -98,6 +98,25 @@ final class FishingHaptics {
             // Rod -> World only; Rod itself never receives this case. Exhaustive switch requires
             // a branch anyway.
             break
+        case .biteAlert:
+            // ADR-088: a fish is testing the bait *right now* — the player has
+            // `FishFightConfig.biteWindowDuration` to flick the rod forward and actually set the
+            // hook, or this attempt is lost. Deliberately the strongest/most insistent pattern
+            // Rod has (`haptics.biteAlert()`), distinct from both `fishBite()`'s softer 4-pulse
+            // confirmation (now only played once the hook is actually set) and `qtePrompt()`'s
+            // quick double-tap (a mid-fight reaction cue, not "the moment of truth").
+            isFishInterested = false
+            haptics.biteAlert()
+        case .hookSet:
+            // Rod -> World only; Rod itself never receives this case. Exhaustive switch requires
+            // a branch anyway.
+            break
+        case .fishGaveUp:
+            // ADR-088: every bite-alert attempt was missed and the fish swam off. A soft,
+            // deflating cue — distinct from `fishEscaped()` (a hooked fish getting away mid-fight
+            // is a bigger, different kind of loss) — so the player isn't left with no feedback at
+            // all after the tension of `biteAlert()`.
+            haptics.fishGaveUp()
         }
     }
 

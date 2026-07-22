@@ -38,8 +38,13 @@ final class FishFightController: ObservableObject {
     enum SearchEvent {
         /// A fish became interested but hasn't bitten yet.
         case interested
-        /// A fish just bit; `hasFishOnHook` is now `true`.
-        case bite
+        /// A bite window just opened (ADR-088) — the player must flick the rod forward within
+        /// `FishFightConfig.biteWindowDuration` (`handleHookSetFlick()`) to actually hook the fish.
+        /// `hasFishOnHook` is still `false` at this point.
+        case biteAlert
+        /// The fish gave up after `FishFightConfig.maxBiteAttempts` missed bite windows and swam
+        /// off without ever being hooked; searching resumes as if it never bit.
+        case gaveUp
     }
 
     @Published private(set) var hasFishOnHook = false
@@ -56,6 +61,15 @@ final class FishFightController: ObservableObject {
     /// A fish is nearby and interested but hasn't bitten. World may show a
     /// subtle cue; Rod plays a slow periodic haptic while this is `true`.
     @Published private(set) var isFishInterested = false
+    /// Whether a bite-alert window is currently open (ADR-088) — the player has
+    /// `biteWindowProgress` (ticking `1.0 -> 0.0`) seconds left to flick the rod forward
+    /// (`handleHookSetFlick()`) before this attempt counts as missed. `hasFishOnHook` is still
+    /// `false` while this is `true`.
+    @Published private(set) var isBiteWindowActive = false
+    /// `1.0` the instant a bite window opens, ticking down to `0.0` as `biteWindowDuration`
+    /// elapses — same normalized-progress convention as `qteProgress`. Meaningless while
+    /// `!isBiteWindowActive`.
+    @Published private(set) var biteWindowProgress: Float = 0
     /// 0 (slack, fish escapes) ... 1 (snaps). Starts at `initialTension`
     /// when a fish bites, so the player has a buffer in both directions.
     @Published private(set) var lineTension: Float = 0
@@ -90,6 +104,12 @@ final class FishFightController: ObservableObject {
 
     private var interestTimer = Float.random(in: 0.8...2.0)
     private var biteTimer: Float = 0
+    /// Seconds left in the current bite window — counts down in `updateSearching` whenever
+    /// `isBiteWindowActive`. Reaching 0 resolves this attempt as a miss.
+    private var biteWindowTimer: Float = 0
+    /// How many bite windows this fish has already missed (0...`maxBiteAttempts`). Resets to 0
+    /// whenever a fish is newly hooked or gives up.
+    private var biteAttemptsUsed = 0
     private var currentSpecies: FishSpecies?
     private var currentWeight: Double = 0
     private var currentLength: Double = 0
@@ -145,6 +165,10 @@ final class FishFightController: ObservableObject {
     func resetForNewCast(castDistance: Float = 0) {
         hasFishOnHook = false
         isFishInterested = false
+        isBiteWindowActive = false
+        biteWindowProgress = 0
+        biteWindowTimer = 0
+        biteAttemptsUsed = 0
         currentSpecies = nil
         lineTension = 0
         interestTimer = Float.random(in: 0.8...2.0)
@@ -163,6 +187,25 @@ final class FishFightController: ObservableObject {
     func updateSearching(deltaTime: Float) -> SearchEvent? {
         guard !hasFishOnHook else { return nil }
 
+        if isBiteWindowActive {
+            biteWindowTimer -= deltaTime
+            biteWindowProgress = max(0, biteWindowTimer / config.biteWindowDuration)
+            guard biteWindowTimer <= 0 else { return nil }
+
+            // Missed this attempt — either try again or the fish gives up (ADR-088).
+            isBiteWindowActive = false
+            biteWindowProgress = 0
+            biteAttemptsUsed += 1
+            if biteAttemptsUsed >= config.maxBiteAttempts {
+                isFishInterested = false
+                biteAttemptsUsed = 0
+                interestTimer = Float.random(in: 0.8...2.0)
+                return .gaveUp
+            }
+            biteTimer = Float.random(in: config.biteRetryMinInterval...config.biteRetryMaxInterval)
+            return nil
+        }
+
         guard isFishInterested else {
             interestTimer -= deltaTime
             guard interestTimer <= 0 else { return nil }
@@ -173,6 +216,27 @@ final class FishFightController: ObservableObject {
 
         biteTimer -= deltaTime
         guard biteTimer <= 0 else { return nil }
+
+        // Open a bite window instead of hooking instantly (ADR-088) — the player must flick the
+        // rod forward before `biteWindowTimer` runs out (`handleHookSetFlick()`) to actually set
+        // the hook. `hasFishOnHook` stays `false` until then.
+        isBiteWindowActive = true
+        biteWindowTimer = config.biteWindowDuration
+        biteWindowProgress = 1
+        return .biteAlert
+    }
+
+    /// Call when Rod reports a forward flick while a bite window is open (ADR-088). Rolls and
+    /// hooks the fish exactly as the old instant-auto-bite path used to, just gated behind the
+    /// player's timed reaction instead of firing unconditionally. Returns whether it actually
+    /// hooked a fish — `false` (a no-op) if no bite window is currently active, mirroring
+    /// `handleQTEFlick()`'s own "stray/late flick is a no-op" pattern.
+    @discardableResult
+    func handleHookSetFlick() -> Bool {
+        guard isBiteWindowActive else { return false }
+        isBiteWindowActive = false
+        biteWindowProgress = 0
+        biteAttemptsUsed = 0
 
         let species = FishCatalog.randomSpecies(unlockedTiers: progressionStore.unlockedTiers)
         currentSpecies = species
@@ -191,7 +255,7 @@ final class FishFightController: ObservableObject {
         qteSpawnTimer = Float.random(in: config.qteSpawnMinInterval...config.qteSpawnMaxInterval)
         qteReactionTimer = 0
 
-        return .bite
+        return true
     }
 
     /// Call every tick a fish is hooked (`.fishOnHook` or `.reeling`),
