@@ -18,6 +18,7 @@ struct ContentView: View {
     var viewModel: RodViewModel
 
     @State private var showDeveloperDetails = false
+    @State private var showFishPreview = false
 
     var body: some View {
         NavigationStack {
@@ -89,7 +90,20 @@ struct ContentView: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, 12)
             }
+            .navigationTitle("Controller")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showFishPreview = true
+                    } label: {
+                        Image(systemName: "fish")
+                    }
+                }
+            }
+        }
+        .fullScreenCover(isPresented: $showFishPreview) {
+            FishPreviewView()
         }
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }

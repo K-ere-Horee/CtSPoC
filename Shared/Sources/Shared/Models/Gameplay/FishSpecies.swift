@@ -24,8 +24,8 @@ public struct FishSpeciesRange: Codable, Sendable, Equatable {
 
 /// Static per-species gameplay data. World selects a species when a fish
 /// bites and applies its modifiers to bite grace period, line tension, and
-/// catch value. Asset/mesh selection is intentionally not part of this
-/// model yet; it will be added once 3D fish assets exist.
+/// catch value. Also carries presentation metadata for Rod's AR preview
+/// screen (ADR-032).
 public struct FishSpecies: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let name: String
@@ -36,6 +36,14 @@ public struct FishSpecies: Codable, Sendable, Equatable, Identifiable {
     public let resistance: Double
     /// Coins/points awarded on a successful catch.
     public let value: Int
+    public let scientificName: String
+    public let rarity: FishRarity
+    public let description: String
+    /// Named of the `.usdz` preview asset in the app bundle (without `.usdz`).
+    /// `nil` means no preview model is available for this species.
+    public let previewAssetName: String?
+    /// Required CC-BY attribution text, if any. `nil` if no attribution needed.
+    public let attribution: String?
 
     public init(
         id: String,
@@ -43,7 +51,12 @@ public struct FishSpecies: Codable, Sendable, Equatable, Identifiable {
         weightRange: FishSpeciesRange,
         lengthRange: FishSpeciesRange,
         resistance: Double,
-        value: Int
+        value: Int,
+        scientificName: String = "",
+        rarity: FishRarity = .common,
+        description: String = "",
+        previewAssetName: String? = nil,
+        attribution: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -51,5 +64,10 @@ public struct FishSpecies: Codable, Sendable, Equatable, Identifiable {
         self.lengthRange = lengthRange
         self.resistance = min(1, max(0, resistance))
         self.value = value
+        self.scientificName = scientificName
+        self.rarity = rarity
+        self.description = description
+        self.previewAssetName = previewAssetName
+        self.attribution = attribution
     }
 }
