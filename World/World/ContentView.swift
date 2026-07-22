@@ -108,14 +108,23 @@ struct ContentView: View {
                 }
                 .ignoresSafeArea()
 
+                // ADR-105: fps/connection readout moved from top-leading to bottom-leading and
+                // restyled onto the same dark-card + white-border language as the rest of the HUD.
                 VStack(alignment: .leading) {
-                    fpsIndicator
+                    Spacer()
+                    statusBox
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
 
-                    Text(viewModel.connectionState.rawValue.capitalized)
-                        .foregroundStyle(viewModel.connectionState == .streaming ? .green : .secondary)
-
+                // ADR-100: last-catch stats, floating top-trailing — mirrors `fpsIndicator`'s
+                // top-leading placement, kept visible outside the catch-cutscene fade below since
+                // it's a persistent readout rather than routine in-fight HUD.
+                VStack(alignment: .trailing) {
+                    LastCatchStatBoxView(result: fishFight.lastCatchResult)
                     Spacer()
                 }
+                .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding()
 
                 // MARK: - Debug purpose only. Can ignore
@@ -156,7 +165,14 @@ struct ContentView: View {
                     // ADR-097: `LineTensionView` shares this exact slot — the two are mutually
                     // exclusive in time (charging vs. fighting), so stacking both here reads as
                     // one continuous meter rather than two HUD elements.
+                    // ADR-104: extra top padding so the badge/meter stack doesn't sit flush
+                    // against the top edge ("biar ga terlalu nempel ke atas").
                     VStack {
+                        FishCounterBadgeView(
+                            progress: fishFight.progressTowardNextLevel,
+                            caughtCount: fishFight.caughtCount
+                        )
+
                         CastMeterView(
                             castSolution: viewModel.rodState.castSolution,
                             power: viewModel.rodState.castPower,
@@ -175,55 +191,32 @@ struct ContentView: View {
 
                         Spacer()
                     }
+                    .padding(.top, 32)
                     .frame(maxWidth: .infinity)
+
+                    // ADR-103: bite-window "flick to hook" QTE prompt — center screen, since it
+                    // needs to command full attention the instant a fish bites.
+                    BiteAlertView(
+                        isActive: fishFight.isBiteWindowActive,
+                        progress: fishFight.biteWindowProgress
+                    )
 
                     // The rest of the HUD keeps roughly its old bottom-of-screen position, now
                     // floating over the fullscreen scene instead of living below it.
-                    VStack {
-                        Spacer()
-
-                        HStack {
-                            VStack(alignment: .leading, spacing: 8) {
-                                FishCounterBadgeView(
-                                    progress: fishFight.progressTowardNextLevel,
-                                    caughtCount: fishFight.caughtCount
-                                )
-
-                                BiteAlertView(
-                                    isActive: fishFight.isBiteWindowActive,
-                                    progress: fishFight.biteWindowProgress
-                                )
-
-                                GroupBox {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        if let result = fishFight.lastCatchResult {
-                                            HStack {
-                                                Text(result.outcome.rawValue)
-                                                    .foregroundStyle(result.outcome == .caught ? .green : .secondary)
-                                                Spacer()
-                                                Text(String(format: "%@ \u{2022} %.1f kg \u{2022} %.0f cm", result.speciesName, result.weight, result.length))
-                                                    .foregroundStyle(.secondary)
-                                            }
-                                            .font(.caption)
-                                        } else {
-                                            Text("No catch attempts yet")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-
-                                if let lastError = viewModel.lastError {
-                                    Text(lastError).foregroundStyle(.red)
-                                }
-                            }
-                            .frame(width: geometry.size.width * 0.4)
-
+                    if let lastError = viewModel.lastError {
+                        VStack {
                             Spacer()
+
+                            HStack {
+                                Text(lastError)
+                                    .foregroundStyle(.red)
+                                    .frame(width: geometry.size.width * 0.4, alignment: .leading)
+
+                                Spacer()
+                            }
                         }
+                        .padding()
                     }
-                    .padding()
                 }
                 .opacity(viewModel.isShowingCatchCutscene ? 0 : 1)
                 .animation(.easeOut(duration: 0.2), value: viewModel.isShowingCatchCutscene)
@@ -233,15 +226,23 @@ struct ContentView: View {
         .onDisappear { viewModel.stop() }
     }
 
-    private var fpsIndicator: some View {
-        Text(String(format: "%.0f FPS", viewModel.fps))
-            .font(.caption.monospacedDigit())
-            .fontWeight(.semibold)
-            .foregroundStyle(viewModel.fps >= 50 ? .green : viewModel.fps >= 30 ? .yellow : .red)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 6))
-            .padding(8)
+    private static let panelColor = Color(red: 0.16, green: 0.12, blue: 0.09)
+
+    private var statusBox: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(String(format: "%.0f FPS", viewModel.fps))
+                .font(.caption.monospacedDigit())
+                .fontWeight(.semibold)
+                .foregroundStyle(viewModel.fps >= 50 ? .green : viewModel.fps >= 30 ? .yellow : .red)
+
+            Text(viewModel.connectionState.rawValue.capitalized)
+                .font(.caption2)
+                .foregroundStyle(viewModel.connectionState == .streaming ? .green : .white.opacity(0.6))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Self.panelColor, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white, lineWidth: 2))
     }
 
     private func row(_ title: String, _ value: String) -> some View {

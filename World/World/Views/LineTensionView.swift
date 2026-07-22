@@ -12,16 +12,19 @@ import SwiftUI
 /// language, and the two were getting visually confused for one another. Placed in the same
 /// top-center overlay slot `CastMeterView` uses (see `ContentView`), since the two are mutually
 /// exclusive in time (charging vs. fighting) and read to the player as one continuous HUD element.
-/// Both ends of the bar are still a failure (too low = slack line/lost fish, too high = snapped
-/// line from over-reeling); the safe zone in the middle is outlined rather than just inferred.
+///
+/// ADR-099: unlike the cast meter, this bar's coloring stays a full edge-to-edge gradient (tension
+/// isn't a "fill toward a goal" value — it's a live position that can move either direction across
+/// the whole range), so there's no track/fill split to border here. The border instead wraps the
+/// entire bar, replacing the earlier partial safe-zone outline — the safe-zone concept is dropped
+/// as a distinct visual since the border already frames the bar as a whole and the marker
+/// communicates the live position that matters.
 struct LineTensionView: View {
     let isFighting: Bool
     let tension: Float
 
     private let dangerLow: Float = 0.15
     private let dangerHigh: Float = 0.85
-    private let safeLow: Float = 0.3
-    private let safeHigh: Float = 0.7
 
     private let reelSize: CGFloat = 45
     private let barHeight: CGFloat = 24
@@ -38,8 +41,6 @@ struct LineTensionView: View {
                 GeometryReader { geometry in
                     let trackWidth: CGFloat = geometry.size.width - reelSize * 0.5
                     let clampedTension: CGFloat = CGFloat(min(1, max(0, tension)))
-                    let safeZoneWidth: CGFloat = CGFloat(safeHigh - safeLow) * trackWidth
-                    let safeZoneOffset: CGFloat = reelSize * 0.5 + CGFloat(safeLow) * trackWidth
                     let markerOffset: CGFloat = reelSize * 0.5 + clampedTension * trackWidth - 9
 
                     ZStack(alignment: .leading) {
@@ -51,15 +52,9 @@ struct LineTensionView: View {
                                     endPoint: .trailing
                                 )
                             )
-                            .frame(height: barHeight)
+                            .overlay(Capsule().stroke(.white, lineWidth: 2))
+                            .frame(width: trackWidth, height: barHeight)
                             .padding(.leading, reelSize * 0.5)
-
-                        // Safe zone — the only stretch of the bar where the fish stays hooked
-                        // without drifting toward either failure edge.
-                        Capsule()
-                            .stroke(.white.opacity(0.7), lineWidth: 2)
-                            .frame(width: safeZoneWidth, height: barHeight)
-                            .offset(x: safeZoneOffset)
 
                         // Live tension marker — same `fish_sign.png` used for the cast meter's
                         // power marker, for visual consistency between the two mutually exclusive

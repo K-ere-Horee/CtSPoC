@@ -14,6 +14,12 @@ import SwiftUI
 /// alone, even with the ADR-046/047 camera cut and freeze, still read as flat rather than a real
 /// cutscene moment; these are the presentation-only levers available before real fish/camera assets
 /// land.
+///
+/// ADR-100: the title now sits on the same dark rounded-rectangle + white border card used by every
+/// other HUD element (`CastMeterView`'s track, `LineTensionView`'s bar, `FishCounterBadgeView`'s
+/// pill, `LastCatchStatBoxView`) — was bare text with only a drop shadow, which read as a one-off
+/// style next to the rest of the HUD. The letterbox bars and radial glow stay full-bleed cinematic
+/// effects, unrelated to the card design language.
 struct CatchCutsceneView: View {
     @State private var titleScale: CGFloat = 0.3
     @State private var titleOpacity: Double = 0
@@ -21,6 +27,7 @@ struct CatchCutsceneView: View {
     @State private var barHeight: CGFloat = 0
 
     private let maxBarHeight: CGFloat = 64
+    private static let panelColor = Color(red: 0.16, green: 0.12, blue: 0.09)
 
     var body: some View {
         ZStack {
@@ -56,6 +63,10 @@ struct CatchCutsceneView: View {
                     .font(.system(size: 72, weight: .heavy, design: .rounded))
                     .foregroundStyle(.yellow)
                     .shadow(color: .black.opacity(0.7), radius: 10)
+                    .padding(.horizontal, 48)
+                    .padding(.vertical, 20)
+                    .background(Self.panelColor, in: RoundedRectangle(cornerRadius: 24))
+                    .overlay(RoundedRectangle(cornerRadius: 24).stroke(.white, lineWidth: 2))
                     .scaleEffect(titleScale)
                     .opacity(titleOpacity)
             }
@@ -72,4 +83,8 @@ struct CatchCutsceneView: View {
             }
         }
     }
+}
+
+#Preview {
+    CatchCutsceneView()
 }

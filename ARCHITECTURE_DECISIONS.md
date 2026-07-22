@@ -11,6 +11,286 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-105 --- FPS/Connection Readout Moves to Bottom-Leading, Joins the Card Language
+
+## Decision
+
+The fps counter and connection-state text — previously two loose, differently-styled `Text` views
+stacked top-leading (`fpsIndicator` with its own small dark-pill background; the connection text
+with no background at all) — merge into one `statusBox`: a single `VStack` (fps line, connection
+line) inside a `Self.panelColor`-filled, white-bordered `RoundedRectangle(cornerRadius: 12)`,
+matching the dark-card + white-border language every other HUD surface has used since ADR-098.
+`ContentView`'s top-leading overlay changes from `VStack(alignment: .leading) { fpsIndicator; Text
+(...); Spacer() }` to `VStack(alignment: .leading) { Spacer(); statusBox }`, moving the whole thing
+to the bottom-leading corner instead. The standalone `fpsIndicator` computed property and its
+ad hoc pill background are removed, folded into `statusBox`.
+
+## Rationale
+
+Requested directly: "sekarang tampila si 120 fps, sama status streaming, itu pindahin ke pojok kiri
+bawah, dan tambahin design language yang sama" (now the "120 FPS" display and the "Streaming"
+status — move those to the bottom-left corner, and add the same design language). Continues the
+same design-consistency pass as ADR-098 through ADR-104 — this readout was the last HUD element
+still using ad hoc styling instead of the established card language.
+
+## Status
+
+Accepted — verified via `xcrun swiftc -typecheck` against the full `World/World` Swift file list
+(clean), a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` build (BUILD
+SUCCEEDED), and an actual launch/`ps`-confirmed-running/quit with no crash. As with every ADR since
+ADR-096, final in-context placement (exact corner spacing against the safe area, live fps/
+connection-state values) could not be visually confirmed this pass — no Rod device was paired.
+Open device-validation gap.
+
+------------------------------------------------------------------------
+
+# ADR-104 --- Top HUD Stack Gets Breathing Room; Bite-Window Prompt Moves to Center Screen
+
+## Decision
+
+Two related layout adjustments, both from the same request:
+
+- The top-center HUD stack (`FishCounterBadgeView`, `CastMeterView`, `LineTensionView`, all
+  sharing one `VStack` since ADR-096/097) gains `.padding(.top, 32)` so the whole group sits a
+  little below the screen's top edge instead of flush against it — per "cast meter sama reel
+  tension turunin kebawah dikit, bersamaan dengan amount of fish caught nya (biar ga terlalu
+  nempel ke atas)" (move the cast meter and reel tension down a bit, together with the fish-caught
+  count, so it's not too stuck to the top).
+- `BiteAlertView` — the "FISH ON! FLICK TO HOOK!" bite-window prompt — is restyled (ADR-103, this
+  same change) and its call site in `ContentView` moves out of the bottom-leading stat stack into
+  a bare top-level position inside the fading `Group`, which centers it via `ZStack`'s default
+  alignment. Per "qte untuk nge flick hp nya ketika fish bite... mau taro tengah apa dimana bebas"
+  (the QTE for flicking the phone when the fish bites... place it in the middle or wherever, your
+  choice) — center screen was chosen since a QTE-style prompt needs to command full attention the
+  instant a bite window opens, more than a corner stat stack does.
+- The `lastError` text, previously grouped with `BiteAlertView` in the bottom-leading `HStack`, is
+  now its own conditionally-shown bottom-leading overlay so removing `BiteAlertView` from that
+  stack didn't leave a broken/empty leftover container.
+
+See ADR-103 for `BiteAlertView`'s visual restyle itself.
+
+## Rationale
+
+Requested directly, as two parts of one message: "sisa satu lagi, yaitu qte untuk nge flick hp nya
+ketika fish bite. serah deh, mau taro tengah apa dimana bebas. oya, satu lagi, cast meter sama reel
+tension turunin kebawah dikit, bersamaan dengan amount of fish caught nya (biar ga terlalu nempel
+ke atas)."
+
+## Status
+
+Accepted — verified via `xcrun swiftc -typecheck` against the full `World/World` Swift file list
+(clean), a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` build (BUILD
+SUCCEEDED), and an actual launch/`ps`-confirmed-running/quit with no crash. As with every ADR since
+ADR-096, the in-scene gameplay HUD itself could not be visually confirmed this pass — no Rod device
+was paired. Open device-validation gap.
+
+------------------------------------------------------------------------
+
+# ADR-103 --- Bite-Window Prompt Restyled to the Established Card Language
+
+## Decision
+
+`BiteAlertView` — the "FISH ON! FLICK TO HOOK!" prompt shown while a bite window is open — moves
+from bare `Label`/`.quaternary`-capsule-progress-bar styling to the same dark-brown-card +
+white-border language every other HUD surface has adopted since ADR-098 (`CastMeterView`'s track,
+`LastCatchStatBoxView`, `ResultView`'s cards): a `Self.panelColor`-filled, white-bordered
+`RoundedRectangle(cornerRadius: 20)` card containing a `fish_sign.png` icon beside a bold "FLICK TO
+HOOK!" label (shortened from "FISH ON! FLICK TO HOOK!" — the icon now carries the "fish on" half),
+and a white-bordered dark track with an orange proportional fill (same clipped-progress-fill
+pattern `CastMeterView` uses, ADR-098) instead of the old plain `.quaternary`/`.orange` bar.
+
+## Rationale
+
+Requested directly, alongside the top-HUD-padding change (ADR-104): "sisa satu lagi, yaitu qte
+untuk nge flick hp nya ketika fish bite. serah deh, mau taro tengah apa dimana bebas" (one more
+thing left — the QTE for flicking the phone when the fish bites. Whatever, place it wherever you
+want). The design-consistency pass (ADR-098 through ADR-102) had covered every other HUD element
+except this one.
+
+## Status
+
+Accepted — verified via `xcrun swiftc -typecheck` against the full `World/World` Swift file list
+(clean), a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` build (BUILD
+SUCCEEDED), an actual launch/`ps`-confirmed-running/quit with no crash, and — like ADR-102 — an
+offscreen `NSHostingView` snapshot of the exact card markup with the real `fish_sign.png` asset,
+used to visually confirm the card reads correctly before committing (throwaway scratchpad script,
+not part of the repo). The in-app bite window itself still couldn't be triggered live — requires a
+paired Rod device and an active fish bite. Open device-validation gap.
+
+------------------------------------------------------------------------
+
+# ADR-102 --- Result Screen Restructured Around the Scott Mascot
+
+## Decision
+
+`ResultView` is restructured to match a supplied reference: a new `scott_yeah.png` mascot asset
+overlaps the top-leading corner of a "You caught an **{species}**" message card (`ZStack(alignment:
+.topLeading)`, mascot drawn last/on top, offset `x: -14, y: -30` so it reads as leaning out of the
+card's corner rather than sitting flush inside it — the card reserves a leading `Spacer().frame
+(width: 88)` so the mascot never overlaps the text itself). Below that, the previous catch stats
+(weight, length, star rating, coins, "NEW RECORD") move into their own `statsCard` — same visual
+treatment, kept rather than dropped, per "tambahin aja yang details tadi" (just add the previous
+details back in). The former single long instruction line ("Press 'Start Casting' on Rod to fish
+again") is replaced with a short green pill reading "Press Start Casting" (`Self.ctaColor`, `Color
+(red: 0.2, green: 0.78, blue: 0.35)`), matching the reference's button-shaped look — still just a
+label, not an interactive control, since nothing on this screen has ever been (see the file's
+existing doc comment on why: Rod's own "Start Casting" press is what actually dismisses it).
+
+Both the greeting card and the stats card keep the dark-brown (`Self.panelColor`) + white-border
+language ADR-100/101 established for the rest of the HUD.
+
+The mascot's size (`112x112`) and offset were tuned against an offscreen `NSHostingView` render of
+the exact view code with the real asset (a throwaway script in the scratchpad, not part of the
+repo) before being applied here, since no paired Rod was available to trigger this screen live —
+first pass at `130x130`/`offset(-18,-34)` had the mascot's face overlapping "You caught an";
+the final values keep the mascot fully clear of the text.
+
+## Rationale
+
+Requested directly, with a reference screenshot and the new `scott_yeah.png` asset already added by
+the user: "gue udah nambahin karakter scott_yeah itu. bikin catch nya kaya gini di tengah screen
+(tambahin aja yang details tadi, i believe in your design taste)" (I've already added the
+scott_yeah character. Make the catch screen look like this, centered on screen — just add the
+previous details back in, I trust your design taste).
+
+## Status
+
+Accepted — verified via `xcrun swiftc -typecheck` against the full `World/World` Swift file list
+(clean), a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` build (BUILD
+SUCCEEDED), an actual launch/`ps`-confirmed-running/quit with no crash, and — unlike every ADR
+since ADR-096 — an actual rendered visual check: an offscreen `NSHostingView` snapshot of the exact
+layout with the real `scott_yeah.png`/panel colors, used to tune the mascot's size/offset against
+the reference before committing the values to `ResultView.swift`. The in-app screen itself still
+couldn't be triggered live (requires a paired Rod device and a resolved catch), so the final
+in-context rendering (fonts, safe areas, actual window chrome) remains unconfirmed. Open
+device-validation gap.
+
+------------------------------------------------------------------------
+
+# ADR-101 --- Result Screen Joins the Card Design Language Too
+
+## Decision
+
+`ResultView` — the post-catch blocking screen shown at `hookPhase == .result` ("Catch!", species,
+weight/length, stars, coins, optional "NEW RECORD", the "Press Start Casting" instruction) — was a
+distinct screen from `CatchCutsceneView` (the brief transition immediately before it) and had been
+missed by ADR-100's design pass, which only touched the cutscene's title card. `ResultView.card`'s
+background changes from `.regularMaterial` (a generic frosted-glass system blur, no border) to the
+same `Self.panelColor` dark brown + white 2pt border every other HUD surface now uses. Every `Text`
+inside the card that relied on the system's automatic light/dark contrast against
+`.regularMaterial` (`.primary`/`.secondary` — title, species name, stat values, the "press to fish
+again" line) gets an explicit `.white`/`.white.opacity(...)` foreground instead, since those
+defaults would otherwise render near-invisible against the new solid dark background. A
+`fish_sign.png` icon (`bundleImage(_:)`) sits beside the "Catch!" title, echoing
+`FishCounterBadgeView`'s use of the same asset elsewhere in the HUD.
+
+## Rationale
+
+The user pointed at a screenshot of this exact screen still showing the old frosted-glass look
+after ADR-100 landed: "masih gini jir? maksud gue bikin coklat yang sama kaya last catch juga.
+bahasa designnya gue serahin ke elo. tambahin fish_sign juga deh" (still like this? I meant make it
+the same brown as the last-catch box too. I'll leave the design language to you. Add fish_sign
+too). ADR-100's "catch cutscene" fix only touched the brief `CatchCutsceneView` transition; this
+`ResultView` screen — the one actually holding still on screen with all the catch stats — is a
+separate file entirely and had been missed.
+
+## Status
+
+Accepted — verified via `xcrun swiftc -typecheck` against the full `World/World` Swift file list
+(clean), a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` build (BUILD
+SUCCEEDED), and an actual launch/`ps`-confirmed-running/quit with no crash. As with every ADR since
+ADR-096, this screen itself could not be visually confirmed this pass — it only appears after a
+resolved catch mid-gameplay, which requires a paired Rod device. Open device-validation gap.
+
+------------------------------------------------------------------------
+
+# ADR-100 --- One Card Design Language Across the HUD: Badge, Last-Catch Box, Catch Cutscene
+
+## Decision
+
+Three more HUD surfaces adopt the dark-rounded-rectangle-plus-white-border language established by
+`CastMeterView`'s track and `LineTensionView`'s bar (ADR-098/099):
+
+- `FishCounterBadgeView`: the circular badge's border strengthens from a faint `.white.opacity
+  (0.25)`, `lineWidth: 1.5` ring to a solid `.white`, `lineWidth: 2` ring (matching every other
+  element exactly); the progress pill gains the same `.overlay(Capsule().stroke(.white, lineWidth:
+  2))` it previously had none of.
+- A new `LastCatchStatBoxView` (new file) replaces the plain default-chrome `GroupBox` that used to
+  hold the last-catch-result row (species/weight/length) inside the bottom-leading HUD stack. It's
+  a small floating card — `Self.panelColor` background (`Color(red: 0.16, green: 0.12, blue:
+  0.09)`, the same dark brown used by `CastMeterView`'s track and `FishCounterBadgeView`'s pill),
+  `RoundedRectangle(cornerRadius: 14)` shape, white 2pt border — showing a "LAST CATCH" label plus
+  the outcome/species/weight/length text (or "No catch attempts yet"). `ContentView` moves this out
+  of the bottom-leading stack entirely and floats it top-trailing instead, mirroring
+  `fpsIndicator`'s top-leading placement, per "taroh di kanan aja jadi kaya small statistics box
+  gitu" (put it on the right, like a small stats box).
+- `CatchCutsceneView`'s "CATCH!" title moves from bare text with just a drop shadow onto the same
+  card treatment (`Self.panelColor` background, `RoundedRectangle(cornerRadius: 24)`, white 2pt
+  border) — the letterbox bars and radial glow stay untouched as full-bleed cinematic effects,
+  since those aren't part of the card design language to begin with.
+
+## Rationale
+
+Requested directly, across two messages: "fish counter badge juga rectangle nya pake border yang
+sama. terus, yang fishfight last catch result itu bikin designnya similar kaya style rectangle
+semuanya. I trust your design deh (intinya bahasa designnya mirip). taroh di kanan aja jadi kaya
+small statistics box gitu" (the fish counter badge's rectangle should also use the same border;
+then, make the last-catch-result box's design similar to the rectangle style used everywhere — I
+trust your design, just keep the design language consistent — put it on the right as a small stats
+box), followed by "sekarang catchcutscene nya, sesuaiin bahasa design nya dengan sebelum-sebelumnya"
+(now the catch cutscene — match its design language to the previous ones). Continues the same
+design-consistency pass started by ADR-098/099: once the cast meter and tension bar settled on
+"dark card + white border," every other HUD surface built before that point read as a mismatched
+one-off next to them.
+
+## Status
+
+Accepted — verified via `xcrun swiftc -typecheck` against the full `World/World` Swift file list
+(clean), a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` build (BUILD
+SUCCEEDED) after each of the two edit passes (badge/stat-box, then cutscene), and an actual launch/
+`ps`-confirmed-running/quit with no crash after each. As with every ADR since ADR-096, the in-scene
+gameplay HUD and the catch-cutscene moment itself could not be visually confirmed this pass — no
+Rod device was paired, and the cutscene only plays mid-gameplay after a resolved catch. Open
+device-validation gap.
+
+------------------------------------------------------------------------
+
+# ADR-099 --- Line Tension Bar Border Moves to the Whole Rectangle; Safe-Zone Box Dropped
+
+## Decision
+
+`LineTensionView`'s bar drops its partial, middle-only safe-zone `Capsule().stroke()` outline
+(spanning only `safeLow`...`safeHigh`) in favor of a white border wrapping the entire gradient bar
+(`.overlay(Capsule().stroke(.white, lineWidth: 2))` applied directly to the full-width gradient
+`Capsule`, matching the border treatment `CastMeterView`'s track already has). The `safeLow`/
+`safeHigh` constants and the safe-zone `Capsule` are removed entirely — the concept isn't
+represented as a separate visual anymore, only implicitly via the gradient's own green/yellow/red
+coloring and the `fish_sign.png` marker's live position. `dangerLow`/`dangerHigh` are unchanged and
+still drive the "LOSING FISH"/"SNAPPING" warning label. The gradient itself stays a full,
+edge-to-edge fill — unlike `CastMeterView` (ADR-098), tension isn't a "fill toward a goal" value,
+it's a live position that can move either direction across the whole range, so there's no
+track/fill split to apply the border to separately; the border wraps the one gradient shape as a
+whole.
+
+## Rationale
+
+Requested directly, referencing the same screenshot pattern as the cast meter fix: "ini juga sama.
+the whole rectangle harusnya pake border. untuk coloring full mentok aja kanan kiri" (this one's
+the same [issue] — the whole rectangle should have a border; for the coloring, just keep it
+flush/full left-right). The coloring was already edge-to-edge (unlike the cast meter, which needed
+ADR-098's proportional-fill fix), so the only change needed here is moving the border from the
+middle safe-zone box to the bar's outer edge.
+
+## Status
+
+Accepted — verified via `xcrun swiftc -typecheck` against the full `World/World` Swift file list
+(clean), a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` build (BUILD
+SUCCEEDED), and an actual launch/`ps`-confirmed-running/quit with no crash. As with ADR-096/097/
+098, the in-scene gameplay HUD itself could not be visually confirmed this pass — no Rod device was
+paired. Open device-validation gap.
+
+------------------------------------------------------------------------
+
 # ADR-098 --- Cast Meter Becomes a True Proportional Fill Over a Bordered Track
 
 ## Decision
