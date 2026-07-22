@@ -2,7 +2,11 @@
 //  Theme.swift
 //  World
 //
-//  Shared color and font tokens for the front-end UI (Main Menu, Loading, ...).
+//  Shared color and font (Fredoka) tokens for `CreditsView`/`TutorialView` (ADR-087). Originally
+//  written for a competing Main Menu/Loading design (`feat/ui-slice`) that wasn't adopted — see
+//  `CHECKPOINT.md`'s "Merge PR #7 (feat/ui-slice) into main" entry — trimmed on port to only the
+//  tokens `CreditsView`/`TutorialView` actually reference; the dropped `overlay`/`menuButton*`
+//  tokens existed solely for that unshipped design.
 //
 
 import SwiftUI
@@ -34,24 +38,14 @@ extension Color {
     }
 }
 
-/// Shared design tokens for the game's front-end screens (Main Menu, Loading Screen).
+/// Shared design tokens for `CreditsView`/`TutorialView`.
 enum Theme {
-    /// Dark scrim placed over full-bleed background art.
-    static let overlay = Color(hex: "281E0D").opacity(0.4)
-
-    /// Menu button fill.
+    /// Button fill.
     static let buttonFill = Color(hex: "342B21")
-    /// Menu button label color.
+    /// Button label color.
     static let buttonLabel = Color(hex: "EBE2D8")
-    /// Drop-shadow color behind menu button labels.
+    /// Drop-shadow color behind button labels.
     static let buttonLabelShadow = Color(hex: "574420")
-
-    /// Main Menu pill-button face (cream card look).
-    static let menuButtonFace = Color(hex: "F2E6C8")
-    /// Main Menu pill-button border and thick bottom "3D" edge.
-    static let menuButtonEdge = Color(hex: "2E2013")
-    /// Main Menu pill-button label color.
-    static let menuButtonText = Color(hex: "2B1D10")
 }
 
 extension Font {

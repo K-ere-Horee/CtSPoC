@@ -9,13 +9,6 @@ import SwiftUI
 import Shared
 import Combine
 
-enum MotionCalibrationStep: String {
-    case idle
-    case cast
-    case reel
-    case complete
-}
-
 @MainActor
 final class RodViewModel: ObservableObject {
 
@@ -32,12 +25,27 @@ final class RodViewModel: ObservableObject {
     @Published private(set) var motionAccelerationZ: Double = 0
     @Published private(set) var motionRotationRate: Double = 0
     @Published private(set) var lastError: String?
-    @Published private(set) var calibrationStep: MotionCalibrationStep = .idle
+    @Published private(set) var calibrationStep: CalibrationStep = .idle
     @Published private(set) var calibrationSampleCount = 0
     /// Gates cast/reel gesture reporting. The player must explicitly
     /// "Start Fishing" (after calibrating) before physical motion is
     /// interpreted as gameplay intent; "End Fishing" clears it again.
     @Published private(set) var isFishing = false
+    /// Gates whether `RodMotionInterpreter` treats a cast-classified pose as a real cast attempt.
+    /// Set by the "Start Casting" button, not automatic — otherwise ordinary phone movement that
+    /// happens to read closest to the calibrated `castPose` would silently start charging. Cleared
+    /// automatically once a cast actually fires (`updateAction()`), whenever `hookPhase` leaves
+    /// `.idle`/`.result` (ADR-061 — arming is also allowed from `.result`, see `startCasting()`),
+    /// or on `endFishing()` — a stale arm can never survive past one cast attempt.
+    @Published private(set) var isCastingArmed = false
+
+    /// Debug-only: the calibrated `reelSpeed` ramp's min/max rotation rate (`calibrateMotion()`'s
+    /// `.reel` step), surfaced so a narrow calibrated range — the leading suspect for the
+    /// "reel speed feels constant" report, see `CHECKPOINT.md`'s ADR-042 follow-up TODO — can be
+    /// confirmed or ruled out from a live device during the next playtest instead of guessed at.
+    var reelCalibrationRange: (min: Double, max: Double) {
+        (motionInterpreter.profile.reelRotationRate, motionInterpreter.profile.reelFullRotationRate)
+    }
 
     private let motionManager: MotionManager
     private let motionInterpreter: RodMotionInterpreter
@@ -54,14 +62,22 @@ final class RodViewModel: ObservableObject {
             yaw: 0,
             accelerationZ: 0,
         rotationRateMagnitude: 0
-        , rotationRateX: 0
-        , rotationRateY: 0
-        , rotationRateZ: 0
     )
     private var pose = RodMotionPose(pitch: 0, roll: 2, yaw: 0)
     private var orientation = RodOrientation.identity
     private var spatial = SpatialState()
     private var hasStarted = false
+    /// Edge-detection state for `detectFlickGesture()` (ADR-078/088) — `true` while the last-seen
+    /// sample was past the forward-flick threshold, so a sustained flick reports once, not every
+    /// frame.
+    private var wasFlicking = false
+    /// When the last flick event was sent (ADR-091) — a single physical flick's follow-through
+    /// (the hand/rod decelerating and settling afterward) can dip below the threshold and cross
+    /// back above it again, reading as a *second*, distinct flick to the edge-detector above even
+    /// though it's really the same motion. `detectFlickGesture()` enforces `flickCooldown` after
+    /// any sent flick so a hook-set's own follow-through can't immediately also register as a
+    /// fight-flick (reported directly as line tension dipping right at the start of a fight).
+    private var lastFlickSentAt = Date.distantPast
     private var calibrationSamples: [RodMotionInput] = []
     /// Guards against unbounded concurrent sends: `publishState()` fires on every motion sample
     /// (up to the CoreMotion update rate), and each one used to spawn its own unstructured `Task`
@@ -71,6 +87,10 @@ final class RodViewModel: ObservableObject {
     private var isSendingState = false
 
     private static let motionProfileKey = "rod.motionProfile"
+    /// Minimum seconds between two sent flick events (ADR-091) — long enough to cover one flick's
+    /// own physical follow-through (the hand/rod decelerating and settling), short enough that a
+    /// second, genuinely deliberate flick right after still gets through.
+    private static let flickCooldown: TimeInterval = 0.4
 
     let debugRecorder = MotionDebugRecorder()
 
@@ -157,6 +177,17 @@ final class RodViewModel: ObservableObject {
         hasStarted = false
     }
 
+    /// The World this session is paired with (see `PairedCentralStore`), for display in Developer
+    /// Details — `nil` until a central has ever subscribed. `CBCentral` has no display name, only
+    /// an identifier, so only a short ID is shown.
+    var pairedDeviceShortID: String? { transport.pairedDeviceShortID }
+    var hasPairedDevice: Bool { transport.hasPairedDevice }
+
+    /// Clears the saved pairing so the next Mac to subscribe becomes the new paired device.
+    func forgetPairedDevice() {
+        transport.forgetPairedDevice()
+    }
+
     func startFishing() {
         guard calibrationStep == .complete else { return }
         isFishing = true
@@ -164,10 +195,32 @@ final class RodViewModel: ObservableObject {
 
     func endFishing() {
         isFishing = false
+        isCastingArmed = false
     }
 
+    /// Arms one cast attempt: until this is pressed, `RodMotionInterpreter` ignores a
+    /// cast-classified pose entirely (see its own doc comment), so idly holding or moving the
+    /// phone can never accidentally start charging a cast. Requires an actual fishing session and
+    /// either an idle hook or a still-showing result screen (ADR-061) — the latter lets "Start
+    /// Casting" double as World's old "Continue Fishing" tap, since `WorldViewModel.handle(_:)`
+    /// dismisses `.result` back to `.idle` the instant it sees `RodState.isCastingArmed` true.
+    /// `HookPhase.allowsCasting` itself is untouched (still only `.idle`), so a physical flick
+    /// still can't actually fire a cast until World's dismissal round-trip completes — this only
+    /// relaxes when the button may be *armed*, not when a cast may complete.
+    func startCasting() {
+        guard isFishing, hookPhase == .idle || hookPhase == .result, !isCastingArmed else { return }
+        isCastingArmed = true
+    }
+
+    /// Requires `hookPhase == .idle` (ADR-064) rather than the old `!isFishing`-only gate — a
+    /// player can now recalibrate at any point the hook itself isn't mid-cast/fight, including
+    /// mid-session, not only before ever pressing "Start Fishing." Motion during recalibration
+    /// naturally can't be misread as a real cast/reel gesture in the meantime: re-entering the
+    /// sequence (the `case .complete:` branch below) sets `profile.isComplete = false` right away,
+    /// which already makes `RodMotionInterpreter` report `.invalid` until the sequence completes
+    /// again, independent of this gate.
     func calibrateMotion() {
-        guard hasMotionSample else { return }
+        guard hasMotionSample, hookPhase == .idle else { return }
         switch calibrationStep {
         case .idle:
             guard calibrationSamples.count >= 3 else { return }
@@ -227,8 +280,19 @@ final class RodViewModel: ObservableObject {
             fishingHaptics.handle(event)
         case let .hookPhase(phase):
             hookPhase = phase
+            // `.result` is deliberately excluded here (ADR-061): World auto-dismisses `.result`
+            // back to `.idle` the instant it sees an armed cast, so a stale arm surviving the
+            // brief `.result` window is exactly the point, not a bug — clearing it here would
+            // race the very message that's supposed to carry it through.
+            if phase != .idle, phase != .result {
+                isCastingArmed = false
+            }
             if phase != .hookInWater {
                 fishingHaptics.stopInterest()
+                fishingHaptics.stopBiteAlert()
+            }
+            if phase != .fishOnHook, phase != .reeling {
+                fishingHaptics.stopFight()
             }
             if phase == .idle {
                 rodState = RodState(
@@ -239,7 +303,10 @@ final class RodViewModel: ObservableObject {
                     orientation: orientation,
                     action: action,
                     reelSpeed: reelSpeed,
-                    castSolution: nil
+                    castSolution: nil,
+                    isFishing: isFishing,
+                    isCastingArmed: isCastingArmed,
+                    calibrationStep: calibrationStep
                 )
                 publishState()
             }
@@ -259,7 +326,11 @@ final class RodViewModel: ObservableObject {
             reelSpeed: reelSpeed,
             castSolution: rodState.castSolution,
             motionPhase: rodState.motionPhase,
-            castPower: rodState.castPower
+            castPower: rodState.castPower,
+            castHoldDuration: rodState.castHoldDuration,
+            isFishing: isFishing,
+            isCastingArmed: isCastingArmed,
+            calibrationStep: calibrationStep
         )
         guard connectionState == .ready || connectionState == .streaming else { return }
         connectionState = .streaming
@@ -277,7 +348,7 @@ final class RodViewModel: ObservableObject {
         let previousAction = action
         motionAccelerationZ = motion.accelerationZ
         motionRotationRate = motion.rotationRateMagnitude
-        let interpretation = motionInterpreter.interpret(motionInput)
+        let interpretation = motionInterpreter.interpret(motionInput, isCastingArmed: isCastingArmed)
         debugRecorder.append(
             MotionDebugSample(
                 input: motionInput,
@@ -291,6 +362,8 @@ final class RodViewModel: ObservableObject {
         if let snapshot = interpretation.castSnapshot {
             let resolved = castResolver.resolve(snapshot)
             resolvedCastSolution = resolved.with(distance: castMeterConfig.distance(for: resolved.power))
+            // A real cast just fired — one "Start Casting" press only ever arms a single attempt.
+            isCastingArmed = false
         } else {
             resolvedCastSolution = rodState.castSolution
         }
@@ -315,7 +388,11 @@ final class RodViewModel: ObservableObject {
             reelSpeed: reelSpeed,
             castSolution: resolvedCastSolution,
             motionPhase: motionPhase,
-            castPower: interpretation.castPower
+            castPower: interpretation.castPower,
+            castHoldDuration: interpretation.castHoldDuration,
+            isFishing: isFishing,
+            isCastingArmed: isCastingArmed,
+            calibrationStep: calibrationStep
         )
 
         if action == .casting, previousAction != .casting {
@@ -325,6 +402,46 @@ final class RodViewModel: ObservableObject {
             fishingHaptics.reelTick(reelSpeed: reelSpeed)
         }
         fishingHaptics.interestPulse()
+        fishingHaptics.fightPulse()
+        fishingHaptics.biteAlertPulse()
+        detectFlickGesture()
+    }
+
+    /// Reports a forward flick to World for an active bite window (ADR-088's "flick to set the
+    /// hook") — reuses the exact same calibrated threshold as a cast release
+    /// (`profile.castAcceleration`/`profile.castAccelerationSign`), per the request that every
+    /// flick gesture be "flick device aja ke depan (atau sesuai arah cast)," not a new gesture to
+    /// learn each time. Independent of `RodMotionInterpreter`/`isCastingArmed` entirely — casting
+    /// can never be armed during `.hookInWater` anyway (`HookPhase.allowsCasting` is only `.idle`),
+    /// so the two detectors can't double-fire for the same physical flick.
+    ///
+    /// **Disabled entirely during a fight (ADR-094), not just `.reeling` (ADR-090).** ADR-089's
+    /// "flick to ease tension while `.fishOnHook`" mechanic kept misfiring even after two rounds of
+    /// fixes (ADR-091's flick cooldown, ADR-093's post-hook grace window) — reported directly as
+    /// still registering when it shouldn't ("flick movement ketika reel (hook: fish in hook) masih
+    /// ke register, harusnya disable aja"). Rather than attempt a fourth patch, `.fishOnHook` is
+    /// dropped from the guard entirely: no flick is ever detected/sent while a fish is hooked, only
+    /// during the pre-hook bite window. `FishFightController.handleFightFlick()` is left in place,
+    /// unreachable from Rod now rather than deleted, so re-enabling this is a one-line change if a
+    /// more reliable trigger condition is found later — matching this project's own precedent for
+    /// disabling a not-yet-working mechanic without discarding it (the QTE prompt system, ADR-078,
+    /// was disabled the same way before being replaced outright in ADR-089).
+    ///
+    /// Edge-detected (`wasFlicking`) so a single flick reports once, not once per frame the
+    /// acceleration stays past threshold — `flickCooldown` (ADR-091) still applies for whatever
+    /// residual double-fire risk exists within the bite window itself.
+    private func detectFlickGesture() {
+        guard hookPhase == .hookInWater else {
+            wasFlicking = false
+            return
+        }
+        let profile = motionInterpreter.profile
+        let isFlicking = motion.accelerationZ * profile.castAccelerationSign >= profile.castAcceleration
+        if isFlicking, !wasFlicking, Date().timeIntervalSince(lastFlickSentAt) >= Self.flickCooldown {
+            lastFlickSentAt = Date()
+            Task { await send(.fishingEvent(.hookSet)) }
+        }
+        wasFlicking = isFlicking
     }
 
     private var motionInput: RodMotionInput {
@@ -335,9 +452,6 @@ final class RodViewModel: ObservableObject {
             yaw: motion.yaw,
             rotationRateMagnitude: motion.rotationRateMagnitude,
             accelerationZ: motion.accelerationZ
-            , rotationRateX: motion.rotationRateX
-            , rotationRateY: motion.rotationRateY
-            , rotationRateZ: motion.rotationRateZ
         )
     }
 

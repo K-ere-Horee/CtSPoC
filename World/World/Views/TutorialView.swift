@@ -40,9 +40,10 @@ private let tutorialSteps: [TutorialStep] = [
     ),
 ]
 
-/// Tap-anywhere-to-advance tutorial overlay. Composed on top of `ContentView`
-/// by `RootView`; renders no background of its own so the live game scene
-/// stays visible behind it.
+/// Tap-anywhere-to-advance tutorial overlay. Composed on top of the live game scene by
+/// `ContentView`'s own overlay `ZStack` (ADR-087 — ported from `feat/ui-slice`'s `RootView`,
+/// which originally composed it the same way, just via a different top-level router); renders no
+/// background of its own so the live game scene stays visible behind it.
 struct TutorialView: View {
     let onFinished: () -> Void
 

@@ -1684,6 +1684,270 @@ Recorded as ADR-029 in `ARCHITECTURE_DECISIONS.md`.
   UI (Rod's minimal buttons, the result screen, the interested haptic
   pulse) has been observed running on hardware yet.
 
+## Gameplay V1 - Resistance Scales With Rolled Fish Size
+
+Date: 2026-07-18.
+
+Reported directly after the previous entry: "tension belom corespond
+dengan fish weight (alias masih linear untuk semua fish weight).
+seharusnya, semakin fish weight * length mendekati angka max, maka nilai
+resistance juga mengikuti. berarti resistance." (tension doesn't yet
+correspond to fish weight — same/flat for every fish weight. As fish
+weight*length approaches the max, resistance should follow.) Recorded as
+ADR-030 in `ARCHITECTURE_DECISIONS.md`.
+
+### World
+
+- `World/World/Gameplay/FishFightController.swift`: `resistance` no
+  longer reads `currentSpecies?.resistance` directly. Added a private
+  `sizeRatio: Float` (0...1) from where this catch's rolled
+  `currentWeight * currentLength` falls between the species' min and max
+  weight*length product (`species.weightRange.min/max *
+  species.lengthRange.min/max`), clamped 0...1 the same way
+  `stars(forWeight:in:)` already clamps its own ratio. `resistance` is
+  now `species.resistance * sizeRatio` — a ceiling scaled by how big this
+  specific catch rolled, not a flat per-species constant. Feeds into
+  `effectiveFishPullRate` and `fishPullSpeed` unchanged (ADR-026/028's
+  formulas).
+- `FishSpecies`, `FishCatalog`, and every other fight-controller
+  computation are unaffected — this is purely how `resistance` derives
+  its value, not a data model change.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-030.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the tension safe zone
+  section with the `sizeRatio` formula, right after the existing
+  `resistance` scaling note.
+
+### Verification
+
+- Rebuilt Shared as a macOS module directly from
+  `find Sources/Shared -name "*.swift"` and used it to
+  `xcrun swiftc -typecheck` the same World file list as the previous
+  entry (`WorldViewModel.swift`, `ContentView.swift`, `FishCatalog.swift`,
+  `FishCatchResult.swift`, `FishFightController.swift`,
+  `FishRecordStore.swift`, `LineTensionView.swift`, `ResultView.swift`,
+  `CastMeterView.swift`, `TransportHost.swift`) — no errors, same
+  pre-existing unrelated `controllerEntity` unused-binding warning.
+- Only one species (`fish_a`) exists in `FishCatalog` today, so this
+  change is currently unverifiable by playtest variety beyond "small
+  fish_a fights softer than large fish_a" — not confirmed on hardware.
+
+## Gameplay V1 - Cast Distance, Fight Distance, and Search-Phase Reel State Fixes
+
+Date: 2026-07-18.
+
+Reported directly, three related issues in one message: "semakin jauh
+casting, harusnya semakin gede ikan yang bisa ditangkap. juga, distance
+belum ke reflect. juga, ketika hook inwater tapi udah aku reel duluan,
+ketika fishonhook, meteran line tension ga muncul (masih bug disitu)"
+(the farther you cast, the bigger the fish that should be catchable;
+also, distance isn't reflected yet; also, when the hook is in water but I
+already started reeling first, once it becomes fishOnHook the tension
+meter doesn't appear — still a bug there). Recorded as ADR-031 in
+`ARCHITECTURE_DECISIONS.md`.
+
+A fourth, related bug surfaced immediately after verifying the fight-
+distance fix below, in a follow-up message: "masalahnya masih ada, ketika
+hook InWater terus langsung aku reel, status nya berubah ke fishInHook,
+seharusnya engga kan. Kalo reflect mancing dunia nyata, kita bisa reel
+sampai batas tertentu sebelum hook nya diangkat dari air" (the problem is
+still there — when the hook is InWater and I immediately reel, the status
+changes to fishOnHook, which shouldn't happen; to reflect real fishing, we
+should be able to reel up to a point before the hook is lifted from the
+water). Folded into this same entry/ADR rather than a new one, since it
+was found while still working the same uncommitted fix and is part of the
+same reel-during-search scenario.
+
+### World: Real Cast Distance
+
+- `World/World/ViewModels/WorldViewModel.swift`: added
+  `castLaunchPosition: SIMD3<Float>`, captured in `launchHook(solution:)`
+  from the same `tipPosition` already used to place the hook.
+  `simulateFlyingHook(deltaTime:)` now computes the horizontal splash
+  distance (`simd_distance` between launch and splash `xz` position) and
+  calls `fishFight.resetForNewCast(castDistance:)` (was the no-argument
+  `resetForNewCast()`) with it. This is deliberately separate from
+  `CastSolution.distance` (Rod's cast-meter preview value, computed from
+  `CastMeterConfig` during charging) — that value was never wired to
+  `launchHook`'s physics (only `power`/`launchAngle` fed hook velocity),
+  so it never corresponded to what actually happened; left untouched for
+  its own preview purpose, not repurposed.
+- `World/World/Gameplay/FishFightController.swift`: `resetForNewCast()`
+  gained a `castDistance: Float = 0` parameter, stored as
+  `currentCastDistance` and published as `lastCastDistance: Float` for
+  HUD display.
+- `World/World/ContentView.swift`: Controller State grid gained a "Last
+  Cast Distance" row bound to `fishFight.lastCastDistance`.
+
+### World: Distance Caps Fish Size
+
+- `FishFightController.swift`: added `sizeCeilingRatio: Float` (`0.3 +
+  0.7 * clamp01(currentCastDistance / maxExpectedCastDistance)`,
+  `maxExpectedCastDistance = 10.0`, a physics estimate at full
+  charge/level release) and a static `biasedRoll(in:ceilingRatio:)` that
+  rolls a `FishSpeciesRange` value capped at `min + span * ceilingRatio`
+  instead of the full range. `updateSearching(deltaTime:)`'s bite branch
+  now rolls `currentWeight`/`currentLength` through this instead of
+  `FishSpeciesRange.randomValue()`'s uniform roll. Since the previous
+  entry's `sizeRatio`/`resistance` (ADR-030) already derive from
+  `currentWeight`/`currentLength`, a far cast landing a big fish
+  automatically also fights harder — no additional wiring needed.
+
+### World: Guaranteed Fight Distance on Bite
+
+- `FishFightController.swift`: added `minimumFightDistance: Float = 0.4`
+  (hook-to-rod meters).
+- `WorldViewModel.swift`: added `ensureFightDistance()`, called
+  immediately after `setHookPhase(.fishOnHook)` in `tick()`'s
+  `.hookInWater`/`.bite` branch. Pushes the hook entity outward along the
+  existing rod-to-hook axis to at least `minimumFightDistance` if it's
+  already closer. Root cause this fixes: `tick()`'s `.hookInWater` case
+  still runs `reelHook(deltaTime:)` in the same tick a bite just
+  happened (the `switch hookPhase` snapshot predates
+  `setHookPhase(.fishOnHook)`), and if the player had already been
+  reeling in during the search phase the hook could already be within
+  `reelHook`'s catch-distance threshold (`0.12`) the instant the bite
+  landed — resolving the catch in that same tick and flipping
+  `fishFight.hasFishOnHook` `true` then `false` before SwiftUI ever
+  rendered a frame with it `true`, so `LineTensionView` (gated on
+  `hasFishOnHook`) never appeared.
+
+### World: Search-Phase Reeling No Longer Fakes fishOnHook
+
+- `WorldViewModel.swift`'s `reelHook(deltaTime:)`: the trailing
+  `setHookPhase(.reeling)` (previously unconditional on every step that
+  moved the hook) is now `if fishFight.hasFishOnHook { setHookPhase
+  (.reeling) }`. Root cause: reeling during `.hookInWater` before any
+  bite — an intentional, pre-existing "empty retrieve" action — called
+  this same `reelHook` function, which set `hookPhase = .reeling`
+  regardless of whether a fish was attached. `tick()`'s `case
+  .fishOnHook, .reeling:` branch assumes reaching it means a fish is
+  hooked, and its not-reeling `else` branch unconditionally calls
+  `setHookPhase(.fishOnHook)` — so the tick after the player released the
+  reel gesture mid-retrieve (no bite ever having happened), `hookPhase`
+  flipped to `.fishOnHook` with nothing on the line. Gating the
+  `.reeling` transition on `hasFishOnHook` restores the invariant that
+  `.reeling`/`.fishOnHook` are only reached with a real fish attached;
+  reeling in an empty line now stays `.hookInWater` the whole retrieve
+  and only leaves it via a real bite or the existing empty-retrieve path
+  to `.idle` once the hook reaches the rod — matching the real-fishing
+  behavior described in the report (reel up to a limit before the hook
+  comes out of the water, no status change along the way).
+- Side effect fixed for free: `RodViewModel.handle(_:)` stops the fish-
+  interested haptic pulse whenever `hookPhase != .hookInWater`
+  (`Rod/Rod/ViewModel/RodViewModel.swift:221`); the same bug was
+  prematurely killing that pulse the instant a player reeled during
+  search, even before any bite. Not a separate code change — fixed by
+  the same gate.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: ADR-031, retitled to cover all four
+  fixes; added the search-phase-reeling decision and rationale
+  subsections.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the tension safe zone
+  section with the cast-distance-caps-size, guaranteed-fight-distance,
+  and search-phase-reeling subsections, after the existing
+  `sizeRatio`/`resistance` note.
+
+### Verification
+
+- Rebuilt Shared as a macOS module directly from
+  `find Sources/Shared -name "*.swift"` and used it to
+  `xcrun swiftc -typecheck` the same World file list as the previous two
+  entries (`WorldViewModel.swift`, `ContentView.swift`,
+  `FishCatalog.swift`, `FishCatchResult.swift`,
+  `FishFightController.swift`, `FishRecordStore.swift`,
+  `LineTensionView.swift`, `ResultView.swift`, `CastMeterView.swift`,
+  `TransportHost.swift`) — no errors, same pre-existing unrelated
+  `controllerEntity` unused-binding warning. Re-ran after the
+  search-phase-reeling fix; same result.
+- `git diff --check` passes.
+- Not confirmed on hardware: the `maxExpectedCastDistance` (10.0)
+  normalization constant is a hand-derived estimate from the launch
+  physics formula (not measured on-device), and none of this entry's
+  fixes (fight-distance buffer, search-phase reel state) have been
+  played through their exact repros on a real device/simulator pair.
+
+## Gameplay V1 - Cast Power Weighted by Backswing Distance
+
+Date: 2026-07-18.
+
+Raised as a design question, then approved for implementation: "casting
+mechanism nya sekarang masih aga funky dan wonky. soalnya doesn't matter
+kalo aku narik ke belakang sejauh apapun, dia cuma nge register ketika
+iphone nya aku 'flick' dengan cepat, sementara target aku kan biar iphone
+nya ngitung seberapa kuat cast itu dari jarak yang dia tempuh sampai
+flick" (the casting mechanism still feels off — it doesn't matter how far
+back I pull, it only registers when I flick the phone fast, but my goal
+is for the phone to compute cast strength from the distance traveled up
+to the flick), plus a direct question about whether mixing flick and reel
+detection on one device was a hardware limitation. Investigated first:
+confirmed it wasn't (casting/reeling are already disambiguated by
+proximity to separate calibrated poses before rotation rate is read) and
+proposed a distance-plus-flick blend; player replied "Ok let me see how
+that works." Recorded as ADR-032 in `ARCHITECTURE_DECISIONS.md`.
+
+### Shared
+
+- `Shared/Sources/Shared/Gameplay/RodMotionInterpreter.swift`: added
+  `backswingPeakDistance: Double` (peak `distance(current, profile.
+  idlePose)` reached since the current cast gesture began — the same
+  wrapped pitch/roll/yaw metric already used for idle/cast/reel pose
+  classification), reset to `0` whenever classification freshly enters
+  `.cast` and otherwise only growing. Also reset in `updateProfile(_:)`
+  and `setIdlePose(_:)` alongside the existing per-gesture state.
+  `.cast`'s branch now computes `castPower` as `distancePower * (0.7 +
+  0.3 * flickPower)` instead of `rotationRateMagnitude / 5` alone
+  (`distancePower` from `backswingPeakDistance` against new
+  `minimumBackswingDistance`/`maximumBackswingDistance` constants,
+  `0.12`/`1.0` radians; `flickPower` is the same `rotationRateMagnitude /
+  5` term as before). `snapshot(input:orientation:)` now passes
+  `backswingDistance: Float(backswingPeakDistance)` into `CastSnapshot`.
+- `Shared/Sources/Shared/Gameplay/CastResolver.swift`: `CastSnapshot`
+  gained `backswingDistance: Float` (default `0`, Rod-internal only —
+  never transmitted over `NetworkMessage`). `CastConfig` gained
+  `minimumBackswingDistance`/`maximumBackswingDistance` (default
+  `0.12`/`1.0`, mirroring the existing `minimumCastVelocity`/
+  `maximumCastVelocity`). `CastResolver.resolve(_:)` — the function whose
+  output (`CastSolution.power`) actually drives `WorldViewModel.
+  launchHook`'s hook velocity, entirely separate from
+  `RodMotionInterpreter`'s own `castPower` field — now computes the same
+  `distancePower * (0.7 + 0.3 * flickPower)` blend instead of a bare
+  velocity-only `normalizedPower`. Fixing only `RodMotionInterpreter`
+  would have made the on-screen meter feel right while leaving actual
+  hook physics governed by flick speed alone; both had to change.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-032.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Cast Resolver Pipeline"
+  with the backswing-distance blend and its rationale.
+
+### Verification
+
+- `xcrun swiftc -typecheck` compiles Shared as both a macOS module and an
+  iOS-simulator module directly from `find Sources/Shared -name
+  "*.swift"` — no errors.
+- Typechecked against those modules: World's `WorldViewModel.swift`,
+  `ContentView.swift`, `FishCatalog.swift`, `FishCatchResult.swift`,
+  `FishFightController.swift`, `FishRecordStore.swift`,
+  `LineTensionView.swift`, `ResultView.swift`, `CastMeterView.swift`,
+  `TransportHost.swift` (macOS) and Rod's `RodViewModel.swift`,
+  `ContentView.swift`, `FishingHaptics.swift`, `HapticManager.swift`,
+  `MotionManager.swift`, `NearbyInteractionManager.swift`,
+  `TransportClient.swift` (iOS simulator) — no errors, same pre-existing
+  unrelated `controllerEntity` unused-binding warning on the World side.
+- `git diff --check` passes.
+- Explicitly a first pass to "see how it feels," not a tuned final
+  values: the `0.12`/`1.0` backswing-distance bounds and `0.7`/`0.3`
+  blend weights are hand-picked, not calibrated per-player or measured
+  on hardware. Not run on a real device/simulator pair yet — the actual
+  feel (whether backswing distance dominates enough, whether the flick
+  bonus is noticeable) is unverified until played.
+
 ## Asset-Integration Environment, First-Person Camera, and Rod Motion Fixes
 
 Branch: `feat/asset-integration`
@@ -2797,6 +3061,19 @@ clearing, `hookPhase` resync on reconnect), `World/World/ContentView.swift` (FPS
 `RealityView` to a `make`-only initializer), `Rod/Rod/ContentView.swift` (re-enabled
 `MotionDebugView` under Developer Details).
 
+**Editorial note, added during the PR #7/#20 merge (2026-07-21):** the `MainMenuView.swift`/
+`LoadingView.swift`/`RootView.swift` work described below (pill buttons, `Loading -> Main Menu ->
+Game/Credits` routing) was **not adopted** — `main` had independently redesigned the Main Menu
+and added a loading screen by the time this branch merged (ADR-081/082, stacked-rectangle
+buttons, a `WorldViewModel.Screen`-driven overlay model instead of `RootView`'s own router), and
+that design was kept. `TutorialView.swift`, `CreditsView.swift`, `Support/Theme.swift` (Fredoka
+font tokens), and the `ATSApplicationFontsPath` fix were carried forward and rewired onto the
+kept navigation model — see the "Merge PR #7 (feat/ui-slice) into main" entry near the end of this
+file for exactly what was kept, dropped, and why. This section is preserved as-is below, unedited,
+as the historical record of the original work (per this project's "never delete previous
+checkpoint entries" rule) — read `MainMenuView`/`LoadingView`/`RootView` mentions below as
+describing a design that was superseded, not the current one.
+
 ## Main Menu layout: logo sizing and pill-button redesign to match the approved mockup
 
 Context: the `feat/ui-slice` branch already carried a working-tree, not-yet-checkpointed front-end
@@ -3041,3 +3318,6245 @@ environment).
 Files changed: `World/World/Views/TutorialView.swift` (fixed `labelWidth`, centered text, `Identifiable`
 removed, tap-hit-testing idiom cleanup), `World/World/Views/MainMenuView.swift` (indentation only),
 `CLAUDE.md` (`## Verification` command, `## Project Structure` tree), `.gitignore` (new).
+## Merge feat/asset-integration into dev
+
+Date: 2026-07-18.
+
+Requested directly: "coba cek branch feat/asset-integration deh... Aku
+berencana buat nge pull dan merge branch itu ke dev di local sekarang,
+tapi di Xcode branch itu ga muncul" — the branch existed fine on
+`origin` and fetched cleanly via CLI, so the "not showing in Xcode" issue
+was Xcode's own Source Control view not having refreshed, not a repo
+problem. The player then ran `git merge origin/feat/asset-integration`
+manually before this entry, which auto-merged everything except
+`CHECKPOINT.md` (a real content conflict, both branches having appended
+entries near the same point in this append-only log); asked to finish
+resolving it.
+
+### Conflict Resolution
+
+`CHECKPOINT.md`'s single conflict block (originally lines 1687-3065)
+covered every entry from "Gameplay V1 - Resistance Scales With Rolled
+Fish Size" (ADR-030) through "Gameplay V1 - Cast Power Weighted by
+Backswing Distance" (ADR-032) on the `dev` (`HEAD`) side, against the
+"Asset-Integration Environment, First-Person Camera, and Rod Motion
+Fixes" entry on the `feat/asset-integration` side. Both sides were kept,
+concatenated in their original order (`HEAD` entries first, then the
+asset-integration entry) — no entry was ever in genuine conflict; the
+markers existed purely because both branches appended near the same
+byte offset. Nothing else conflicted: `git status` showed every other
+touched path (`WorldViewModel.swift`, `ContentView.swift`,
+`ARCHITECTURE_DECISIONS.md`, `AGENTS.md`, `SPATIAL_CONTROLLER_DOCUMENT.md`,
+Rod's `ContentView.swift`/`TransportClient.swift`/`RodViewModel.swift`,
+`Shared/Package.swift`, `NetworkMessage.swift`, both `.xcodeproj/
+project.pbxproj` files, every new `World/World/Assets/Environment/*`
+asset, the new `World/World/Reality/` files, and the removed old
+`World/World/Assets/Rod.usdz`) already three-way-merged cleanly before
+this session touched anything.
+
+### Verification
+
+`xcodebuild -workspace CtSPoC.xcworkspace -scheme World -destination
+'platform=macOS' build` failed on a pre-existing, unrelated signing gap
+("No signing certificate 'Mac Development' found") — not a code issue.
+Fell back to the same `swiftc`-based module verification used throughout
+this session, bumped to the platforms `Shared/Package.swift` now
+declares (`.iOS(.v26)`/`.macOS(.v26)`, up from `.v14`/`.v17` in earlier
+entries):
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an
+  `arm64-apple-ios26.0-simulator` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors.
+- `xcrun swiftc -typecheck` against the macOS module for every
+  `World/World` Swift file, including the new `Reality/
+  EnvironmentSceneBuilder.swift`, `RodRigController.swift`,
+  `WaterMaterial.swift` (`WaterShader.metal` is not Swift and wasn't
+  typechecked this way) — no errors.
+- `xcrun swiftc -typecheck` against the iOS-simulator module for every
+  `Rod/Rod` Swift file — no errors.
+- `git diff --cached --check` passed before committing.
+- Merge commit created with `git commit --no-edit` (kept git's own
+  `Merge remote-tracking branch 'refs/remotes/origin/feat/asset-
+  integration'` message); `dev` is now 10 commits ahead of `origin/dev`,
+  not yet pushed as of this entry.
+- Not run: the actual Xcode build/signing path, and no live
+  device/simulator session with the new environment assets, water
+  shader, or rod rig — this merge has only been verified to typecheck,
+  not to run.
+
+## Fix Cast Direction (Hook Launches Sideways, Not Along Rod Aim)
+
+Date: 2026-07-19.
+
+Bug report supplied as `BUGFIX_cast_direction.md` (screenshot-backed,
+found via real hardware testing after the asset-integration merge):
+casting with the rod visually aimed straight out over the pier
+consistently landed the hook off to the side near the shoreline —
+"casting nya masih ke kanan kiri dari pier." A consistent offset, not
+random noise, pointing at a fixed axis-convention bug rather than a
+calibration/timing one. Recorded as ADR-033 in
+`ARCHITECTURE_DECISIONS.md`.
+
+### Root Cause
+
+`CastResolver.resolve(_:)` (Shared) computes `CastSolution.direction` by
+rotating a hardcoded `CastVector3.forward = (0, 0, -1)` by the corrected
+orientation. That constant was only ever correct for the old placeholder
+arrow mesh (`World/World/ContentView.swift`'s pre-asset-integration
+`makeArrow()`, whose tip sat at local `[0, 0, -0.76]`, i.e. along -Z).
+The asset-integration merge swapped in `rod_main.usdz` via
+`RodRigController`, whose entire bone chain
+(`Root/Handle/Rod_01/Rod_02/Rod_03/Tip`) rests along local **+Y** instead
+(every `RodRigController.rodBones` entry's `restTranslation` is
+`[0, Y, 0]`) — a rod modeled held upright, tip up, not tip-forward.
+`WorldViewModel.launchHook(solution:)` was still reinterpreting
+`solution.direction.x/z` as a World-space heading directly, so the hook
+launched toward wherever local -Z ended up after rotation — a fixed
+offset from wherever the actual +Y-rooted rig tip visually swung to.
+
+### Fix
+
+- `World/World/ViewModels/WorldViewModel.swift`'s `launchHook(solution:)`:
+  added `controllerEntity` back into the initial `guard`. The horizontal
+  launch heading is no longer read from `solution.direction`; it's now
+  derived live from the rig itself: `aim = tipEntity.position
+  (relativeTo: nil) - controllerEntity.position`, projected to horizontal
+  and normalized (falling back to `(0, 0, -1)` if near-zero, e.g. tip
+  pointing straight up). `solution.power`/`launchAngle`/`distance` are
+  unchanged. `CastResolver`/`CastSnapshot`/`CastVector3.forward` in
+  Shared were deliberately left untouched — per ADR-018/019 and this
+  bug's own architecture note, Shared must stay mesh-agnostic, so
+  pointing `.forward` at whatever axis matches the *current* rig would
+  just move the same fragility to a different constant and break again
+  on the next rig swap. Deriving the heading from live World-side
+  geometry is correct by construction and needs no maintenance if the
+  rig changes again.
+- No changes to `Shared/Sources/Shared/Gameplay/CastResolver.swift`,
+  `RodMotionInterpreter.swift`, or anything Rod-side — `solution.direction`
+  is still computed and transmitted as before, it's just no longer
+  consumed for World's horizontal launch heading (grepped: it wasn't
+  read anywhere else in World or Rod).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-033. Noted in passing (not
+  fixed this entry): the asset-integration merge introduced its own
+  ADR-030 ("World Explicitly Authors the First-Person Camera") and
+  ADR-031 ("Transport Delivery Mode Matches Message Freshness"), which
+  now collide with this session's own ADR-030/031 (Resistance/Cast
+  Distance). Flagged to the user; out of scope for this bug fix.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "World Controller and
+  Hook Separation" with the live-geometry heading derivation and why it
+  replaces `CastSolution.direction` for this purpose.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file (same list as the merge
+  entry above) — no errors. `git diff --check` clean on the changed file
+  (`WorldViewModel.swift`); a pre-existing trailing-whitespace warning on
+  `ContentView.swift` predates this change (a separate, already-made
+  edit commenting out the debug "Controller State" panel) and was left
+  alone.
+- Not yet confirmed on device/simulator. The bug report explicitly
+  requires live-hardware confirmation, not just a typecheck, to close —
+  that verification has not happened yet.
+
+## Cast Direction Clamped to Forward Cone, Bobber Doubled in Size
+
+Date: 2026-07-19.
+
+Requested directly, right after the previous entry's fix: "gue masih
+gatau direction si yellow bobber ini kemana, tapi yang jelas ga sesuai
+sama apa yang gue mau. Bisa ga dibikin semacam limitation area jadi mau
+kemanapun cast, cuma bisa ke arah depan, sekitar 135 derajat di depan
+pov kamera? gedein juga ukuran bobbernya by 2x" (I still don't know
+where this yellow bobber's direction is going, but it's clearly not
+what I want. Can a limitation area be made so no matter where the cast
+goes, it can only go forward, about 135 degrees in front of the camera
+POV? Also double the bobber's size). Recorded as ADR-034 in
+`ARCHITECTURE_DECISIONS.md`.
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`: added
+  `castConeHalfAngle: Float = 67.5°` (135° total cone) and
+  `clampedToForwardCone(_:)`, applied to the horizontal heading in
+  `launchHook(solution:)` right after the previous entry's live-rig-
+  geometry derivation (`rawHorizontal` → `clampedToForwardCone
+  (rawHorizontal)` → `horizontal`). Uses `atan2(direction.x,
+  -direction.z)` for the signed angle from the camera's fixed forward
+  (-Z — `makePlayerCamera()` never rotates dynamically, confirmed by
+  re-reading it, so this is a compile-time-constant reference axis, not
+  a live camera basis lookup), clamps to `±castConeHalfAngle`, rebuilds
+  the vector. Deliberately applied as a hard clamp on top of whatever
+  the upstream aim derivation produces, rather than a further attempt
+  to prove that derivation fully correct — the player's framing ("I
+  still don't know where it's going") called for a guaranteed bound on
+  the outcome.
+- Same file's `makeSceneEntity()`: hook mesh
+  `.generateSphere(radius: 0.035)` → `radius: 0.07` (2x).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-034.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "World Controller and
+  Hook Separation" with the forward-cone clamp, directly after the
+  previous entry's live-geometry heading section.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors.
+- `git diff --check` clean on `WorldViewModel.swift`.
+- Not yet confirmed on device/simulator — same outstanding gap as the
+  previous entry, now covering this fix too. The cone clamp's actual
+  feel (whether 135° is the right width, whether the hook is legible
+  at 2x) is unverified until played.
+
+## Debug: Camera Follows Hook During Flight
+
+Date: 2026-07-19.
+
+Requested directly: "coba deh, bisa ga kameranya dibuat ngikutin bobber
+as it flies? aku pengen debugging posisi nya dulu" (can the camera be
+made to follow the bobber as it flies? I want to debug its position
+first) — explicitly framed as a temporary aid for visually judging the
+cast direction/cone-clamp work from the previous two entries, not a
+requested gameplay/product camera behavior. No ADR recorded for this one
+on purpose — it's not a stable architectural decision, same treatment
+this repo already gives other debug-only additions like the commented-
+out `MotionDebugView`.
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`: added
+  `playerCamera: Entity?`, captured in `makeSceneEntity()` from
+  `makePlayerCamera()`'s return value (previously added to the scene
+  inline without being retained). Extracted the camera's default look-at
+  math out of `makePlayerCamera()` into `resetCameraToPlayerPose(_:)` so
+  it can be reused. Added `updateCameraFollow()`, called every `tick()`
+  right after `updateRodPose()`: while `hookPhase == .flying`, points
+  `playerCamera` at `hookEntity.position` from a fixed `(0, 1.5, 3.0)`
+  offset above/behind it; any other phase, calls
+  `resetCameraToPlayerPose(_:)` to snap back to the normal fixed player
+  view.
+- Does not affect the previous entry's launch-heading cone clamp — that
+  math uses a constant `(0, 0, -1)` reference computed once at launch,
+  before the hook (and now the camera) start moving, not the camera's
+  live orientation.
+
+### Documentation
+
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added a short "Debug: camera
+  follows the hook mid-flight" note after the forward-cone-clamp section,
+  and tightened that section's wording (it previously said "the camera
+  never rotates dynamically," which is no longer true in all cases now
+  that this debug follow exists — clarified that the clamp's own math is
+  unaffected because it runs before any camera movement happens).
+- No `ARCHITECTURE_DECISIONS.md` entry — see rationale above.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors.
+- `git diff --check` clean on `WorldViewModel.swift`.
+- Not yet run live — this is itself a debugging tool meant to be used
+  for the next round of on-device verification, not something that has
+  been verified live yet.
+
+## Cast Direction: Empirical 90° Correction From Live Testing
+
+Date: 2026-07-19.
+
+Direct follow-up after live-testing the previous two entries' fixes with
+the camera-follow debug aid: "ok kayanya ketemu masalahnya. bobbernya
+selalu loncat ke kiri dari pov orang, dan cast distance nya jadi kecil
+banget dibanding sebelumnya yang bisa jauh. Apa mungkin kalo kalo di
+define 'depan' itu sekitar 90 derajat ke kanan dari titik cast sekarang
+bisa?" (I think I found the problem. The bobber always jumps to the left
+of the player's POV, and cast distance got much smaller than before,
+when it could go far. Could "forward" be redefined as about 90 degrees
+to the right of the current cast point?). Extended ADR-034 in place
+(not a new ADR number) since this directly tunes the same feature,
+still uncommitted from the same session.
+
+### Diagnosis
+
+Both reported symptoms trace to one cause: ADR-033's rig-geometry-derived
+raw aim reads consistently ~90° left of the player's true intended
+heading. Once ADR-034's ±67.5° cone clamp landed, that raw angle fell
+*outside* the cone on nearly every cast, so it was pinning at the left
+boundary every time — a fixed clamped angle regardless of how the player
+actually aimed, which also reads as "distance got much smaller," since
+the direction (and therefore where along the shore/lake the hook lands)
+stopped varying with the player's actual aim.
+
+### Fix
+
+- `World/World/ViewModels/WorldViewModel.swift`: added
+  `aimCorrectionAngle: Float = .pi / 2` and `rotatedAroundY(_:by:)` (a
+  plain Y-axis rotation: `(x·cosθ - z·sinθ, y, x·sinθ + z·cosθ)`,
+  positive = right, matching `clampedToForwardCone`'s own sign
+  convention). `launchHook(solution:)` now rotates `rawHorizontal` by
+  `aimCorrectionAngle` before it reaches `clampedToForwardCone`, so the
+  corrected heading lands inside the cone as intended instead of
+  constantly hitting its edge.
+- 90° is a starting point taken directly from the reported symptom, not
+  measured from the rig's actual skeleton/axis data. Called out as the
+  one constant to retune if the next test shows the bias isn't exactly a
+  quarter turn.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: extended ADR-034's Decision and Rationale
+  in place with the `aimCorrectionAngle` addition (no new ADR number).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the forward-cone-clamp
+  section with the correction and its rationale.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors.
+- `git diff --check` clean on `WorldViewModel.swift`.
+- Not yet re-tested live. This is explicitly a hypothesis from the
+  previous live-test report, not yet confirmed — the next on-device pass
+  needs to check whether 90° is the right correction or needs further
+  tuning, and whether "distance" is now back to normal.
+
+## Debug: Forward Reference Ray and Player-Facing vs. Cast-Landing Coordinates
+
+Date: 2026-07-19.
+
+Direct follow-up: the player asked whether the world asset itself (dock
+orientation) might be the real root cause instead of the cast math
+("aku takutnya, asset world nya yang ternyata ga bikin aku ngarah ke
+depan" — I'm worried the world asset itself isn't what's making me face
+forward), and proposed yawing the whole environment 90° as an
+alternative fix. Recommended against a blind whole-environment rotation
+(risk of breaking the hand-tuned `playerCameraPosition`/
+`dockAnchorPosition` dock alignment) and instead proposed an
+unambiguous visual+numeric check first: "Ok tambahin debug nya,
+sekaligus tampilin angka player facing coordinate vs cast succesful
+coordinate" (ok add that debug, and also show the numbers for player
+facing coordinate vs. cast successful coordinate). No ADR — debug-only,
+same treatment as the camera-follow entry above.
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`: added
+  `debugForwardRayLength: Float = 20` and `makeDebugForwardRay()` — a
+  thin (`0.03×0.03m` cross-section) `UnlitMaterial`-red box, always
+  added to the scene in `makeSceneEntity()`, running from
+  `dockAnchorPosition` straight along the camera's fixed forward (-Z)
+  for 20 m. `UnlitMaterial` so it reads as a flat, unmistakable color
+  regardless of scene lighting/shadow.
+- Added `debugPlayerFacingCoordinate`/`debugCastLandingCoordinate:
+  SIMD3<Float>?` (`@Published`, both `nil` until the first successful
+  cast). Set together in `simulateFlyingHook(deltaTime:)` at splash:
+  `debugCastLandingCoordinate` is the actual landing `(x, 0, z)`;
+  `debugPlayerFacingCoordinate` is `launchPoint + (0,0,-1) *
+  castDistance` — i.e. "where a perfectly straight-ahead cast of the
+  *same distance, from the same origin* would have landed." Same origin
+  and same distance, only direction differs, so any gap between the two
+  numbers is purely angular deviation, not confounded by cast power.
+
+### World: ContentView
+
+- Added a "Cast Direction Debug" `GroupBox` (uncommented, always
+  visible — separate from the existing commented-out "Controller State"
+  panel, left untouched) showing both coordinates as `(x, z)` via a new
+  `formatXZ(_:)` helper, `"--"` until the first cast lands.
+
+### Documentation
+
+- No `ARCHITECTURE_DECISIONS.md` entry (debug-only, per this entry's own
+  rationale above).
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors.
+- `git diff --check` clean on `WorldViewModel.swift`/`ContentView.swift`.
+- Not yet run live. This is the diagnostic tool for the next on-device
+  pass, not something that's itself been visually confirmed yet — next
+  test should report whether the red ray tracks the pier or points off
+  to one side, and whether "Player Facing" vs. "Cast Landed" numbers
+  converge or diverge after the `aimCorrectionAngle` fix.
+
+## Debug: Expose Pre-Clamp Aim Angles (Clamp Was Hiding True Error Size)
+
+Date: 2026-07-19.
+
+First live result from the previous entry's debug tools: "Player facing:
+(0.00, -12.47), Cast landed: (-11.52, -4.77). kan jauh" (that's really
+far apart). Working the numbers back: the landing point's angle from
+straight-ahead comes out to almost exactly -67.5° — precisely
+`castConeHalfAngle`'s left boundary. That means `clampedToForwardCone`
+was masking the real error: the corrected angle was *at least* 67.5°
+left of forward, but the clamp made it impossible to tell from the
+landing coordinate alone whether the true unclamped angle was -70° or
+-170° — the previous debug pair couldn't distinguish "just past the
+cone edge" from "wildly off," since both clamp to the same boundary.
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`: added
+  `debugRawAimDegrees`/`debugCorrectedAimDegrees: Float?` (`@Published`).
+  Captured in `launchHook(solution:)` right after computing
+  `rawHorizontal`/`correctedHorizontal`, *before* `clampedToForwardCone`
+  runs, via a new `signedAngleDegrees(_:)` helper (same `atan2(x, -z)`
+  convention as the clamp itself, unclamped, in degrees, debug-only).
+
+### World: ContentView
+
+- "Cast Direction Debug" `GroupBox` gained two more rows: "Raw Aim
+  Angle" and "Corrected Aim Angle", via a new `formatDegrees(_:)`
+  helper.
+
+### Documentation
+
+- No `ARCHITECTURE_DECISIONS.md` entry — debug-only, same as the
+  previous two entries.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors.
+- `git diff --check` clean on `WorldViewModel.swift`/`ContentView.swift`.
+- Not yet run live. The next cast's "Raw Aim Angle"/"Corrected Aim
+  Angle" numbers will give the exact `aimCorrectionAngle` needed to
+  actually land inside the cone, instead of continuing to guess against
+  a clamped result.
+
+## Cast Direction: aimCorrectionAngle Corrected From 90° to 180°
+
+Date: 2026-07-19.
+
+Live debug readout reported directly: "Raw Aim Angle: -174.0°,
+Corrected Aim Angle: -84.0°." Checking the math confirms it's working
+correctly against the wrong constant: -174 + 90 (the prior
+`aimCorrectionAngle`) = -84, exactly matching. The real finding is the
+raw number itself — -174° is not a quarter-turn off (the original 90°
+guess), it's almost exactly **opposite** of forward. `launchHook
+(solution:)`'s tip-minus-root aim vector points nearly straight
+backward when the player casts forward.
+
+### Fix
+
+- `World/World/ViewModels/WorldViewModel.swift`: `aimCorrectionAngle`
+  changed from `.pi / 2` (90°) to `.pi` (180°), with the doc comment
+  rewritten to record the measured -174° and flag the ~6° residual
+  (180° - 174°) as unaddressed pending the next live reading.
+
+### Documentation note: `Architecture /` directory relocated
+
+Mid-session, the user moved `ARCHITECTURE_DECISIONS.md`,
+`SOFTWARE_ARCHITECTURE_DOCUMENT.md`, and `SPATIAL_CONTROLLER_DOCUMENT.md`
+out of the `Architecture /` subdirectory to the project root (confirmed
+directly: "dir nya emg tak hapus kok, dan move semua keluar ke main
+project dir" — I did delete the dir, and moved everything out to the
+main project dir). No content was lost — `git status` showed a clean
+delete-at-old-path/untracked-at-new-path pair, and the root-level files
+already carried every session entry through the previous checkpoint.
+This entry and the two ADR docs it touches were written to the new root
+paths; `CLAUDE.md`'s "Project Structure" section still describes the old
+`Architecture/` layout and should be updated in a future documentation
+pass.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: updated ADR-034's Decision and Rationale
+  in place with the -174° measurement and the 90°→180° correction (no
+  new ADR number — same constant, same session).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the `aimCorrectionAngle`
+  section to match.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors.
+- `git diff --check` clean on `WorldViewModel.swift`.
+- Not yet re-tested live. The next cast's "Corrected Aim Angle" debug
+  reading is the thing to check — it should now read close to 0°
+  (forward) rather than pinned at ±67.5°.
+
+## Debug: Forward Reference Ray Disabled (Kept, Not Removed)
+
+Date: 2026-07-19.
+
+Requested directly: the red debug ray was visible in World and the
+player asked where it came from; once pointed at
+`WorldViewModel.makeDebugForwardRay()`, asked "Gausah di remove, tapi
+di comment aja terus tambahin //MARK: - biar aku tau dimananya" (no
+need to remove it, but comment it out and add a `// MARK: -` so I know
+where it is).
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`: commented out
+  `debugForwardRayLength`, `makeDebugForwardRay()`, and its call site in
+  `makeSceneEntity()` (`root.addChild(makeDebugForwardRay())`), each
+  under a `// MARK: - Debug: Forward Reference Ray (disabled, kept for
+  later re-enabling)` marker so they're easy to locate and restore.
+  Content unchanged, only commented — nothing deleted.
+
+### Documentation
+
+- No `ARCHITECTURE_DECISIONS.md`/SAD change — this only toggles a
+  debug-only addition that was itself never given an ADR.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file — no errors (confirms
+  nothing else still referenced the now-commented-out ray code).
+- `git diff --check` clean on `WorldViewModel.swift`.
+
+## Migration: MultipeerConnectivity to CoreBluetooth
+
+Date: 2026-07-19.
+
+Requested via a supplied migration brief
+(`~/Downloads/MIGRATION_transport_to_corebluetooth.md`, not committed to the
+repo — a task document, not project documentation) with explicit
+instructions: "let's go, hajar. jangan dulu push pr di akhir atau
+commit, let me do all that stuff" (go for it — but don't push a PR or
+commit at the end, I'll handle that). **This entry's changes are staged
+in the working tree only; nothing was committed or pushed, per that
+instruction.** Recorded as ADR-035 in `ARCHITECTURE_DECISIONS.md`.
+
+### Investigation (before writing any replacement code, per the brief's own instruction)
+
+Grepped actual `.send(`/`case` call sites in `RodViewModel.swift` and
+`WorldViewModel.swift` rather than trusting the brief's own
+reconstructed summary. Confirmed: Rod sends `.state` (~30 Hz) and
+`.discoveryToken` (once, on NI token availability); World sends
+`.hookPhase` and `.fishingEvent` (both one-shot gameplay signals);
+World's `handle(_:)` only acts on `.state`, ignoring everything else it
+receives. This inventory is what the GATT layout below is designed
+around.
+
+### Shared
+
+- `Shared/Sources/Shared/Spatial/SessionConfiguration.swift`: removed
+  the MPC-only `serviceType` Bonjour string; added `bleServiceUUID`,
+  `bleStateCharacteristicUUID`, `bleReliableOutCharacteristicUUID`,
+  `bleCommandCharacteristicUUID` — plain `String`s (not `CBUUID`), so
+  Shared still never imports CoreBluetooth.
+- `Shared/Sources/Shared/Protocols/Transport.swift`: `TransportProtocol`
+  marked `@MainActor` (see Concurrency below).
+- Added `Shared/Sources/Shared/Protocols/BLEFraming.swift`:
+  `BLEFraming.chunks(for:maxChunkSize:)` (4-byte big-endian length
+  header + MTU-sized chunking) and `BLEMessageReassembler` (accumulates
+  fed chunks, yields complete messages). Pure `Data`/Foundation, no
+  CoreBluetooth import. Verified correct via a standalone Swift script
+  (single-chunk, multi-chunk, sequential messages through one
+  reassembler, empty payload, coalesced multi-message delivery — all
+  passed) before wiring it into either transport file — the one piece of
+  this migration verifiable without hardware, so verified thoroughly.
+
+### Rod (`Rod/Rod/Transport/TransportClient.swift`, full rewrite)
+
+- BLE peripheral (`CBPeripheralManager`, `queue: nil`). Advertises one
+  service with three characteristics (`state`: notify; `reliableOut`:
+  indicate; `command`: write). `send(_:)` routes `.state` through a
+  never-fragments unreliable path (drops the sample if it doesn't fit
+  one packet — see rationale in ADR-035) and
+  `.discoveryToken`/`.fishingEvent`/`.hookPhase` through a fragmenting,
+  FIFO-queued reliable path using CoreBluetooth's own indicate
+  backpressure.
+- Reconnection: advertising is left running after a central
+  unsubscribes (never stopped outside `disconnect()`), matching MPC's
+  previous continuous-browsing/advertising behavior.
+- Every CoreBluetooth delegate selector used was cross-checked against
+  the actual SDK header
+  (`CoreBluetooth.framework/Headers/CBPeripheralManager.h`) rather than
+  relied on from memory — caught and fixed one wrong guess
+  (`peripheralManagerDidStartAdvertising(_:error:)`, not
+  `peripheralManager(_:didStartAdvertisingError:)` as first written; a
+  wrong ObjC-bridged delegate signature compiles fine as an unused
+  method and just silently never fires, so this needed verifying
+  against the header, not just against the compiler).
+
+### World (`World/World/Transport/TransportHost.swift`, full rewrite)
+
+- BLE central (`CBCentralManager`, `queue: nil`). Scans for the service,
+  connects to the first match, discovers the three characteristics,
+  subscribes to `state`/`reliableOut`, writes to `command`. `.ready` is
+  reported once both characteristics are subscribed and `command` is
+  known.
+- Reconnection: scanning restarts automatically after any
+  disconnect/failed-connect while a connection is still wanted, same
+  rationale as Rod's side.
+- Same header cross-check discipline as Rod's file; all `CBCentralManagerDelegate`/
+  `CBPeripheralDelegate` signatures used matched on the first attempt.
+
+### Concurrency
+
+`TransportProtocol` (Shared), `TransportClient`, and `TransportHost` are
+all `@MainActor`. Root cause this avoids: both classes have mutable
+send-queue state touched both by CoreBluetooth delegate callbacks and by
+direct `send()` calls from arbitrary `Task` contexts — without
+isolation, that's a real data race regardless of what the compiler
+flags (the app targets build in Swift 5 language mode, `SWIFT_VERSION =
+5.0`, so this would NOT have been a compile error, just a latent bug).
+`@MainActor` on the classes matches their only two callers
+(`RodViewModel`/`WorldViewModel`, already `@MainActor`) and is backed by
+constructing both managers with `queue: nil` (main queue), so
+CoreBluetooth's own callback delivery matches the isolation
+declaration. `@MainActor` on `TransportProtocol` itself removes an
+actor-isolation-crossing warning (confirmed: "this is an error in the
+Swift 6 language mode") that appeared on first typecheck; CoreBluetooth's
+own ObjC delegate protocol conformances use `@preconcurrency` instead,
+since those protocols aren't Shared's to annotate.
+
+### Platform entitlements
+
+- `Rod/Rod/Info.plist` / `World/World/Info.plist`: removed
+  `NSBonjourServices`.
+- Both `project.pbxproj`s: `INFOPLIST_KEY_NSLocalNetworkUsageDescription`
+  replaced with `INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription`.
+- `World/World.xcodeproj/project.pbxproj` specifically:
+  `ENABLE_RESOURCE_ACCESS_BLUETOOTH` flipped `NO` → `YES`. World runs
+  App Sandboxed on macOS (`ENABLE_APP_SANDBOX = YES`) and this build
+  setting is the sandbox's CoreBluetooth entitlement gate — left at `NO`,
+  it would have silently blocked the central role at the OS level no
+  matter how correct the code was. Caught by reading the pbxproj
+  directly rather than assuming; easy to miss since it produces no
+  build error, only a runtime permission failure.
+- Also tightened `ENABLE_INCOMING_NETWORK_CONNECTIONS`/
+  `ENABLE_OUTGOING_NETWORK_CONNECTIONS` to `NO` on World — grepped and
+  confirmed no `URLSession`/`Network.framework` usage anywhere in World,
+  so these existed only for MPC's local-network transport.
+
+### Verification actually completed
+
+- `grep -rn "^import MultipeerConnectivity"` across `Rod`/`World`/
+  `Shared` — zero matches (full removal confirmed).
+- `grep` for `NSBonjourServices`/`NSLocalNetworkUsageDescription`/the old
+  `_cts-poc` Bonjour string across every `.plist`/`.pbxproj` — zero
+  matches.
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an
+  `arm64-apple-ios26.0-simulator` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors on either platform.
+- `xcrun swiftc -typecheck` against those modules: every `World/World`
+  Swift file including the new `TransportHost.swift`, on **both** macOS
+  and iOS-simulator targets (World's `SUPPORTED_PLATFORMS` lists all
+  three) — macOS clean; iOS-simulator surfaced a pre-existing,
+  unrelated `import AppKit` in `EnvironmentSceneBuilder.swift` (from the
+  earlier asset-integration merge, confirmed via `git diff`/`git log`
+  that this session never touched that file) that would break an
+  iOS-simulator build regardless of this migration — flagged, not
+  fixed, out of scope. Every `Rod/Rod` Swift file including the new
+  `TransportClient.swift`, iOS-simulator — clean.
+- `plutil -lint` on both `.pbxproj`s and both `Info.plist`s — all OK.
+- `git diff --check` clean on every text file touched.
+- Every CoreBluetooth delegate method signature used was cross-checked
+  character-for-character against the installed SDK's Objective-C
+  headers (`CoreBluetooth.framework/Headers/*.h`), not written from
+  memory — this class of bug (a plausible-looking but wrong ObjC-bridged
+  selector) compiles silently and just never fires at runtime, so
+  typechecking alone would not have caught it.
+
+### Explicitly NOT yet verified — live-hardware test plan not run
+
+The migration brief is explicit that `xcodebuild`/typecheck success is
+not sufficient on its own for this change, and this entry does not claim
+otherwise. None of the following has been done, and all of it needs a
+live session on physical devices, not just this environment:
+
+- **No Step 0 baseline was captured.** The brief calls for measuring
+  current MPC latency/reliability with Wi-Fi off *before* touching code;
+  this session went straight to the rewrite, so there is no baseline
+  number to compare against.
+- **No live connect/discovery test.** Advertise → scan → connect →
+  subscribe has never actually run between two devices.
+- **No live `RodState` streaming test.** Whether the hook/rod actually
+  follows motion correctly over this transport is unverified.
+- **No latency measurement.** `RodState.timestamp`-based send-vs-receive
+  latency, compared against a (missing) Step 0 baseline, has not been
+  measured.
+- **No Wi-Fi-off test** — the actual motivating scenario for this
+  migration has not been exercised at all.
+- **No reconnect test.** The `hookPhase` resync-on-reconnect and
+  `lastError`-clearing behavior (both hard-won fixes from earlier
+  sessions) are preserved in the code by inspection — the resync call
+  site in `WorldViewModel`'s `onStateChange` handler is untouched — but
+  not confirmed live under this transport.
+- **No full V1 gameplay loop test** (connect → calibrate → cast →
+  search → interest/bite → fight → catch/escape → result → continue)
+  over CoreBluetooth.
+- **MTU/chunking is untested under real BLE timing.** The framing
+  protocol is verified correct in isolation (see the Shared section
+  above), but real-world negotiated MTU, connection interval, and
+  whether the unreliable `.state` path's "drop if it doesn't fit"
+  behavior is ever actually triggered in practice are all unknown until
+  run on hardware.
+- **Payload size was estimated, not measured.** `RodState`'s JSON size
+  with an active `CastSolution` was reasoned about but never actually
+  encoded and measured against a real negotiated MTU value.
+
+None of the migration brief's acceptance criteria are confirmed met yet
+except the static ones (no `import MultipeerConnectivity` remains). This
+is a code-complete, typecheck-clean migration — not a verified one.
+
+## Fix: EnvironmentSceneBuilder Cross-Platform Color Build Break
+
+Date: 2026-07-19.
+
+Follow-up on the `import AppKit` gap flagged (not fixed) in the previous
+entry. The player attempted their own fix by swapping `NSColor(srgbRed:...)`
+to `CGColor(srgbRed:...)` at both call sites and removing the `AppKit`
+import, then reported the resulting Xcode errors directly: "Cannot
+assign value of type 'CGColor' to type 'NSColor'"
+(`tintTerrainGreen`, line 586) and "Cannot convert value of type
+'CGColor' to expected argument type 'DirectionalLightComponent.Color'
+(aka 'NSColor')" (`makeSun`, line 654).
+
+### Root cause
+
+`DirectionalLightComponent.Color` and `PhysicallyBasedMaterial.
+BaseColor.tint` are both RealityKit type aliases for the platform's
+native color type — `NSColor` on macOS, `UIColor` on iOS/iPadOS — not
+`CGColor`. Swapping to `CGColor` satisfied neither alias on either
+platform; it was the wrong direction for a cross-platform fix, not just
+an incomplete one.
+
+### Fix
+
+- `World/World/Reality/EnvironmentSceneBuilder.swift`: added a
+  `PlatformColor` typealias (`NSColor`/`UIColor` behind `#if
+  canImport(AppKit)`/`#elseif canImport(UIKit)`) and a private
+  `srgbColor(_:_:_:_:)` helper building the correct concrete type per
+  platform. Both call sites (`sunColor`, `tintTerrainGreen`'s tint)
+  now go through this helper instead of constructing `NSColor`/`CGColor`
+  directly.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an
+  `arm64-apple-ios26.0-simulator` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules for the full
+  `World/World` Swift file list (same list as the transport migration
+  entry above), on **both** macOS and iOS-simulator — clean on both.
+  This closes the gap the previous entry flagged: World's
+  `SUPPORTED_PLATFORMS` (iphoneos/iphonesimulator/macosx) claim is now
+  actually true for this file, not just for the transport layer.
+- `git diff --check` clean.
+- Not run: an actual Xcode build (this was verified via `swiftc
+  -typecheck` against hand-built Shared modules, the same method used
+  throughout this session — no live device/simulator run of World on
+  iOS has happened, only the compile-correctness check).
+
+## World Main Menu
+
+Date: 2026-07-19.
+
+Requested directly, right after wrapping the CoreBluetooth migration:
+"gausah commit sih, maybe sekarang saat yang tepat buat implement main
+menu dulu sesuai v1" (no need to commit — maybe now's the right time to
+implement the Main Menu, per V1). Closes a gap flagged repeatedly since
+the Result Screen sprint ("Return to Menu... no Main Menu yet to return
+to"). Recorded as ADR-036 in `ARCHITECTURE_DECISIONS.md`.
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`: added `enum Screen {
+  case mainMenu, playing }` and `@Published private(set) var screen:
+  Screen = .mainMenu`. Added `startGame()` (Main Menu's "Start Fishing" —
+  no-ops unless `connectionState` is `.ready`/`.streaming`, per the
+  product doc's "player cannot continue until the controller is
+  available") and `returnToMenu()` (Result screen's new "Return to
+  Menu" — guarded to `hookPhase == .result` same as the existing
+  `continueFishing()`, also resolves `hookPhase` back to `.idle`, and
+  does *not* touch the transport connection).
+- Added `World/World/Views/MainMenuView.swift`: title, subtitle,
+  "Start Fishing" button (disabled until Rod is connected, with a
+  status row — spinner + text per `ConnectionState` case, or a
+  checkmark once ready), solid black background (deliberately opaque,
+  not translucent — gameplay must not render through the title screen).
+- `World/World/Views/ResultView.swift`: added a second closure
+  (`onReturnToMenu: () -> Void`) and a second button ("Return to Menu",
+  `.bordered`) beneath the existing "Continue Fishing"
+  (`.borderedProminent`). Updated its doc comment, which previously
+  explicitly said "Return to Menu is intentionally omitted until a Main
+  Menu exists."
+- `World/World/ContentView.swift`: `body`'s `ZStack` gained a
+  `viewModel.screen == .mainMenu` branch rendering `MainMenuView` as an
+  overlay on top of the always-mounted `content` (the existing
+  `RealityView`/HUD), and the existing result-screen branch gained a
+  `viewModel.screen == .playing` guard alongside its `hookPhase ==
+  .result` check, plus wired the new `onReturnToMenu` closure. `content`
+  itself, and its `.onAppear { viewModel.start() }`/`.onDisappear {
+  viewModel.stop() }`, are unchanged — deliberately: the transport
+  connection begins in the background as soon as `ContentView` first
+  appears, regardless of which screen is showing, so pressing "Start
+  Fishing" is often already unblocked by the time the player taps it,
+  and the environment/rod rig never reloads just from a menu
+  round-trip.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-036.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: resolved both existing "no Main
+  Menu yet" gap notes (Result Screen section, Rod's Minimal V1
+  Interface section) to point at ADR-036 instead of describing an open
+  gap, and added a new "World Main Menu (ADR-036)" section.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from
+  `find Sources/Shared -name "*.swift"`, then `xcrun swiftc -typecheck`
+  against it for every `World/World` Swift file, including the new
+  `MainMenuView.swift` and updated `ResultView.swift`/`ContentView.swift`/
+  `WorldViewModel.swift` — no errors.
+- `git diff --check` clean on every file touched.
+- Not run: any live session. Whether `content`'s `RealityView` actually
+  avoids re-creating the scene across a menu round-trip (vs. SwiftUI
+  treating the `ZStack` branch changes as a reason to rebuild it
+  anyway), whether the Main Menu reads correctly on screen, and whether
+  "Start Fishing"/"Return to Menu" behave as intended end to end are
+  all unverified — reasoned about from `RealityView`'s documented
+  `make`-once-per-identity behavior, not observed.
+
+## Fish Tiers and Three-Level Catch-Count Progression
+
+Date: 2026-07-19.
+
+Requested directly, with exact thresholds and structure specified:
+"Onto progression, detailnya kaya gini: Level 1: after catch 10 small
+fish, u can catch more medium fish. Level 2: after catch 10 medium-sized
+fish, u can catch more big fish. Level 3: muncul scott dan kayak ngasih
+perintah untuk nangkap dia. for now, let's say small fish is fish A.
+parameter fish nya nanti di ubah lagi seiring berjalannya game, yang
+jelas semakin tinggi level ikan, semakin susah dari sisi berat, length,
+dan resistance saat reelingnya ofc. ini dulu deh" (translated in ADR-037).
+Recorded as ADR-037 in `ARCHITECTURE_DECISIONS.md`.
+
+Note on how this entry came together: the data model, `FishCatalog`
+expansion, and `ProgressionStore` were already in place in the working
+tree when this entry was written — that part of the implementation
+happened earlier in this same session, in a portion that had already
+been summarized out of visible context by the time this entry was
+drafted (per this project's own context-compaction behavior). What
+follows documents the *complete* feature as it now stands, including
+finishing the part that was still missing when picked back up:
+`FishFightController.resolve(outcome:)` had all the progression
+plumbing (`progressionStore`, `currentLevel`, `levelUpAnnouncement`)
+sitting unused — nothing actually called
+`progressionStore.recordCatch(tier:)`, so catching fish never advanced
+the level. Caught via direct code inspection, not a bug report.
+
+### Shared
+
+- `Shared/Sources/Shared/Models/Gameplay/FishSpecies.swift`: added
+  `public enum FishTier: String, Codable, Sendable, CaseIterable { case
+  small, medium, big, boss }` and `public let tier: FishTier` on
+  `FishSpecies` (constructor parameter added accordingly).
+
+### World: Catalog and Progression Store
+
+- `World/World/Gameplay/FishCatalog.swift`: `all` grew from one entry
+  (`fish_a`) to four — `fish_a` (`.small`, unchanged stats), `fish_b`
+  (`.medium`, weight 3.5-9.0 kg / length 55-90 cm / resistance 0.55 /
+  value 25), `fish_c` (`.big`, weight 9.0-20.0 kg / length 90-140 cm /
+  resistance 0.75 / value 60), `scott` (`.boss`, weight 20.0-40.0 kg /
+  length 140-200 cm / resistance 0.95 / value 500). All placeholder
+  numbers per the player's own framing — rough scale-ups, not tuned.
+  `randomSpecies()` → `randomSpecies(unlockedTiers: Set<FishTier>)`,
+  filtering `all` to unlocked tiers only (falls back to `all[0]` if the
+  filtered pool is ever empty).
+- Added `World/World/Gameplay/ProgressionStore.swift`: persists
+  per-tier catch counts to `UserDefaults` (same pattern as
+  `FishRecordStore`). `level: Int` (1/2/3), `unlockedTiers: Set
+  <FishTier>`, and `progressTowardNextLevel: (caught: Int, needed:
+  Int)?` (`nil` at level 3) are all derived from the stored counts, not
+  separately stored. `recordCatch(tier:)` increments the right counter
+  and returns the level *after* recording — callers compare against the
+  level beforehand to detect a level-up.
+
+### World: FishFightController Wiring (the piece that was missing)
+
+- `World/World/Gameplay/FishFightController.swift`: `init` gained a
+  `progressionStore: ProgressionStore = ProgressionStore()` parameter
+  (same injectable-with-default pattern as `recordStore`), seeding
+  `currentLevel` from it. `resolve(outcome:)`'s existing `.caught`
+  branch now calls `progressionStore.recordCatch(tier: species.tier)`
+  and compares the returned level against `currentLevel`; if higher,
+  sets `levelUpAnnouncement` via a new `announcement(forLevel:)` helper
+  ("Medium fish have entered the lake!" at 2, "Scott has appeared.
+  Catch him!" at 3) before updating `currentLevel`.
+  `updateSearching(deltaTime:)`'s bite branch already called
+  `FishCatalog.randomSpecies(unlockedTiers:)` correctly (part of the
+  earlier, already-complete portion) — only the catch-side recording
+  was missing.
+
+### World: HUD
+
+- `World/World/ContentView.swift`: the "Caught" `GroupBox` gained a
+  "Level N · x/10 to next tier" row (or "All tiers unlocked" once
+  `progressTowardNextLevel` is `nil`). The body `ZStack` gained a third
+  overlay branch showing `LevelUpBannerView` whenever `fishFight.
+  levelUpAnnouncement` is set, gated to `screen == .playing`.
+- Added `World/World/Views/LevelUpBannerView.swift`: a dismissible
+  toast pinned to the top of the screen, deliberately not auto-fading
+  (a "Scott has appeared" moment shouldn't be missable by glancing away
+  at the wrong second) and deliberately not a blocking modal (it can
+  appear stacked above `ResultView`, since the catch that crosses a
+  tier threshold is still a normal catch too — the two views don't gate
+  each other).
+
+### Aside, unrelated to this entry
+
+`Rod/Rod/ContentView.swift` currently has its "Start Fishing" and "End
+Fishing" buttons commented out, leaving only "Calibrate" active — found
+while surveying files for this entry, not something this session's
+progression work touched or caused. Flagged to the player directly
+rather than silently uncommenting, since the intent behind it is
+unknown (could be deliberate, mid-test).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-037.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "Fish Species and
+  Fight Simulation" section's now-stale "one entry today" claim, and
+  added a new "Fish Tiers and Progression (ADR-037)" section.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an
+  `arm64-apple-ios26.0-simulator` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules for the full
+  `World/World` Swift file list, including `ProgressionStore.swift` and
+  `LevelUpBannerView.swift`, on **both** macOS and iOS-simulator — clean
+  on both.
+- `git diff --check`: clean on every file this entry actually touched
+  (`FishFightController.swift`, `ContentView.swift`,
+  `LevelUpBannerView.swift`); a trailing-whitespace hit on
+  `ContentView.swift` traced to a hunk from the earlier, already-landed
+  Main Menu work, not this entry's edits.
+- Not run: any live session. Whether catching 10 `fish_a` actually
+  unlocks `fish_b` in the bite pool, whether the level-up banner reads
+  correctly stacked above the result card, and whether the placeholder
+  species stats feel remotely balanced are all unverified — this is a
+  code-complete, typecheck-clean pass, not a played one.
+
+## Rod Owns Session Start/End; Recalibrate Moved to Rod's Corner
+
+Date: 2026-07-19.
+
+Requested directly, right after the previous entry noted (unasked)
+that Rod's Start/End Fishing buttons were commented out: "oh iya,
+tentang start fishing dan end fishing itu, bisa ga di ubah aja? jadi
+instead of controller di world yang harus press button untuk mulai
+mancing, ganti ke phone aja. status di world mungkin 'press "start" on
+rod to play'. dan di rod pun bukan start fishing atau end fishing,
+tapi start fishing, terus ketika mancing ada button end fishing buat
+balik ke main menu. recalibrate jangan di tengah lagi, tapi geser ke
+pojok kanan atas dari rod screen" (translated in ADR-038). Recorded as
+ADR-038 in `ARCHITECTURE_DECISIONS.md`.
+
+Noted a real design fork before implementing, resolved rather than
+guessed at: with `WorldViewModel.screen` becoming reactive to Rod's
+`isFishing`, `ResultView`'s "Return to Menu" button (added one entry
+ago in ADR-036) would have silently stopped working — pressing it would
+force `screen = .mainMenu` for exactly one frame before the next
+30 Hz `.state` message (still carrying `isFishing == true`, since Rod
+never heard about the button press) flipped it straight back to
+`.playing`. Removed the button rather than ship a control that visibly
+half-works, since Rod is now the sole authority for the session
+boundary by the player's own design.
+
+### Shared
+
+- `Shared/Sources/Shared/Models/Rod/RodState.swift`: added
+  `isFishing: Bool` (default `false`), riding along in the existing
+  ~30 Hz `.state` stream — no new `NetworkMessage` case needed.
+
+### Rod
+
+- `Rod/Rod/ViewModel/RodViewModel.swift`: `isFishing` (already existed,
+  local-only, gating cast/reel gesture reporting) is now also passed
+  into `RodState` at all three construction sites: `publishState()`,
+  `updateAction()`, and the `.idle`-hookPhase reset inside `handle(_:)`.
+- `Rod/Rod/ContentView.swift`: replaced the three-button stack (Start
+  Fishing / Calibrate / End Fishing — Start and End previously both
+  present, just oppositely `.disabled`) with one `@ViewBuilder`
+  `fishingButton` that shows either "Start Fishing"
+  (`.borderedProminent`, disabled until `calibrationStep == .complete`)
+  or "End Fishing" (`.bordered`) depending on `isFishing` — never both
+  at once. Calibrate moved into a `ToolbarItem(placement:
+  .topBarTrailing)` (the phone's top-right corner), reusing the
+  existing `calibrationButtonTitle` computed property rather than
+  duplicating its per-step text, same disabled condition as before
+  (`!hasMotionSample || isFishing`).
+
+### World
+
+- `World/World/ViewModels/WorldViewModel.swift`:
+  - `handle(_:)` now captures `rodState.isFishing` before overwriting
+    `rodState`, and compares it against the freshly-received
+    `state.isFishing`: rising edge → `screen = .playing`; falling edge
+    → `returnToMenu()`.
+  - `returnToMenu()` changed from a public, `hookPhase == .result`-gated
+    method (the old "Return to Menu" button handler) to `private`, no
+    longer gated — the player can press "End Fishing" on Rod at any
+    point during a session, not only after a catch. Now resets
+    in-progress fight/hook state (`hookVelocity = .zero`,
+    `hookEntity?.isEnabled = false`, `fishFight.resetForNewCast()`,
+    `setHookPhase(.idle)`) before switching `screen`.
+  - `startGame()` deleted — nothing calls it anymore.
+  - `transport.onStateChange`: added a `.disconnected`/`.failed`
+    branch calling `returnToMenu()` as a fail-safe. Since `screen` now
+    depends entirely on `.state` messages continuing to arrive, a
+    genuine Rod disconnect mid-session would otherwise leave `screen`
+    stuck on `.playing` forever — no more messages ever arrive to flip
+    `isFishing`, and there's no controller left to press "End Fishing."
+- `World/World/Views/MainMenuView.swift`: removed the `onStart`
+  closure and "Start Fishing" button entirely; now purely a status
+  display (title/subtitle + a status row per `ConnectionState`, reading
+  "Press \"Start Fishing\" on Rod to play" once ready).
+- `World/World/Views/ResultView.swift`: removed `onReturnToMenu` and
+  its "Return to Menu" button — see the design-fork note above. Only
+  "Continue Fishing" remains.
+- `World/World/ContentView.swift`: updated both call sites
+  (`MainMenuView(connectionState:)` with no closure, `ResultView(result:)`
+  with only the continue closure).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-038.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "World Main Menu
+  (ADR-036)" section's now-stale flow diagram/button descriptions, and
+  added a new "Rod Owns the Session Boundary (ADR-038)" section.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an
+  `arm64-apple-ios26.0-simulator` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full
+  `World/World` Swift file list on **both** macOS and iOS-simulator —
+  clean on both; the full `Rod/Rod` Swift file list on iOS-simulator —
+  clean.
+- `git diff --check`: clean on every file this entry touched; a
+  trailing-whitespace hit on `ContentView.swift` traced to the same
+  pre-existing hunk (from the earlier Main Menu work) flagged in the
+  previous two entries, not this one's edits.
+- Not run: any live session. Whether pressing "Start Fishing" on Rod
+  actually flips World from menu to gameplay, whether "End Fishing"
+  correctly interrupts a mid-fight session and returns to the menu,
+  whether the disconnect fail-safe actually fires in time, and whether
+  the relocated Calibrate toolbar button is discoverable/usable in the
+  phone's top-right corner are all unverified — code-complete and
+  typecheck-clean only.
+
+## Fight Difficulty Pass: Tug-of-War, Distance Escape, Tension Haptics, Fight Camera
+
+Date: 2026-07-19.
+
+Requested directly after live play, five asks in one message: "rod
+casting nya kurang jauh sih jujur. also, ketika hook kena fish, camera
+langsung geser lagi ke hook dong biar proses reel nya jadi lebih
+dramatis. kasih getaran haptics continuous juga di hp untuk reel meter
+(ini yang low medium high haptics). juga, rasanya masih terlalu gampang
+dapetin ikan baik fish A, B, C, bahkan Scott. Bikin lebih susah lagi
+dengan reel meter lebih cepet naik ke high tension. untuk itu, perlu ada
+juga mechanism dimana ikannya bisa escape dari reel karena kejauhan."
+Recorded as ADR-039 in `ARCHITECTURE_DECISIONS.md`.
+
+Precondition check: the previous entry's rod-driven session work
+(ADR-038) turned out to be fully landed already — `ResultView`'s
+single-button form, `ContentView`'s parameterless `MainMenuView` call,
+and `WorldViewModel`'s `isFishing`-edge handling were all in place; a
+stale editor diagnostic had suggested otherwise. Nothing needed
+finishing before this pass.
+
+### Shared
+
+- `Shared/Sources/Shared/Models/Gameplay/FishingEvent.swift`: added
+  `reelTensionLow` / `reelTensionMedium` / `reelTensionHigh` — band
+  *transition* events, not a raw tension stream, so the reliable
+  World→Rod write path carries a handful of events per fight rather than
+  30 Hz of telemetry.
+
+### World: FishFightController
+
+- `baseReelTensionRate` 0.5 → 0.85 ("reel meter lebih cepet naik ke
+  high tension") — sustained hard reeling snaps roughly twice as fast.
+- `basePullSpeed` 0.4 → 1.0 — now meaningful in two places (drift AND
+  the new reel-time tug-of-war below).
+- `maxExpectedCastDistance` 10 → 20, matching the new cast physics.
+- `updateFight` gained `hookDistance:`. First fight tick's distance is
+  stored as `fightStartDistance`; exceeding it by
+  `escapeDistanceAllowance` (6 m) resolves `.escaped` — the "spooled"
+  failure ("ikannya bisa escape dari reel karena kejauhan").
+  `fightStartDistance` resets in `resetForNewCast` and `resolve`.
+- New `TensionBand` enum + `tensionBand` computed property (`nil`
+  outside a fight; `< 0.55` low / `0.55..<0.8` medium / `>= 0.8` high).
+
+### World: WorldViewModel
+
+- `castSpeed` 3.6 → 5.0 ("casting nya kurang jauh") — max ballistic
+  range ~13 m → ~24 m.
+- `updateCameraFollow()` now follows the hook through `.fishOnHook` and
+  `.reeling`, not just `.flying` — doc comment rewritten from "temporary
+  debug aid" to intended behavior ("biar proses reel nya jadi lebih
+  dramatis"). All other phases still reset to the player pose.
+- `reelHook(deltaTime:)`: tug-of-war. Player speed minus
+  `fishFight.fishPullSpeed`; net-negative moves the hook *away* while
+  reeling. Empty retrieves unchanged (`fishPullSpeed` is 0 unhooked).
+  With the new constants, Scott out-pulls anything below roughly half
+  reel throttle, while above it tension climbs toward snap — neither
+  extreme is safe for long.
+- Fight tick passes `hookDistanceFromRod()` into `updateFight`.
+- New `syncTensionBand()` runs every tick; sends the matching
+  `FishingEvent` only when `fishFight.tensionBand` changes, tracked in
+  new `lastSentTensionBand`. Cleared silently when the band goes `nil` —
+  fight-ending events already stop Rod's haptics.
+
+### Rod
+
+- `FishingHaptics`: new `FightBand` (interval 0.5 s / 0.28 s / 0.11 s,
+  intensity 0.3 / 0.45 / 0.7 — the product doc's spaced/regular/rapid
+  rhythm tiers), set by the three new events, rendered by
+  `fightPulse(now:)` on the same every-motion-sample callback as
+  `interestPulse`. All fight-ending events clear it; new `stopFight()`
+  clears it on `HookPhase` leaving the fight phases (same
+  belt-and-suspenders as `stopInterest()`).
+- `HapticManager.fightTick(intensity:sharpness:)` — band-agnostic
+  single tap; the band decides the parameters.
+- `RodViewModel`: `handle(.hookPhase)` calls `stopFight()` for
+  non-fight phases; `updateAction()` calls `fightPulse()` alongside
+  `interestPulse()`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-039.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: tension-safe-zone section updated
+  (new formula block including the distance escape, tug-of-war, new
+  constants); new tension-band-haptics and fight-camera subsections; the
+  old "Debug: camera follows the hook mid-flight" section rewritten as
+  intended behavior; flow diagram's `updateFight` signature updated.
+
+### Verification
+
+- Rebuilt `Shared` as both `arm64-apple-macosx26.0` and
+  `arm64-apple-ios26.0-simulator` modules from
+  `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: full `World/World`
+  file list (macOS) and full `Rod/Rod` file list (iOS simulator) — both
+  clean.
+- Not run: any live session. Every difficulty number
+  (`baseReelTensionRate` 0.85, `basePullSpeed` 1.0, 6 m allowance, band
+  thresholds, pulse intervals, `castSpeed` 5.0) is a reasoned first
+  pass, not play-tested — the whole point of this pass is feel, and
+  feel is unverified. Also unverified live: whether the camera following
+  the fight reads as dramatic rather than disorienting when the fish
+  drags line out fast, and whether high-band 0.11 s haptic taps read as
+  "continuous" on real hardware.
+
+## Fight Rebalance and Config Extraction (Corrects Previous Entry)
+
+Date: 2026-07-19.
+
+Live-play feedback on the previous entry's numbers, reported directly:
+"kayanya reel nya terlalu susah deh, it's even impossible untuk grab
+fish A tanpa tensionnya ketinggian. juga, kalo tension kerendahan
+(slack), reset langsung bobber ke posisi awal (alias ga hookInWater
+lagi). bisa ga dibikin di dalam config file beserta docs nya, agar aku
+bisa tuning manual?" Amended ADR-039 in place (not a new ADR number —
+same still-uncommitted feature, same session) rather than filing a
+follow-up ADR.
+
+### The actual bug: `baseReelTensionRate` 0.85 was unplayable
+
+Worked the numbers by hand for `fish_a` (weakest tier, resistance 0.35,
+`sizeRatio` 0...1): `effectiveFishPullRate` ranges ~0.15-0.20. At
+`reelSpeed` 1.0, `reelPull` was `0.85` — so far past the fish's own pull
+that tension went from `initialTension` (0.5) to 1.0 (line break) in
+under a second, regardless of how carefully the player reeled. Confirmed
+this was the actual reported symptom, not a vaguer "feels hard."
+
+### World: FishFightController
+
+- `baseReelTensionRate` 0.85 → **0.55**. Re-derived time-to-snap at
+  `reelSpeed` 0.3/0.6/1.0 against `fish_a`: 0.85 gave ~0.7-0.9s at any
+  meaningful reel speed (unplayable); 0.55 gives near-neutral at 0.3,
+  ~2.8-3.9s at 0.6, ~1.25-1.44s at 1.0 — a real curve where reel-speed
+  modulation is an actual skill, not "any reeling loses."
+- `resolveFightFailure` (actually in `WorldViewModel`, see below) — noted
+  here since it's the other player-reported bug: `.escaped` previously
+  went to `.hookInWater` (kept searching); `.lineBreak` went to `.idle`.
+  Both now go to `.idle` — "ga hookInWater lagi." Both failure causes
+  (slack-tension and the previous entry's distance-spooled escape) share
+  the same `FightFailure.escaped` case, so both get this treatment; there
+  was no clean way to split them without threading a failure subtype
+  through, and nothing suggested only one should differ.
+
+### Shared: FishFightConfig (new)
+
+- Added `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: a
+  `Codable`/`Equatable` struct collecting every fight-tuning number that
+  was previously a private constant scattered across
+  `FishFightController` (World) and `FishingHaptics`' `FightBand` enum
+  (Rod) — `initialTension`, `baseFishPullRate`, `baseReelTensionRate`,
+  `basePullSpeed`, `escapeDistanceAllowance`, `tensionBandMediumThreshold`,
+  `tensionBandHighThreshold`, and nine haptic parameters (interval/
+  intensity/sharpness × low/medium/high). Every field is a `var` with an
+  inline doc comment explaining what it does and, where relevant, how it
+  interacts with the others (e.g. `baseReelTensionRate`'s comment walks
+  through the net-tension formula directly). Meant to be hand-edited —
+  "config file beserta docs nya... agar aku bisa tuning manual."
+- `FishFightController.init` gained `config: FishFightConfig =
+  FishFightConfig()`; every private constant it used to hardcode now
+  reads `config.xxx`. `maxExpectedCastDistance` deliberately stayed a
+  private constant, not part of the config — it's cast physics
+  (`WorldViewModel.castSpeed`-derived), not fight tuning.
+- `FishingHaptics.init` gained the same `config:` parameter. `FightBand`
+  is now a plain 3-case enum with no properties of its own; a new
+  private `parameters(for:)` looks up interval/intensity/sharpness from
+  `config`. Both `FishFightController()` and `FishingHaptics()`'s
+  existing zero-argument call sites (`WorldViewModel.swift`,
+  `RodApp.swift`) are unaffected — they pick up `FishFightConfig()`'s
+  defaults automatically.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: amended ADR-039 in place — the
+  `baseReelTensionRate` decision now shows both the original (0.85) and
+  corrected (0.55) values with the worked time-to-snap table; added the
+  escape-reset-to-idle decision and the config-extraction decision;
+  Rationale extended with the correction's own reasoning and the
+  time-to-snap table.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: tension-safe-zone formula block
+  updated (config-qualified names, corrected 0.55, the shared
+  escape→idle line); new "Fish Fight Tuning Config" subsection; fixed a
+  stale flow-diagram line that still said `.escaped -> HookPhase
+  .hookInWater` (missed in the previous entry's own docs pass).
+
+### Verification
+
+- Rebuilt `Shared` (now including `FishFightConfig.swift`) as both
+  `arm64-apple-macosx26.0` and `arm64-apple-ios26.0-simulator` modules
+  from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: full `World/World`
+  file list (macOS) and full `Rod/Rod` file list (iOS simulator) — both
+  clean.
+- The 0.55 time-to-snap numbers above were computed with a standalone
+  Python calculation (not run in the app) to sanity-check the fix before
+  writing it up — not a substitute for actually playing it.
+- Not run: any live session. Whether 0.55 actually feels right (vs.
+  needing to land somewhere between 0.55 and the original 0.5), whether
+  the escape-to-idle change feels appropriately punishing rather than
+  tedious, and whether the extracted config is actually convenient to
+  tune from are all unverified — this is explicitly a config the player
+  is expected to keep adjusting directly, not a claim of correct final
+  balance.
+
+## Tier Differentiation: Resistance Multipliers Added to FishFightConfig
+
+Date: 2026-07-19.
+
+Direct follow-up in the same session, confirming the previous entry's
+0.55 fix worked and reporting the next problem: "oke now, sepertinya
+udah cukup susah, namun, tingkat loncatan dari fish A - B - C - Scott
+masih kerasa gaada bedanya" (ok now, seems hard enough, but the
+difficulty jump from Fish A to B to C to Scott still doesn't feel like
+there's a difference). Amended ADR-039 in place again — same
+still-uncommitted feature.
+
+### Diagnosis
+
+Worked the net-tension-rate formula (same method as the previous
+entry's 0.55 correction) across all four species side by side at full
+reel speed. Found the spread between weakest (`fish_a`) and strongest
+(`scott`) was only ~35% (+0.400 down to +0.258 net/s), and every tier
+shared an identical floor at low `sizeRatio` — confirming the reported
+symptom exactly. Root cause: `effectiveFishPullRate = baseFishPullRate *
+(1 + resistance)` and `fishPullSpeed = basePullSpeed * (1 + resistance *
+0.5)` used an implicit multiplier of `1.0`/`0.5` on `resistance`, and
+`baseFishPullRate` (0.15) was large enough relative to `resistance`'s
+own max contribution (up to `0.95` for Scott) that species/tier barely
+mattered next to the shared base term.
+
+### Shared: FishFightConfig
+
+- Added three fields: `pullRateResistanceMultiplier` (3.0),
+  `pullSpeedResistanceMultiplier` (1.8), `escapeAllowanceResistancePenalty`
+  (3.5) — plus `minEscapeDistanceAllowance` (2.0 m) as a floor so the
+  penalty can never over-tighten the escape allowance. All four
+  documented inline with the reasoning, same as every other field in
+  this file.
+
+### World: FishFightController
+
+- `effectiveFishPullRate`: `baseFishPullRate * (1 + resistance)` →
+  `baseFishPullRate * (1 + resistance * config.pullRateResistanceMultiplier)`.
+- `fishPullSpeed`: `basePullSpeed * (1 + resistance * 0.5)` →
+  `basePullSpeed * (1 + resistance * config.pullSpeedResistanceMultiplier)`.
+- New `effectiveEscapeDistanceAllowance` computed property:
+  `max(minEscapeDistanceAllowance, escapeDistanceAllowance - resistance *
+  escapeAllowanceResistancePenalty)`, now used in `updateFight`'s
+  distance-escape check instead of the flat `config.escapeDistanceAllowance`.
+  A tougher fish now gives less rope before a run counts as spooled, not
+  just a faster tension climb.
+
+Hand-worked result at a max-size roll (full reel speed, net tension
+rate): `fish_a` ~+0.24/s (~2 s to snap, comfortable), `fish_b` ~+0.15/s
+(~3.3 s, noticeably tighter), `fish_c` ~+0.06/s (~8 s, razor-thin
+margin), `scott` ~**-0.03/s** — full-speed reeling alone can no longer
+even hold Scott's line. Escape allowance similarly tightens ~4.8 m
+(`fish_a`) → ~2.7 m (`scott`). At `resistance == 0` (any tier's smallest
+roll) all formulas are unchanged and identical across species — correct
+and untouched, since a small individual being weak regardless of
+species was never the complaint.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: extended ADR-039's Decision with the new
+  formulas and worked numbers; extended Rationale with the diagnosis.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: tension-safe-zone formula block
+  updated with the new multipliers and the `effectiveEscapeAllowance`
+  formula; added a paragraph explaining why the multipliers were needed;
+  "Fish Fight Tuning Config" section updated to mention the three new
+  fields.
+
+### Verification
+
+- Rebuilt `Shared` (now including the expanded `FishFightConfig.swift`)
+  as both `arm64-apple-macosx26.0` and `arm64-apple-ios26.0-simulator`
+  modules from `find Sources/Shared -name "*.swift"` — no errors on
+  either.
+- `xcrun swiftc -typecheck` against those modules: full `World/World`
+  file list (macOS) and full `Rod/Rod` file list (iOS simulator) — both
+  clean.
+- The net-tension-rate/escape-allowance numbers above were computed with
+  a standalone Python calculation before writing the fix, same method as
+  the previous entry — not run in the app.
+- Not run: any live session. Whether 3.0/1.8/3.5 are the right
+  multipliers (vs. needing further adjustment either direction), and
+  whether Scott's fight now feels appropriately climactic rather than
+  frustrating, are both unverified — same explicit expectation as every
+  other entry in this config: the player is expected to keep tuning it.
+
+## Session Handoff: WINDOW_1.md
+
+Date: 2026-07-19.
+
+Requested directly as the context window neared its limit: "since
+context windownya udah mau abis, bisa ga simpen semua progress kedalam
+1 .md baru, namanya WINDOW_1 aja" (since the context window is about
+to run out, can all the progress be saved into one new .md, just call
+it WINDOW_1). Documentation-only — no Swift/project files touched.
+
+Added `WINDOW_1.md` (project root): a navigation summary covering
+ADR-030 through ADR-039, not a replacement for the full detail already
+in `ARCHITECTURE_DECISIONS.md`/`CHECKPOINT.md`. Content: a table
+pointing to every ADR from this window, an expanded section on
+ADR-039's two live-tested corrections (reel tension rate, tier
+differentiation) since that's the freshest and most likely area to
+need further tuning, the still-open ADR-030/031 numbering-collision
+issue, and an explicit statement of what "verified" has meant
+throughout this window (`swiftc -typecheck` on macOS + iOS-simulator
+targets only — no `xcodebuild`, no device/simulator run, except the
+specific live-play moments already quoted in the ADRs).
+
+- `Click Sound.wav` -> `ui_click.wav`
+- `Fishing rod (Throw).wav` -> `cast_throw.wav`
+- `Water Splash.wav` -> `hook_splash.wav`
+- `Bubble Sound.wav` -> `fish_interested_loop.wav`
+- `Fishing Rod (Pull).wav` -> `fish_bite.wav`
+- `Reel Sound.wav` -> `reel_loop.wav`
+- `Fish Splash.wav` -> `catch_splash.wav`
+- `LAKE  - (Sound Effect).mp3` -> `ambience_lake.mp3`
+
+Deleted `Click Sound.wav.asd` (Ableton analysis junk, not an audio
+file) and removed the now-empty repo-root `SFX/`.
+
+### World: New Audio/ Files
+
+- `SoundManager.swift` (new) — low-level AVFoundation playback,
+  `@MainActor`, one preloaded `AVAudioPlayer` per `Sound` case with
+  `prepareToPlay()` called at init. `play`/`startLoop`/`stopLoop`/
+  `stopAllLoops`/`setVolume` primitives. `#if os(iOS)` wraps
+  `AVAudioSession` configuration (`.ambient` + `.mixWithOthers`) since
+  the session type doesn't exist on macOS.
+- `FishingSounds.swift` (new) — event router mirroring
+  `Rod/Rod/Haptics/FishingHaptics.swift`'s shape: `handle(_ event:
+  FishingEvent)` switch, plus `castLaunched()`, `uiClick()`,
+  `updateReelLoop(active:)`, `handlePhaseChange(_:)`,
+  `handleScreenChange(isPlaying:)`, `stopAll()`.
+
+### World: WorldViewModel.swift
+
+- Added `let sounds = FishingSounds(sounds: SoundManager())`.
+- Added a single `emit(_ event: FishingEvent)` funnel that calls both
+  `sounds.handle(event)` and the existing `send(.fishingEvent(event))`,
+  replacing all seven previous raw `send` call sites (`.fishInterested`/
+  `.fishBite` in `tick`, `.fishEscaped`/`.lineBreak` in
+  `resolveFightFailure`, the tension-band event in `syncTensionBand`,
+  `.hookSplash` in `simulateFlyingHook`, `.catchFish` in `reelHook`) so
+  sound and the Rod-bound transport send can't drift apart.
+- `launchHook(solution:)` calls `sounds.castLaunched()` directly before
+  `setHookPhase(.flying)` — World never emits a `.cast` `FishingEvent`
+  (Rod generates it locally from motion), so this is the one sound not
+  routed through `emit(_:)`.
+- `tick(deltaTime:)` calls `sounds.updateReelLoop(active:)` every frame
+  based on `rodState.action`/`hookPhase`, not on an event — so an
+  empty-line retrieve during `.hookInWater` also gets the reel sound.
+- `setHookPhase(_:)` calls `sounds.handlePhaseChange(phase)` on every
+  transition as a belt-and-suspenders stop for stale bubble/reel loops,
+  covering `continueFishing()`, `returnToMenu()`, and the disconnect
+  fail-safe in `transport.onStateChange` for free.
+- `start()`, `handle(_:)` (on the `.playing` edge), and `returnToMenu()`
+  each call `sounds.handleScreenChange(isPlaying:)` to start/keep the
+  lake ambience loop running per `FishingSounds.Config.
+  ambiencePlaysInMenu`. `stop()` calls `sounds.stopAll()`.
+
+### World: ContentView.swift
+
+- `ResultView`'s "Continue Fishing" and `LevelUpBannerView`'s dismiss
+  button both now call `viewModel.sounds.uiClick()` before their
+  existing action. `MainMenuView` has no buttons (ADR-038 — Rod owns
+  session start), so nothing to wire there.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: new ADR-040 at the top, above ADR-039.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added `Audio/` to World's folder
+  list and a new "World Audio Subsystem (ADR-040)" section at the end.
+
+### Verification
+
+- `cd Shared && swift build` — clean, Shared untouched.
+- `git diff --check` — no whitespace errors.
+- `xcodebuild -workspace CtSPoC.xcworkspace -scheme World -destination
+  'platform=macOS' build` — first attempt failed on code signing (no
+  "Mac Development" certificate on this machine, unrelated to this
+  change); rebuilt with `CODE_SIGNING_ALLOWED=NO
+  CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO` and hit one real
+  compile error: `FishingSounds.init`'s default parameter value
+  `SoundManager()` was rejected ("call to main actor-isolated
+  initializer... in a synchronous nonisolated context") because
+  World's target sets `-default-isolation=MainActor`, and default
+  argument expressions aren't automatically isolated to the enclosing
+  actor. Fixed by dropping the default and constructing
+  `FishingSounds(sounds: SoundManager())` explicitly in
+  `WorldViewModel`'s stored property initializer instead. Rebuilt
+  clean after the fix.
+- Confirmed all 8 `.wav`/`.mp3` files present in the built
+  `World.app/Contents/Resources/`.
+- Launched the built `World.app` directly and confirmed it stays
+  running with no crash and nothing audio-related in the system log
+  while sitting on the main menu (where the ambience loop starts
+  immediately).
+- Not run: a full manual gameplay pass with Rod connected end-to-end
+  (cast/splash/interest/bite/reel/catch/escape/line-break all audible
+  in the right sequence, loop start/stop timing feel, rapid-retrigger
+  behavior). iOS-device audio behavior — the silent switch,
+  `AVAudioSession` interruptions from calls or backgrounding — is
+  entirely unverified and needs on-device testing with Rod.
+
+
+## Session Handoff: WINDOW_1.md
+
+Date: 2026-07-19.
+
+Requested directly as the context window neared its limit: "since
+context windownya udah mau abis, bisa ga simpen semua progress kedalam
+1 .md baru, namanya WINDOW_1 aja" (since the context window is about
+to run out, can all the progress be saved into one new .md, just call
+it WINDOW_1). Documentation-only — no Swift/project files touched.
+
+Added `WINDOW_1.md` (project root): a navigation summary covering
+ADR-030 through ADR-039, not a replacement for the full detail already
+in `ARCHITECTURE_DECISIONS.md`/`CHECKPOINT.md`. Content: a table
+pointing to every ADR from this window, an expanded section on
+ADR-039's two live-tested corrections (reel tension rate, tier
+differentiation) since that's the freshest and most likely area to
+need further tuning, the still-open ADR-030/031 numbering-collision
+issue, and an explicit statement of what "verified" has meant
+throughout this window (`swiftc -typecheck` on macOS + iOS-simulator
+targets only — no `xcodebuild`, no device/simulator run, except the
+specific live-play moments already quoted in the ADRs).
+
+No verification needed beyond confirming the file exists and reads
+correctly — pure documentation, no code path affected.
+
+## Documentation Cleanup: Archive Folder for Superseded/Stale Docs
+
+Date: 2026-07-20.
+
+Requested directly: with a full read-through of `CHECKPOINT.md`,
+`ARCHITECTURE_DECISIONS.md`, `SOFTWARE_ARCHITECTURE_DOCUMENT.md`, and
+`SPATIAL_CONTROLLER_DOCUMENT.md` just completed, the player asked which
+project-root `.md` files had become redundant/irrelevant, since the root
+was accumulating too many of them. After giving that assessment, asked to
+tidy up and move everything unused into an `Archive/` folder. Documentation-
+only — no Swift, Xcode project, asset, or runtime structure changed.
+
+### New `Archive/` folder
+
+- `Archive/SPATIAL_CONTROLLER_DOCUMENT.md` (moved via `git mv`): the original
+  pre-gameplay spatial-controller pitch. Fully superseded by
+  `SOFTWARE_ARCHITECTURE_DOCUMENT.md` (technical) and
+  `GAMEPLAY_ARCHITECTURE_V1.md` (product); its own `RodState` code snippet had
+  gone stale (missing `orientation`, `castSolution`, `action`, `reelSpeed`,
+  `motionPhase`, `castPower`, `isFishing` — all added since) and its
+  Milestone 1-7 roadmap shipped long ago.
+- `Archive/WINDOW_1.md` (moved via `git mv`): the prior session's
+  context-window handoff summary (ADR-030 through ADR-039). Its own header
+  already called itself "not a replacement" for `CHECKPOINT.md`/
+  `ARCHITECTURE_DECISIONS.md` — archived once confirmed its content is fully
+  captured in both. Future handoff notes of this shape should be archived the
+  same way rather than accumulating at the project root.
+- `Archive/COMPLETED_SPRINT_ROADMAP.md` (new): the Sprint 0-8 roadmap
+  extracted out of `AGENTS.md` ("Current Roadmap") and
+  `SOFTWARE_ARCHITECTURE_DOCUMENT.md` ("Implementation Plan") — both carried
+  a near-identical, fully-completed copy of the same list. All eight sprints
+  shipped long ago; current state lives in `CHECKPOINT.md`/
+  `ARCHITECTURE_DECISIONS.md` instead.
+- `Archive/README.md` (new): explains what's archived and why, and points
+  back to the live docs for current state.
+
+### Live docs updated
+
+- `AGENTS.md`: "Current Roadmap" section replaced with a short pointer to
+  `Archive/COMPLETED_SPRINT_ROADMAP.md` and the live docs that now track
+  actual state.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: "Implementation Plan" section
+  (Sprint 0-8) replaced the same way.
+- `CLAUDE.md`: "Project Structure" tree updated — removed the
+  `SPATIAL_CONTROLLER_DOCUMENT.md` entry, removed a stale `SESSION_MEMORY.md`
+  reference (that file no longer exists; its role was absorbed into
+  `CHECKPOINT.md` per this file's own much earlier "Session Memory
+  Restoration"/"Terminal Session Memory" entries), and added an `Archive/`
+  line. Also fixed an unrelated but real staleness bug found while editing
+  this section: `CLAUDE.md`'s "Tech Stack" and folder-comment lines still
+  said `MultipeerConnectivity`/"Multipeer client"/"Multipeer host" for
+  transport, even though ADR-035 fully replaced it with CoreBluetooth
+  (confirmed at the time via `grep` that zero `import MultipeerConnectivity`
+  remains anywhere in the repo) — updated to describe CoreBluetooth
+  (Rod = BLE peripheral, World = BLE central) instead, since this is the
+  main file governing agent behavior and was actively wrong about the
+  current transport layer.
+
+### Explicitly not touched in this pass
+
+- `ARCHITECTURE_DECISIONS.md`'s genuine ADR-030/ADR-031 numbering collision
+  (two unrelated ADR-030s, two unrelated ADR-031s — one set from gameplay
+  tuning, one from the asset-integration merge) is a separate bug, not a
+  redundant-doc issue, and was left as-is per this task's own scope. Flagged
+  again here since it's now been noted four times without being fixed.
+- `ARCHITECTURE_DECISIONS.md`'s early ADRs (ADR-001 through ADR-021) overlap
+  heavily with `AGENTS.md`/`CLAUDE.md`'s foundational rules, but were left
+  alone — the ADR format's decision/rationale/status shape (and the
+  superseded-decision chains elsewhere in the file) still carries value the
+  other docs don't restate, so this was judged overlap worth keeping, not
+  dead content worth archiving.
+
+### Verification
+
+- `git status` confirmed both archived files moved as renames (`git mv`),
+  not delete+recreate, preserving history.
+- `grep` across every `.md` file confirmed no live doc still links to
+  `SPATIAL_CONTROLLER_DOCUMENT.md`/`WINDOW_1.md` at their old root paths;
+  every reference to either name left untouched inside `CHECKPOINT.md`
+  itself is historical log content (per this project's own no-delete rule
+  for past checkpoint entries), not a live link.
+- `git diff --check` passes on every touched file.
+- No Swift/Xcode/asset changes in this pass, so no build/typecheck
+  verification applies.
+
+## Documentation: Nearby Interaction Confirmed Non-Load-Bearing for V1 (ADR-041)
+
+Date: 2026-07-20.
+
+Follow-up discussion after the archive cleanup above: the player asked whether Nearby
+Interaction's precision ranging was actually being used anywhere in current gameplay, prompted by
+a separate chat's analysis questioning it. Rather than answer from the docs (which the previous
+entry had just shown could be stale), did a direct code audit before confirming anything.
+Documentation-only — no Swift, Xcode project, asset, or runtime structure changed; NI code itself
+is untouched.
+
+### Audit performed (all via direct `grep`/`Read`, not inference)
+
+- `RodState.directionX/Y/Z`/`distance` are set from `NearbyInteractionManager.swift` via
+  `SpatialState`, confirmed still transmitting every ~30 Hz sample.
+- Consumers of those fields, searched across `Rod/Rod`, `World/World`, and `Shared/Sources`:
+  exactly two, both debug-display rows in `ContentView.swift` (Rod and World). Zero matches in
+  `WorldViewModel.updateRodPose()`, `CastResolver.swift`, `RodMotionInterpreter.swift`, or
+  `hookDistanceFromRod()` (the ADR-039 fight/escape-distance function — confirmed to be a pure
+  RealityKit scene-space `simd_length` between two entities, unrelated to NI ranging).
+- `connectionState` (gates whether the player can start fishing) is set purely from the
+  CoreBluetooth transport's own callback; `spatialStatus` (NI's status) is a separate published
+  property read only by one debug row per device, gating nothing.
+- Conclusion, confirmed to the player: Nearby Interaction is fully present and running (Rod owns
+  the session exactly per ADR-014) but is not read by any gameplay, rendering, or connection-
+  gating code path anywhere in the app — debug display only.
+
+### Player's framing, recorded as the actual decision driver
+
+"NI awalnya akan dipakai, tapi ternyata transport protocol pakai CoreBluetooth aja cukup untuk
+ngirim data sehingga spatial controller belum akan dipakai di fase development ini" (NI was
+originally going to be used, but it turned out CoreBluetooth transport alone is enough to send
+data, so the spatial-controller aspect isn't going to be used in this development phase). Decided
+to keep the NI code in place (removal is a separate, larger-scope decision not made here) and
+instead correct the documentation that had drifted from this reality.
+
+### Documentation updated
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-041 recording the audit and the decision to leave NI code
+  in place while correcting the stale claim; added a short status note to ADR-014 (ownership rule
+  itself unaffected, still correct) pointing at ADR-041 for the load-bearing finding.
+- `AGENTS.md`: "Casting State and Transform Contract" section's line claiming "Nearby Interaction
+  spatial distance/direction remain the rod's spatial transform source" — accurate before ADR-019,
+  false since (ADR-019 deliberately moved the rod root to a fixed camera-relative offset) — rewritten
+  to state the current, correct behavior and reference ADR-041.
+- `CLAUDE.md`: "Tech Stack" Nearby Interaction bullet and the "Architecture Contracts" NI sentence
+  both gained a short clause noting the fields are transmitted but not currently consumed.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: "World Controller and Hook Separation" section gained a
+  paragraph with the same finding, keeping the existing ADR-019/033/034 narrative in that section
+  intact and just adding this alongside it.
+
+### Explicitly not done
+
+- Did not remove any Nearby Interaction code, permissions, or debug rows — this pass only fixes
+  documentation accuracy, per the player's own explicit request ("update dokumennya aja at this
+  point").
+- Did not reframe the project's "spatial controller" identity/name (`AGENTS.md`'s ADR-015 long-term
+  vision, the project's own "CtSPoC" name) — that's a bigger, separate call the player hasn't made;
+  this ADR explicitly says it doesn't retire that vision, only records that V1 fishing gameplay
+  didn't end up needing it.
+
+### Verification
+
+- `grep` re-run after all edits confirms every new cross-reference (`ADR-041`) resolves to content
+  that actually exists in `ARCHITECTURE_DECISIONS.md`.
+- `git diff --check` passes on every touched file.
+- No Swift/Xcode/asset changes, so no build/typecheck verification applies.
+
+## Fix: Reel-In Motion Diagonal to Rod Instead of Sliding Along Water (ADR-042)
+
+Date: 2026-07-20.
+
+Reported directly: "kalo reel, arah si bobber nya masih diagonal langsung ke arah rod. seharusnya,
+bobber ngikut di dasar air aja sampai akhir deket rod, baru keangkat (jadi ikan sukses ditangkep
+bukan pas bobber hit base coordinate alias tempat rod, tapi begitu di depan pier dikit)." Recorded
+as ADR-042 in `ARCHITECTURE_DECISIONS.md`.
+
+### World: WorldViewModel
+
+- Added `hookLiftDistance: Float = 1.0` (meters, horizontal) near `dockAnchorPosition`.
+- `reelHook(deltaTime:)`: root-caused to using the raw 3D `controllerEntity.position -
+  hookEntity.position` vector for every reel step — since the hook sits at `waterHeight` (0) and
+  `dockAnchorPosition` sits at `y = 1.95`, that vector always had a large vertical component from
+  the first tick, so the bobber visibly climbed diagonally toward the rod immediately instead of
+  sliding across the water. Now branches on horizontal (X/Z) distance: beyond `hookLiftDistance`,
+  moves horizontally only and pins `hookEntity.position.y` to `waterHeight`; within it, moves in
+  full 3D as before so the hook rises the rest of the way up to the rod.
+- Same function's terminal `guard` (catch/empty-retrieve resolution) switched from full 3D distance
+  to horizontal distance against the same `0.12` m threshold — the 3D version required the hook to
+  also close the ~2 m vertical gap up to the rod's held height before resolving; horizontal-only
+  means it resolves once the hook reaches the dock's edge, matching "begitu di depan pier dikit"
+  rather than requiring it to reach the rod's exact position.
+- `driftHookAway(deltaTime:)` got the same horizontal/full-3D split for consistency — without it,
+  a resisting fish would have dragged the hook down and away in 3D too (since "away from the
+  elevated rod" has a downward component), pulling the hook visibly below the water plane while the
+  player wasn't reeling. Not reported by the player, but the same underlying bug in the sibling
+  function; fixed alongside rather than left to surface later as a separate report.
+- `ensureFightDistance()` (ADR-031's same-tick-instant-catch guard) left untouched — it only fires
+  in a rare edge case unaffected by this change.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-042.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the "Fish Species and Fight Simulation" section
+  with the horizontal/full-3D split and the catch-threshold basis change.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from `find Sources/Shared -name
+  "*.swift"` — no errors.
+- `xcrun swiftc -typecheck` against that module for the full `World/World` Swift file list — exit
+  code 0, no errors, no warnings.
+- `git diff --check` clean on `WorldViewModel.swift`.
+- Not run: any live session. `hookLiftDistance` (1.0 m) is a hand-picked first pass, not measured
+  against the dock/water asset geometry or played — whether the lift point looks natural, and
+  whether the reworked catch threshold now feels like "right at the pier" rather than too early or
+  too late, are both unverified until played.
+
+## Known Issue (TODO, Not Fixed Here): Reel Speed Feel and Hook Overlapping the Pier on Lift
+
+Date: 2026-07-20.
+
+Live playtest of the ADR-042 fix above surfaced two follow-up problems, reported directly: "masih
+aga wongky soalnya bobber spednya masih konstan, sekaligus waktu ngangkat, kayanya masih overlap
+sama pier (maybe kurang ke depan dikit?)" (still a bit wonky — the bobber's speed still feels
+constant, and when it lifts, it seems to still overlap with the pier — maybe it needs to be a
+little more forward?). Recorded here as a TODO for a future session, not fixed in this pass — no
+code changed. A background task chip was also spawned for this (see the session's task list); this
+entry is the durable record in case that chip is dismissed or this repo is picked up from a fresh
+session instead.
+
+### Issue 1: reel-in speed feels constant
+
+`WorldViewModel.reelHook(deltaTime:)`'s `playerSpeed = max(0.35, rodState.reelSpeed * reelSpeed)`
+(`reelSpeed` the private `3.0` base constant, `rodState.reelSpeed` the live 0...1 value from Rod's
+calibrated rotation-rate ramp, ADR-025) is written to vary with how fast the player physically
+reels — but the player's report is that it doesn't read that way in practice. Not root-caused in
+this pass. Worth checking, in rough priority order:
+
+- Whether this is a recurrence of the original ADR-025 bug (`RodState.reelSpeed` itself reading as
+  near-constant instead of ramping 0...1) rather than a problem in `reelHook`'s own math — that bug
+  was fixed by calibrating against the player's own demonstrated peak rotation rate
+  (`reelFullRotationRate`), so a poorly-calibrated or stale `MotionProfile` could reintroduce the
+  same symptom without the `reelHook` code itself regressing.
+- Whether the `0.35` floor dominates perceived motion (i.e. most real reeling inputs land close to
+  the floor, so the variable part above it rarely shows).
+- Whether the ADR-039 tug-of-war subtraction (`netSpeed = playerSpeed - fishFight.fishPullSpeed`)
+  is flattening the visible range during an actual fight — distinct from a fishless empty retrieve,
+  worth testing both cases separately to isolate which path feels constant.
+- Whether "wongky" actually means "no acceleration/deceleration curve" (an expectation of eased
+  motion) rather than literally "the number never changes" — worth clarifying against a live
+  session with the existing Rod debug reel-speed readout before assuming which of the above it is.
+
+### Issue 2: hook appears to overlap the pier when lifted near the end of a reel-in
+
+`dockAnchorPosition` (`[0.22, 1.95, -2.1]`, `WorldViewModel.swift`) — the point `reelHook`'s
+full-3D lift phase (inside `hookLiftDistance`, ADR-042) moves the hook toward — was derived from
+the camera position and the rod's held offset (see its own doc comment: `playerCameraPosition +
+(0.22, -0.45, -0.60)`), not from the dock/pier's actual collision geometry. It was never checked
+against where the physical dock mesh actually sits, so there's no guarantee the lift target clears
+it. Player's own guess ("kurang ke depan dikit," needs to be a bit more forward) points at the
+same conclusion. Worth checking, in rough priority order:
+
+- Whether nudging `dockAnchorPosition` further along -Z (further out over the water, away from the
+  dock structure) resolves it outright, or whether it needs to move without disturbing the rod's
+  own held-position feel (`dockAnchorPosition` also anchors the rendered rod/line rig, not just the
+  reel-in lift target — moving it affects both).
+- Whether the cleaner fix is a *separate* "lift target" point distinct from `dockAnchorPosition`
+  specifically for where `reelHook`'s near-zone motion aims, so the rod-hold anchor (rendering) and
+  the "where the bobber should visually emerge from the water" point (gameplay motion) aren't
+  conflated — consistent with this project's existing rod-root/hook separation (ADR-019).
+- Whichever fix is chosen, verify against the actual `dock_main.usdz` geometry (not just eyeballed
+  in a screenshot) — this project's own asset-integration history has repeated "checked the asset
+  directly instead of guessing" as the reliable way to resolve exactly this kind of
+  geometry-vs-constant mismatch.
+
+### Verification
+
+Not applicable — no code changed in this entry, TODO only.
+
+## Fix: Hook Lift Motion Overlapping the Pier (ADR-043)
+
+Date: 2026-07-20.
+
+Continuation of the TODO entry above, Issue 2 ("hook appears to overlap the pier when lifted near
+the end of a reel-in"). Rather than guess a new constant, loaded `dock_main.usdz` directly with a
+small standalone RealityKit script (`Entity(contentsOf:).visualBounds(relativeTo: nil)`) to get the
+mesh's real footprint before touching any code, per this project's own established pattern (see
+`EnvironmentSceneBuilder.swift`'s tree-orientation/shoreline-density history) of checking assets
+directly instead of eyeballing.
+
+### Measurement
+
+- `dock_main.usdz` bounds: X in `[-2.0439, 2.0439]`, Y in `[-0.6741, 2.1880]`, Z in `[-4.5, 4.5]`
+  (single unnamed mesh, no separate deck/railing submeshes to bound individually).
+- `water_surface.usdz` bounds confirm the lake plane is enormous (`X` in `[-40, 40]`, `Z` in
+  `[-30, 30]`) relative to the dock, so it doesn't independently mark a shoreline.
+- `WorldViewModel.launchHook`'s own debug facing vector (`SIMD3<Float>(0, 0, -1) * castDistance`)
+  confirms casts fly toward `-Z` — i.e. the dock's `-4.5` extreme is the water-facing tip, `+4.5`
+  the shore end.
+- `dockAnchorPosition` (`[0.22, 1.95, -2.1]`, the rod's fixed camera-relative render anchor per
+  ADR-019) sits at Z `-2.1` — well inside the dock's `[-4.5, 4.5]` footprint, nowhere near its
+  water-facing edge. ADR-042's lift phase moved the hook's XZ toward exactly this point while
+  raising its Y from `0` to `1.95`, so the rise happened directly underneath the solid deck mesh —
+  root cause of the reported clipping, and confirming the player's own guess ("kurang ke depan
+  dikit," needs to be a bit more forward).
+
+### World: WorldViewModel
+
+- Added `hookLiftTargetPosition: SIMD3<Float> = [0.22, 1.95, -4.7]` — same X/Y as
+  `dockAnchorPosition`, Z pushed 0.2 m past the mesh's measured `-4.5` extreme.
+- `reelHook(deltaTime:)`/`driftHookAway(deltaTime:)`: every use of `controllerEntity.position` for
+  horizontal-distance zone checks, the near-zone full-3D lift direction, and (in `reelHook`) the
+  catch/empty-retrieve resolution threshold now targets `hookLiftTargetPosition` instead. Neither
+  function still needs `controllerEntity` at all, so its `guard let controllerEntity` binding was
+  dropped from both (`hookEntity` remains guarded).
+- `dockAnchorPosition`/`controllerEntity` themselves are untouched — `updateRodPose()`'s rendering
+  and `ensureFightDistance()` (ADR-031, left alone per ADR-042's own precedent — it only fires in a
+  rare edge case unaffected by this change) still use the rod's real render position.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-043.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the ADR-042 paragraph in "Fish Species and Fight
+  Simulation" with the new target-point split.
+- `CLAUDE.md`: fixed the "Verification" section's Shared file list — it still referenced pre-reorg
+  paths (`Sources/Shared/Models/RodAction.swift` etc.) that no longer exist; those files now live
+  under `Models/Rod/`, `Models/Spatial/`, `Models/Gameplay/` subfolders. Discovered because running
+  the documented command verbatim during this pass's own verification failed with "no such file."
+  Re-ran the corrected command to confirm it now actually compiles before committing the doc fix.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx14.0` module directly from `find Sources/Shared -name
+  "*.swift"` — no errors.
+- `xcrun swiftc -typecheck` against that module for the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0` (required — `RodRigController`'s `attach(_:to:)` needs 26.0, matching
+  ADR-042's own precedent) — exit code 0, no errors.
+- `xcrun swiftc -typecheck` against a second `Shared` module built for
+  `arm64-apple-ios17.0-simulator` for the full `Rod/Rod` Swift file list — exit code 0, no errors.
+  This project's own verification script only ever covered `Shared` + `World`; extended to `Rod`
+  here since this pass also touched `RodViewModel.swift`/`ContentView.swift` (see the next entry).
+- `git diff --check` clean on every touched file.
+- Not run: any live session. `hookLiftTargetPosition`'s Z (`-4.7`) is a measured-bounds-plus-margin
+  estimate, not confirmed against how the lift actually looks in front of the dock once played.
+
+## Diagnostic: Reel Calibration Range Exposed in Rod's Debug View (ADR-042 TODO Issue 1, Not Resolved)
+
+Date: 2026-07-20.
+
+Issue 1 from the TODO entry above ("reel-in speed feels constant") was investigated as far as
+possible without a live device/playtest, then deliberately left unfixed rather than guess-tuned.
+
+### Investigation
+
+- Confirmed ADR-025's fix (the reel-speed calibration ramp) is still in place, not regressed:
+  `RodMotionInterpreter.swift`'s `.reel` case still computes `speed` as a `(rotationRateMagnitude -
+  minRate) / (maxRate - minRate)` ramp between `profile.reelRotationRate` and
+  `profile.reelFullRotationRate`, exactly as ADR-025 describes.
+- Read `RodViewModel.calibrateMotion()`'s `.reel` step directly: `reelFullRotationRate = max(
+  reelRotationRate + 0.3, peakRate)`, where `peakRate` is the max rotation rate sampled during the
+  player's one demonstration reel gesture. The `+ 0.3` is a floor, not just an edge-case guard — a
+  real physical reeling motion is often fairly steady-state through its demonstration window (low
+  variance around the average), so `peakRate` frequently lands close to `averageRate` rather than
+  well above it, meaning the *floor* — a fixed 0.3 rad/s calibrated range — is plausibly the
+  *common* case, not a rare one. A 0.3 rad/s range is narrow enough that normal variation in real
+  reeling speed during actual gameplay would saturate the ramp to `1.0` almost immediately, which
+  would read exactly as "constant" — this is a strong candidate root cause, but not confirmed: it
+  depends on what a real calibration's `averageRate`/`peakRate` actually look like on-device, which
+  isn't observable from source alone.
+- Checked the other TODO candidates by reading the code, not guessing:
+  - The `0.35` floor in `WorldViewModel.reelHook`'s `playerSpeed = max(0.35, rodState.reelSpeed *
+    reelSpeed)` (`reelSpeed` the `3.0` constant) gives a `0.35`-to-`3.0` range (~8.6x) for an empty
+    retrieve — not obviously floor-dominated on its face, though still unverified live.
+  - `FishFightController.fishPullSpeed` (`basePullSpeed(0.7) * (1 + resistance *
+    pullSpeedResistanceMultiplier(1.8))`) ranges roughly `0.7`–`1.96` when a fish is hooked — a real
+    but not obviously dominant subtraction against `playerSpeed`'s `0.35`–`3.0` range; whether it
+    flattens the *felt* range during an actual fight specifically (vs. an empty retrieve) still
+    needs a live A/B, per the original TODO's own suggestion.
+- Did not change any of `RodMotionInterpreter`, `calibrateMotion()`, or `reelHook`'s speed math —
+  tuning any of these (the `+0.3` floor, the `0.35` floor, `basePullSpeed`) without on-device data
+  on what real calibration/reeling values look like risks trading one unverified guess for another,
+  the same failure mode ADR-025 itself was written to fix.
+
+### Rod: RodViewModel / ContentView
+
+Instead, added a debug-only diagnostic so the next live playtest can observe the actual calibrated
+range directly rather than needing another guess-and-report cycle:
+
+- `RodViewModel` gained `reelCalibrationRange: (min: Double, max: Double)`, reading
+  `motionInterpreter.profile.reelRotationRate`/`reelFullRotationRate` directly (both already public
+  on `MotionProfile`).
+- `ContentView`'s "Rod State" debug group gained a "Reel Calibration Range" row displaying it in
+  rad/s, next to the existing live "Rotation Rate" row — so a played session can directly compare
+  the live rotation rate against the calibrated range's width and confirm or rule out the
+  floor-dominance theory above.
+
+### Documentation
+
+None beyond this entry — no ADR needed for a debug-only, non-behavior-changing addition; the
+existing ADR-025 already documents the calibration formula this instruments.
+
+### Verification
+
+- Covered by the same `Rod/Rod` typecheck pass as the entry above — exit code 0, no errors.
+- Not run: any live session. This entry adds observability only; Issue 1 itself remains open,
+  should be re-evaluated once "Reel Calibration Range" vs. live "Rotation Rate" can actually be
+  compared during a played reel-in.
+
+## Fix: Dock-Approach Lift Guaranteed Speed, Not Tug-of-War (ADR-044)
+
+Date: 2026-07-20.
+
+Reported directly during playtesting: "ketika bomber nya sudah mulai mengenai dock nya, bomber
+kuning nya masih 'melayang', sehingga ada kesan tidak natural karena harusnya ketika sudah menyentuh
+dock, harusnya ikan mulai makin bergerak cepat pun atau langsung naik ke doc ketimbang melayang"
+(once the hook/fish starts reaching the dock, it still visibly floats instead of speeding up or
+climbing straight onto the dock). Traced rather than guessed: `reelHook`'s tug-of-war net speed
+(ADR-039, `playerSpeed - fishFight.fishPullSpeed`) can be small or negative even while the player is
+actively reeling — intentional for the open-water fight, but left unchanged inside the near-dock lift
+zone (ADR-042's `hookLiftDistance`) it let the hook stall in place or sink back toward the water right
+at the dock's edge, which is exactly the reported floating feel.
+
+### World: WorldViewModel
+
+- Added `dockLiftSpeed: Float = 3.5` (m/s) — a fixed speed, faster than the player's own max reel
+  speed (`reelSpeed`, `3.0`), that `reelHook(deltaTime:)` now uses unconditionally once inside
+  `hookLiftDistance` of `hookLiftTargetPosition`, replacing the tug-of-war net speed for that zone
+  only. `fishFight.fishPullSpeed` is no longer subtracted in the lift zone — a fish this close can no
+  longer meaningfully resist, so the final approach always advances toward the target.
+- `reelHook`'s catch/empty-retrieve resolution switched from a horizontal-only distance check
+  (`> 0.12` m against `hookLiftTargetPosition`) to a full 3D distance check (`> 0.15` m). ADR-043's
+  original rationale for horizontal-only (not making resolution wait on the ~2 m vertical climb to
+  hand height) no longer applies now that the climb is fast and guaranteed rather than
+  tug-of-war-gated — resolving on full 3D closeness means the hook visibly finishes arriving instead
+  of vanishing mid-climb, the second half of the reported issue.
+- `driftHookAway(deltaTime:)` (ADR-042, fires only while the player isn't actively reeling) is
+  unchanged — still uses `fishFight.fishPullSpeed` in both zones, so an escaping fish can still pull
+  the hook back down out of the lift zone.
+- Doc comments on `hookLiftDistance` and the new `dockLiftSpeed` cross-reference ADR-044 and explain
+  why the tug-of-war can't be allowed to reach into the lift zone.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-044, including a forward-looking note that `reelHook`'s
+  `distance3D > 0.15` guard is now a single well-defined "fish has arrived at the dock" moment —
+  relevant groundwork since `hookEntity` is still a placeholder sphere and literally *is* the fish's
+  rendered position (`FishFightController` holds no RealityKit/entity state at all); a future fish
+  mesh/animation swap has a clear hook point to trigger a "landed on the dock" animation from.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the ADR-042/043 paragraphs in "Fish Species and Fight
+  Simulation" with ADR-044's guaranteed-speed lift zone and the updated catch-resolution threshold.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module directly from `find Sources/Shared -name
+  "*.swift"` — no errors.
+- `xcrun swiftc -typecheck` against that module for the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, using the actual `xcrun --sdk macosx --show-sdk-path` SDK — exit code 0,
+  no errors.
+- Rebuilt `Shared` a second time as an `arm64-apple-ios17.0-simulator` module (via
+  `xcrun --sdk iphonesimulator --show-sdk-path`) to confirm the `Rod` target's dependency still
+  builds, since no `Rod` files changed this pass a full `Rod/Rod` typecheck wasn't re-run.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. `dockLiftSpeed = 3.5` and the `0.15` m resolution threshold are
+  hand-picked (faster than the player's own max reel speed; a small margin past the old `0.12` m
+  horizontal-only value), not tuned against how the climb actually reads in a played reel-in.
+
+## Feature: Catch Cutscene Before the Result Screen (ADR-045)
+
+Date: 2026-07-20.
+
+Requested directly, drawing an explicit comparison to casting's own already-distinct moment: "kita
+harus bikin 'cut scene' seperti game-game pun atau seperti animasi bomber ketika dicasting ... ketika
+bomber nya sudah mendekati dock, dan user melakukan final reel input, akan dimunculkan 'scene' ikan
+dan bomber dimana mereka melompat ke atas dan akan muncul title 'CATCH' ... nantinya, 'scene' ini akan
+disambungkan dengan blender animasi asset" (build a cutscene like other games have, similar to the
+existing cast animation — when the fish/bobber nears the dock and the player's final reel input lands
+it, show a scene where the fish and bobber jump up and a "CATCH" title appears; this scene will later
+connect to a Blender animation asset). Continuation of the same reel-in-to-dock work as ADR-044.
+
+### Design choice: World-only presentation state, not a new `HookPhase`
+
+Considered adding a new `HookPhase` case for the cutscene, rejected: `HookPhase` is a `Shared`
+contract consumed by both `Rod` (haptics, `allowsCasting`/`allowsReeling`) and `World`
+(rendering/HUD), and this project's own architecture contracts state Rod owns no gameplay
+presentation. The cutscene needs no input-locking or haptic behavior beyond what `HookPhase.result`
+already provides (`allowsCasting == false`, `allowsReeling == false`), so it's implemented entirely
+as `WorldViewModel` presentation state — no `Shared` or `Rod` files touched.
+
+### World: WorldViewModel
+
+- Added `@Published private(set) var isShowingCatchCutscene: Bool = false`.
+- Added a private `CatchCutscene { origin: SIMD3<Float>, elapsed: Float }` struct and
+  `catchCutscene: CatchCutscene?` storage, plus `catchCutsceneDuration: Float = 1.3` (s) and
+  `catchCutsceneJumpHeight: Float = 0.6` (m) constants.
+- `reelHook(deltaTime:)`'s catch guard (the `distance3D > 0.15` check from ADR-044): on a real catch
+  (`hasFishOnHook`), now calls `fishFight.resolveCatch()` then `beginCatchCutscene(from:
+  hookEntity.position)` and `emit(.catchFish)`, instead of disabling the hook immediately.
+  `setHookPhase(.result)` still fires in the same tick as before. Empty retrieves are unchanged —
+  `hookEntity.isEnabled = false` fires immediately, no cutscene.
+- Added `beginCatchCutscene(from:)` — seeds `catchCutscene` and sets `isShowingCatchCutscene = true`.
+- Added `updateCatchCutscene(deltaTime:)` — a placeholder jump: `hookEntity` arcs vertically from
+  `cutscene.origin` using `sin(t * .pi) * catchCutsceneJumpHeight` (`t` = elapsed/duration, clamped to
+  1), then disables the hook and flips `isShowingCatchCutscene` back to `false` once
+  `catchCutsceneDuration` elapses. Explicitly documented as a stand-in — `hookEntity` is still the
+  same placeholder sphere referenced throughout ADR-042 through ADR-044; there is no separate fish
+  mesh anywhere in this codebase (`FishFightController` holds no RealityKit/entity state at all).
+- `tick(deltaTime:)`'s `.result` case, previously `break`, now calls `updateCatchCutscene(deltaTime:)`
+  whenever `catchCutscene != nil`.
+- `returnToMenu()` gained `catchCutscene = nil` / `isShowingCatchCutscene = false` alongside its
+  existing hook/fight resets — without this, ending a session mid-cutscene (Rod's "End Fishing" at any
+  point, ADR-038) would leave the flag stuck `true` and could incorrectly show the cutscene overlay on
+  a later session with nothing actually caught.
+
+### World: ContentView / new CatchCutsceneView
+
+- Added `World/World/Views/CatchCutsceneView.swift` — a non-interactive, undismissable "CATCH!" title
+  overlay (spring scale/opacity-in on appear), shown while `isShowingCatchCutscene` is true. Picked up
+  automatically by Xcode's file-system-synchronized group (`World.xcodeproj` already uses
+  `PBXFileSystemSynchronizedRootGroup`), no manual `project.pbxproj` edit needed.
+- `ContentView`'s body gained the `CatchCutsceneView` overlay gated on `isShowingCatchCutscene`, and
+  the existing `ResultView` condition gained `!viewModel.isShowingCatchCutscene` so the two can never
+  show at the same time.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-045.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" — updated the
+  `FishFightController`/`WorldViewModel` interaction diagram and added an ADR-045 paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: added "Catch Cutscene" between "Fish Fight" and "Catch Result and
+  Continue," and inserted it into the gameplay loop diagram.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list (including the new
+  `CatchCutsceneView.swift`), target `arm64-apple-macosx26.0`, real SDK via
+  `xcrun --sdk macosx --show-sdk-path` — exit code 0, no errors.
+- No `Shared` or `Rod` files changed this pass, so neither module was rebuilt/re-typechecked.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift` and
+  `World/World/ContentView.swift`.
+- Not run: any live session. The jump arc, `catchCutsceneDuration`/`catchCutsceneJumpHeight` values,
+  and "CATCH!" title styling are first-pass placeholders — expected to change once real fish
+  assets/animation are integrated, per the request's own stated next step.
+
+## Feature: Catch Cutscene Cuts the Camera to the Hook (ADR-046)
+
+Date: 2026-07-20.
+
+Requested directly, immediately after the ADR-045 cutscene landed: "butuh cameranya langsung ke
+bomber dan ikan yang ketangkep, biar beneran kaya cut scene" (the camera needs to cut directly to the
+bobber and the caught fish, so it actually feels like a cutscene). Root cause: `updateCameraFollow()`
+only followed the hook for `.flying`/`.fishOnHook`/`.reeling`; `.result` — which the cutscene runs
+inside of (ADR-045) — was explicitly excluded, so the whole jump played off-camera from the player's
+fixed POV.
+
+### World: WorldViewModel
+
+- Added `catchCutsceneCameraOffset: SIMD3<Float> = [0, 0.9, 1.6]` — closer/lower than the existing
+  mid-fight `followOffset` (`[0, 1.5, 3.0]`, local to `updateCameraFollow()`), so the cutscene reads
+  as a distinct, tighter shot rather than reusing the ongoing-fight trailing framing.
+- `updateCameraFollow()` gained a first branch: while `isShowingCatchCutscene` is true, look at
+  `hookEntity` from `hookEntity.position + catchCutsceneCameraOffset` and return immediately, before
+  the existing `hookPhase`-based `followsHook` check. Once the cutscene ends (still inside `.result`,
+  waiting on `ResultView`'s "Continue Fishing"), the function falls through unchanged — `.result` was
+  never in `followsHook`'s list, so the camera still resets to the player pose exactly as before this
+  change.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-046.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with an ADR-046
+  paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now mentions the camera cutting in close.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. `catchCutsceneCameraOffset` is a hand-picked value, not confirmed
+  against how the shot actually frames the ADR-045 jump arc live.
+
+## Feature: Catch Cutscene Freezes at the Jump's Peak (ADR-047)
+
+Date: 2026-07-20.
+
+Requested directly, immediately after the ADR-046 camera cut landed: "ikan dan bomber nya harus
+'freeze' di cut scene agar kesan cut scene nya tidak terlalu singkat" (the fish and bobber need to
+freeze during the cutscene so it doesn't feel too brief). The prior `sin(t * .pi)` single-arc motion
+(ADR-045) only ever touches its peak height for one instant no matter how long the total duration
+was set to — the hook was always either rising or falling, never actually still, which is why even a
+1.3 s cutscene still read as a quick blip rather than a held moment.
+
+### World: WorldViewModel
+
+- Replaced the single `catchCutsceneDuration` constant with three phase durations:
+  `catchCutsceneRiseDuration` (0.35 s), `catchCutsceneFreezeDuration` (0.9 s),
+  `catchCutsceneSettleDuration` (0.35 s) — total cutscene runtime is now their sum, 1.6 s (up from
+  1.3 s).
+- Rewrote `updateCatchCutscene(deltaTime:)` to compute height in three branches instead of one
+  continuous arc: `sin(t * .pi / 2) * catchCutsceneJumpHeight` while rising (`t` = elapsed/rise
+  duration), a flat `catchCutsceneJumpHeight` while frozen, then `cos(t * .pi / 2) *
+  catchCutsceneJumpHeight` while settling (`t` = elapsed-since-freeze-end/settle duration). Both
+  eases meet the freeze's held value exactly at their phase boundaries, so there's no positional snap
+  between rise/freeze/settle.
+- No other function changed — `beginCatchCutscene(from:)`, the `reelHook` trigger, `ContentView`'s
+  overlay wiring, and ADR-046's camera-cut branch in `updateCameraFollow()` are all untouched; only
+  the motion curve inside `updateCatchCutscene` and its backing constants changed.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-047.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the ADR-045 paragraph's timing description to the new
+  three-phase breakdown.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now describes the hold/freeze at the top of the
+  leap.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. All three phase durations (and the resulting 1.6 s total) are
+  hand-picked, not tuned against how the hold actually reads in a played session.
+
+## Feature: Catch Cutscene Made More Dramatic (ADR-048)
+
+Date: 2026-07-20.
+
+Requested directly, immediately after ADR-047's freeze landed: "dan bikin lebih 'dramatis'" (and make
+it more dramatic). Diagnosed rather than guessed at randomly: ADR-045 through ADR-047 got the
+trigger, camera cut, and timing right, but stacked together the cutscene was still a static camera
+holding on a placeholder sphere with a title fading in over an otherwise-unchanged gameplay HUD —
+correct, but visually flat. Four presentation-only additions, each targeting a specific flatness:
+
+### World: WorldViewModel — camera push-in
+
+- Renamed the ADR-046 `catchCutsceneCameraOffset` constant to `catchCutsceneCameraEndOffset` and
+  added `catchCutsceneCameraStartOffset` (`[0, 1.2, 2.4]`, wider/further than the end offset).
+- Added `catchCutsceneTotalDuration` (computed: sum of the three ADR-047 phase durations) as the
+  single source both the camera dolly and `updateCatchCutscene`'s own phase math read from.
+- `updateCameraFollow()`'s cutscene branch now eases (`smoothstep`, `t*t*(3-2*t)`) from the start
+  offset to the end offset over `catchCutsceneTotalDuration`, instead of holding one static offset —
+  the camera now has its own slow push-in motion independent of the hook's rise/freeze/settle.
+
+### World: CatchCutsceneView — letterboxing, glow, title flourish
+
+- Added top/bottom black letterbox bars that slide in on appear (0 to 64pt over 0.25s).
+- Added a background vignette (`RadialGradient`, clear center to `black.opacity(0.5)` at the edges)
+  and a soft yellow radial glow behind the title.
+- Changed the title's entrance spring from `dampingFraction: 0.55` (no real overshoot) to `0.45` (a
+  visible overshoot/settle "pop") and grew the font 64 -> 72.
+
+### World: ContentView — HUD hides during the cutscene
+
+- Wrapped the stat block (`LineTensionView`, the caught-count/level `GroupBox`, the commented
+  `CastMeterView` slot, the error `Text`) in a `Group` with
+  `.opacity(viewModel.isShowingCatchCutscene ? 0 : 1)` and a matching `.animation(...)`, so the
+  routine gameplay HUD doesn't visually compete with the cutscene. `RealityView` and its
+  fps/connection-state overlay are unaffected.
+
+### Investigated, no change needed
+
+- Considered adding a dedicated "catch" sound cue — found one already exists and already fires at
+  the right moment: `reelHook`'s `emit(.catchFish)` (predates all of this cutscene work) plays
+  `catch_splash.wav` via `FishingSounds.handle(.catchFish)` the instant the cutscene begins. No audio
+  changes made.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-048.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with an ADR-048
+  paragraph; trimmed the now-renamed constant out of the ADR-046 paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now describes the push-in, letterboxing, glow, and
+  HUD fade.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`,
+  `World/World/ContentView.swift`, and `World/World/Views/CatchCutsceneView.swift`.
+- Not run: any live session. The push-in offsets, letterbox height, spring damping, and glow/vignette
+  opacities are all hand-picked, not tuned against how they actually read on-device.
+
+## Device Pairing Allowlist Over CoreBluetooth (ADR-049)
+
+Date: 2026-07-20.
+
+Requested directly as the first of three jobs in one message: "list saved device, biar 1 hp ga
+konek ke mac lain (setup device pair di awal. pake bluetooth connected aja kali ya)." Recorded as
+ADR-049 in `ARCHITECTURE_DECISIONS.md`.
+
+### World: PairedDeviceStore + TransportHost
+
+- Added `World/World/Transport/PairedDeviceStore.swift`: persists the paired Rod's
+  `CBPeripheral.identifier`/`.name` to `UserDefaults` (same pattern as `FishRecordStore`).
+- `TransportHost.swift`: `startScanningIfPossible()` now tries `centralManager.retrievePeripherals
+  (withIdentifiers:)` for the saved identifier first, falling back to a normal scan.
+  `didDiscover` ignores any peripheral that doesn't match the saved identifier once one exists.
+  `didUpdateNotificationStateFor`'s `.ready` branch saves the pairing on the first full success if
+  none exists yet. Added `forgetPairedDevice()`: tears down the current connection, clears the
+  store, and immediately resumes scanning in first-run mode. Added `pairedDeviceName`/
+  `hasPairedDevice` read-only accessors.
+
+### Rod: PairedCentralStore + TransportClient
+
+- Added `Rod/Rod/Transport/PairedCentralStore.swift`: persists the paired central's
+  `CBCentral.identifier` (no name — `CBCentral` exposes none).
+- `TransportClient.swift`: `didSubscribeTo` ignores any central that doesn't match the saved
+  identifier once one exists, and saves the first subscriber as the pairing if none exists yet.
+  **Also fixed a real data-leak gap found while making this change**: `sendUnreliable`/
+  `drainReliableQueue` previously called `peripheralManager.updateValue(_:for:
+  onSubscribedCentrals: nil)` — `nil` targets *every* subscribed central, not just the one the app
+  considers "connected." An unpaired Mac that happened to subscribe would therefore have kept
+  receiving real `RodState`/event data over the air even though `subscribedCentral`/`isConnected`
+  never reflected it. Added a `sendTargets` computed property (`subscribedCentral.map { [$0] }`)
+  and pass it instead of `nil` at both call sites, so an unpaired central now receives nothing at
+  the BLE level, not just at the app's own bookkeeping level. Added `forgetPairedDevice()`
+  (mirrors World's) and `pairedDeviceShortID`/`hasPairedDevice` accessors.
+
+### UI
+
+- `World/World/Views/MainMenuView.swift`: gained `pairedDeviceName`/`hasPairedDevice`/
+  `onForgetDevice` parameters and a "Paired with `<name>`" line + "Forget Device" button, shown
+  regardless of `isRodReady` (device pairing is unrelated to the ADR-038 fishing-session boundary).
+  `World/World/ContentView.swift` updated the call site.
+- `Rod/Rod/ContentView.swift`: Developer Details' "Connection" group gained a "Paired Mac" row
+  (short ID) and a "Forget Paired Mac" button, conditional on `viewModel.hasPairedDevice`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-049.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the "CoreBluetooth Transport (ADR-035)" section
+  with a "Device pairing allowlist" paragraph.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `git diff` on every touched file confirmed additive-only changes, no interference with the
+  concurrently-landed ADR-043 (hook lift target) or the ADR-042-issue-1 diagnostic work in the same
+  files (`WorldViewModel.swift`, `RodViewModel.swift`, `Rod/ContentView.swift`).
+- Not run: any live session with two physical devices. In particular, unverified: whether
+  `retrievePeripherals(withIdentifiers:)` reliably returns the known Rod across a real app restart
+  on this hardware (CoreBluetooth's own caching behavior here is not something this environment can
+  observe), and the actual "second Mac/phone in range gets ignored" scenario this was built for.
+
+## Explicit "Start Casting" Arm Gate (ADR-050)
+
+Date: 2026-07-20.
+
+Requested directly as the second of three jobs in one message: "add button 'start casting' di rod,
+terus munculin 'cast meter'. nah, core motion nya, harus narik hp ke belakang (jadi semakin - nilai
+pitch maybe), maka ketika nge flick, akan makin jauh. so maybe detect dari original device, ukur
+seberapa jauh device bergerak, baru 'cast' nya itu ketika nge flick device. langsung disable tombol
+'start casting' kalo kondisi hook nya != idle." Recorded as ADR-050 in `ARCHITECTURE_DECISIONS.md`.
+
+Read `RodMotionInterpreter`/`CastResolver` before writing anything: the "measure how far back it
+moved, fire on the flick" mechanic the player described already exists end-to-end (ADR-032's
+`backswingPeakDistance` blend) — the actual gap was that casting was always "live" off pose
+proximity alone, with no explicit intent step.
+
+### Shared: RodMotionInterpreter
+
+- `interpret(_:)` gained a required `isCastingArmed: Bool` parameter. Added a `case .cast where
+  !isCastingArmed:` branch ahead of the existing `.cast` case: treats the pose exactly like `.idle`
+  (no backswing tracking, no charging phase, `castPower` 0) regardless of how close it reads to
+  `castPose`. The existing armed-path logic (backswing tracking, charging phase, release
+  detection, `CastSnapshot` production) is otherwise byte-for-byte unchanged.
+
+### Rod: RodViewModel
+
+- Added `@Published private(set) var isCastingArmed = false` and `startCasting()`, guarded to
+  `isFishing && hookPhase == .idle && !isCastingArmed`.
+- `updateAction()`'s single `motionInterpreter.interpret(...)` call site now passes
+  `isCastingArmed: isCastingArmed`; the moment `interpretation.castSnapshot` comes back non-`nil`
+  (a real cast just fired), `isCastingArmed` is cleared — one press only ever arms one attempt.
+- `handle(_:)`'s `.hookPhase` case clears `isCastingArmed` whenever the incoming phase isn't
+  `.idle`, for any reason. `endFishing()` clears it too.
+
+### Rod: ContentView
+
+- Added a "Start Casting" button, shown only while `viewModel.isFishing`, disabled whenever
+  `hookPhase != .idle` or already armed (label swaps to "Casting Armed…" while armed).
+
+### World: CastMeterView
+
+- No changes. Its visibility already follows `RodState.motionPhase` reaching a charging-related
+  phase (backswing/charging/forwardSwing/release/followThrough) — since those phases can now only
+  be reached once armed, pressing "Start Casting" makes the meter appear as a direct consequence of
+  existing wiring, confirmed by reading `CastMeterView.isVisible` rather than assumed.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-050.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Cast Resolver Pipeline" with the arm-gate
+  paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: Rod's "intended final controller interface" now lists "Start
+  Casting" as a fourth control (between Start Fishing and Calibrate), and the "Cast" section notes
+  the explicit arm step alongside the existing "casting is a natural motion" framing.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- Confirmed by direct `grep` that `motionInterpreter.interpret(` has exactly one call site
+  (`RodViewModel.updateAction()`), so no other caller needed updating for the new required
+  parameter.
+- Not run: any live session. Whether the arm/disarm lifecycle feels natural, whether the
+  backswing/flick mechanic itself (unchanged by this entry, but never confirmed live either) reads
+  as intended once gated behind an explicit press, and whether "Casting Armed…" is clear enough
+  feedback are all unverified until tried on a physical device.
+
+## Rod Rig Pass: Bend Smoothing, Placeholder Reel Spin, Line-Follow Fix (ADR-051)
+
+Date: 2026-07-20.
+
+Requested directly as the third of three jobs in one message: "benerin rod (rod diem or bend, reel
+muter, line ngikut)." Recorded as ADR-051 in `ARCHITECTURE_DECISIONS.md`.
+
+### Investigation before writing anything
+
+- Read `RodRigController.swift` and `WorldViewModel.updateRodPose()`/`tick(deltaTime:)` fully.
+  Found no obvious functional bug in the primary whole-rig rotation path.
+- Extracted `rod_main.usdz` (`unzip`, then `usdcat` to ASCII) and read it directly rather than
+  guessing whether a reel asset exists: confirmed the skeleton has exactly six joints (`Root`,
+  `Handle`, `Rod_01/02/03`, `Tip`) and the mesh data is one `Mesh` prim with two material
+  `GeomSubset`s (`rod06`, `RodThread`) — no reel/spool geometry or joint anywhere in the file.
+- Re-read the "Asset-Integration Environment, First-Person Camera, and Rod Motion Fixes" entry's
+  own "Known Remaining Issue" note — it already precisely describes the line-fork bug and proposes
+  the exact fix (counter-rotate for the parent's world orientation) implemented here.
+
+### World: RodRigController
+
+- Added `bendSmoothing = 0.25` and `smoothedBendPitch`/`smoothedBendRoll` stored fields.
+  `applyBend(pitch:roll:)` is now `mutating`, low-pass-filtering its inputs before computing
+  per-joint bend angles — read as the most likely explanation for "rod diem or bend" (raw per-sample
+  noise reading as alternating rigid/odd-flex frames), though this is an inference, not a confirmed
+  live diagnosis (no device available to observe the actual symptom).
+- Added a placeholder reel: `reelEntity` (`ModelEntity`, flattened `generateSphere`, dark
+  metallic `SimpleMaterial`) pinned to the `Handle` joint via the same `pins.set`/`attach(to:)`
+  mechanism `load()` already uses for the tip marker and line attachment. New
+  `applyReelSpin(reelSpeed:isReeling:deltaTime:)` rotates it around local Y proportional to
+  `reelSpeed` while `isReeling`; `spinRate` (6.0 rad/s at full speed) is hand-picked, not measured
+  against any real reel geometry (none exists).
+- `applyLineTension(_:)`: reads `tipEntity?.orientation(relativeTo: nil)` and rotates the sag axis
+  (previously a fixed local `[1, 0, 0]`) by that orientation's inverse before building each joint's
+  sag rotation. Approximates rather than fully simulates — counters against the tip's world
+  orientation specifically, not each line joint's own preceding rotation, which is reasonable given
+  each joint's contribution is small (bounded by the existing `maxLineSagAnglePerJoint`).
+
+### World: WorldViewModel
+
+- `tick(deltaTime:)` gained one line calling `rodRig?.applyReelSpin(reelSpeed: rodState.reelSpeed,
+  isReeling: rodState.action == .reeling, deltaTime: deltaTime)`, alongside the existing
+  `applyLineTension` call.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-051.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added a new "Rod Rig Visual Fixes (ADR-051)" section — this
+  is the rig's first dedicated SAD section; previously only `CHECKPOINT.md`'s asset-integration
+  entries covered it.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the already-rebuilt `Shared` macOS module, for the full
+  `World/World` file list — exit code 0, no errors. (Rod was unaffected by this entry — not
+  re-typechecked for this specific change, though the full-repo pass at the end of this session's
+  three jobs covers it.)
+- `git diff --check` clean on every touched file.
+- Not run: any live session. All three fixes are explicitly first-pass/approximated per their own
+  doc comments above — whether the bend-smoothing interpretation was even the right read of "rod
+  diem or bend," whether the placeholder reel's spin rate/position look reasonable, and whether the
+  line-follow fix actually reads as "following" now (vs. some other remaining artifact) are all
+  unverified until played. If "rod diem or bend" turns out to mean something else entirely once
+  seen live, that's the first thing to revisit.
+
+## Floating Bobber: Idle Bob and a Pre-Bite "Interest Dip" (ADR-052)
+
+Date: 2026-07-20.
+
+Reported directly after the previous three jobs: "bobber nya celap celup (just like in real life),
+karena yang sekarang langsung nge bite gitu ikannya, jadi kurang realistis. also, bobber movement
+masih terlalu static, seharusnya bobber itu dinamis naik turun kecil kaya pelampung in real life."
+Recorded as ADR-052 in `ARCHITECTURE_DECISIONS.md`.
+
+Read `WorldViewModel.tick(deltaTime:)`'s `.hookInWater` case first: confirmed `hookEntity.position.y`
+was never touched at all during search unless the player was reeling in an empty line — the hook sat
+perfectly still at `waterHeight` from splash to bite, and the bite itself
+(`FishFightController.updateSearching`'s `.bite` case) went straight to `.fishOnHook` with no visual
+lead-up. Also confirmed `FishFightController.isFishInterested` (ADR-029) already existed and had
+exactly the right timing (a 0.8-2.0s pre-bite window) but had never had a visual consumer on the
+hook itself — only a Rod haptic pulse and a World bubble-loop sound.
+
+### World: WorldViewModel
+
+- Added `idleBobAmplitude`/`idleBobFrequency` (0.02 m, 0.5 Hz) and `interestDipAmplitude`/
+  `interestDipFrequency` (0.06 m, 2.0 Hz) constants, plus `bobberBobPhase: Float` state.
+- Added `updateBobberFloat(deltaTime:)`: `hookEntity.position.y = waterHeight + idleBob +
+  interestDip`, where `idleBob` is always-present and `interestDip` (downward-only,
+  `-abs(sin(...))`) layers on top only while `fishFight.isFishInterested`.
+- `tick()`'s `.hookInWater` case now calls `updateBobberFloat(deltaTime:)` in the `else` branch of
+  the existing `rodState.action == .reeling` check — deliberately mutually exclusive with
+  `reelHook`, so the two never fight over `hookEntity.position.y` on the same tick. Does not run
+  during `.fishOnHook`/`.reeling` either (`driftHookAway`/the fight mechanics own the hook's
+  vertical position there for their own reasons).
+- `simulateFlyingHook(deltaTime:)`: added `bobberBobPhase = 0` alongside the existing
+  `fishFight.resetForNewCast(...)` reset at splash, so the bob pattern doesn't carry an arbitrary
+  phase across casts.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-052.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added a new "Floating Bobber (ADR-052)" section; updated the
+  "Fish Interest..." section's now-stale "`isFishInterested`... for a future World visual cue (not
+  built yet)" line to point at it instead.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the already-built `Shared` macOS module, for the full
+  `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session. All four constants (`idleBobAmplitude`/`idleBobFrequency`/
+  `interestDipAmplitude`/`interestDipFrequency`) are hand-picked, not measured against reference
+  footage or played — whether the idle bob reads as "alive" without being distracting, and whether
+  the interest dip is a clear enough pre-bite tell without looking glitchy, are both unverified
+  until watched running.
+
+## Fight Direction: Timed Left/Right Juking Requires a Rod Counter (ADR-053)
+
+Date: 2026-07-20.
+
+Requested directly: "aku pengen ikannya ada behavior geser kanan kiri dengan rapid randomizer. jadi
+motion fight juga berlaku. misalnya kalo ikan narik ke kiri, otomatis user harus pull rod ke kanan
+belakang. ini state 'Fight' yang berlangsung selama kurang lebih beberapa detik aja (misal 5-10
+detik) gitu randomizernya." Recorded as ADR-053 in `ARCHITECTURE_DECISIONS.md`.
+
+### Shared: FishFightConfig
+
+- Added seven fields: `fightDirectionMinDuration`/`MaxDuration` (5.0/10.0s, the juking phase's
+  total random length per fight), `fightDirectionSwitchMinInterval`/`MaxInterval` (0.6/1.8s, how
+  often direction flips — the "rapid randomizer"), `fightDirectionRollThreshold` (0.15 rad,
+  minimum `RodState.roll` magnitude to count as actively countering), `fightDirectionCounterRelief`
+  (0.25 tension/sec) and `fightDirectionPenalty` (0.20 tension/sec).
+
+### World: FishFightController
+
+- Added `FightDirection` enum (`.left`/`.right`) and `@Published private(set) var fightDirection:
+  FightDirection?`.
+- `updateSearching`'s `.bite` branch now also starts the juking phase: random initial direction,
+  random total duration, random first switch interval.
+- `updateFight(deltaTime:isReeling:reelSpeed:hookDistance:rodRoll:)` gained a required `rodRoll:
+  Double` parameter. New private `updateFightDirection(deltaTime:rodRoll:)` counts down the phase
+  (clearing `fightDirection` to `nil` at zero), flips direction on its own switch timer, evaluates
+  whether `rodRoll`'s sign/magnitude counters the *current* (possibly just-flipped) direction
+  correctly, and returns a tension/sec delta folded additively into the existing
+  `(reelPull - effectiveFishPullRate) * deltaTime` formula — relief when countering correctly,
+  penalty otherwise. `resetForNewCast`/`resolve(outcome:)` both clear the new state alongside the
+  rest of their existing per-fight resets.
+
+### World: WorldViewModel
+
+- `tick()`'s `.fishOnHook, .reeling` case now also calls the new `updateFightDirectionDrift
+  (deltaTime:)` every tick, and passes `rodRoll: rodState.roll` into `fishFight.updateFight(...)`.
+- `updateFightDirectionDrift(deltaTime:)`: nudges `hookEntity.position.x` toward the current
+  `fishFight.fightDirection` at `fightDirectionLateralSpeed` (0.35 m/s), clamped within
+  `fightDirectionMaxLateralOffset` (1.0 m) of the rod's own X — purely cosmetic, does not feed back
+  into the tension check (which reads `RodState.roll` directly, not hook position).
+
+### World: HUD
+
+- `LineTensionView` gained a `fightDirection: FishFightController.FightDirection?` parameter and a
+  new row (shown only when non-`nil`): "Fish pulling ←/→" and "Lean rod →/←" (the literal opposite
+  arrow), beneath the existing tension bar. `World/World/ContentView.swift`'s call site updated to
+  pass `fishFight.fightDirection`. No changes to Rod — Core Haptics can't convey a left/right cue
+  through a single actuator, and World already owns gameplay HUD per this project's own
+  architecture contract, so this is the one place the cue can live.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-053.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with a "Fight
+  direction" paragraph, right after the existing "Fight camera (ADR-039)" note.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `git diff --check` clean on every file this entry touched.
+- Not run: any live session. All seven new config numbers are hand-picked, not measured — whether
+  5-10s/0.6-1.8s actually reads as "rapid" once played, whether the roll threshold (0.15 rad) is
+  achievable/comfortable on a real device, and whether the relief/penalty magnitudes make countering
+  feel meaningfully rewarding (vs. negligible or overwhelming) are all unverified until tried
+  physically.
+
+## Cast Hold Timer, Stronger Haptics, Eased Tier 3/4 Difficulty (ADR-054)
+
+Date: 2026-07-20.
+
+Requested directly, three asks in one message: "tampilin 'cast meter' nya di UI world. pake timer
+aja gimana? jadi semakin lama user nahan di 'belakang', ketika flick buat nge cast, jaraknya bakal
+semakin jauh tergantung seberapa lama timer nya berlangsung. Haptic nya juga kurang kerasa kenceng,
+bisa ditambah lagi intensitasnya. Sama, mudahin dikit dong ikan level 3 dan 4 nya." Recorded as
+ADR-054 in `ARCHITECTURE_DECISIONS.md`.
+
+### 1. Cast power: hold-duration timer, replacing ADR-032's pull-back distance
+
+Read `CastMeterView.swift` first: it already displays correctly and is already wired to appear
+(ADR-045's own finding) — the gap was the charging mechanism underneath, not the UI.
+
+- `Shared/Sources/Shared/Gameplay/CastResolver.swift`: `CastSnapshot.backswingDistance: Float` ->
+  `backswingHoldDuration: TimeInterval`. `CastConfig.minimumBackswingDistance`/
+  `maximumBackswingDistance` -> `minimumBackswingHoldDuration`/`maximumBackswingHoldDuration`
+  (0.15/1.5s). `resolve(_:)`'s `distancePower` calc -> `holdPower`, same formula shape against the
+  new bounds.
+- `Shared/Sources/Shared/Gameplay/RodMotionInterpreter.swift`: `backswingPeakDistance: Double`
+  tracking replaced with `castHoldStartTimestamp: TimeInterval?`, set the instant a cast attempt is
+  armed (`isCastingArmed`) and the pose first classifies as `.cast` (`enteredCast`), cleared on
+  every path that used to clear the old distance tracker (`updateProfile`, `setIdlePose`, the
+  `!isCastingArmed` early-out). `holdDuration = input.timestamp - castHoldStartTimestamp` feeds the
+  same `holdPower * (0.7 + 0.3 * flickPower)` blend as before — only the base term's source
+  changed. `snapshot(input:orientation:)` renamed to `snapshot(input:orientation:holdDuration:)`.
+- Confirmed via `grep` that no other file referenced `backswingDistance`/`backswingPeakDistance`/
+  `minimumBackswingDistance`/`maximumBackswingDistance` before removing them — clean rename, no
+  dead references left behind.
+
+### 2. Haptics: real intensity increase across every pattern
+
+`Rod/Rod/Haptics/HapticManager.swift`: cast 0.55->0.75, splash 0.32->0.45, reelTick 0.20->0.40,
+fishBite peaks 0.65->0.85, catchFish peak 0.95->1.00, lineBreak 0.90->1.00, fishEscaped peak
+0.50->0.70, fishInterested 0.22->0.35. `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`'s
+tension-band fields (Rod's continuous fight rhythm): intensity 0.30/0.45/0.70 -> 0.50/0.70/0.95,
+sharpness 0.30/0.45/0.60 -> 0.40/0.55/0.75 (crisper, not just louder). `catchFish`/`lineBreak` are
+now pinned at `1.0`, `CHHapticEventParameter.hapticIntensity`'s ceiling — already close before,
+nothing higher is possible on this API.
+
+### 3. Fish tier 3/4 eased
+
+`World/World/Gameplay/FishCatalog.swift`: initial pass lowered `fish_c` (tier 3, big) `resistance`
+0.75 -> 0.60 and `scott` (tier 4, boss) 0.95 -> 0.75, worked by hand against the same
+net-tension-rate formula ADR-039's own corrections used
+(`baseReelTensionRate - baseFishPullRate * (1 + resistance * pullRateResistanceMultiplier)` at max
+reel speed, max-size roll) — `fish_c` from a razor-thin ~+0.11/s to ~+0.18/s; `scott` from a
+barely-positive ~+0.02/s to ~+0.11/s. Tuned further afterward to `0.10` for `fish_b`, `fish_c`,
+and `scott` alike — only `fish_a` keeps its original `0.35` ceiling.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-054.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: rewrote the "Cast Resolver Pipeline" hold-duration
+  paragraph (noting the ADR-032 -> ADR-054 swap in place); added a "Tier 3/4 eased (ADR-054)" note
+  after the `resistance`/`sizeRatio` formula; added a haptic-intensity note to the existing
+  "Tension-band haptics (ADR-039)" paragraph.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `git diff --check` clean on every file this entry touched.
+- Not run: any live session. The hold-duration bounds (0.15/1.5s), every haptic intensity number,
+  and the two new resistance values are all hand-picked/hand-derived from formulas, not measured or
+  played — whether 1.5s feels like a natural "full charge" hold, whether the boosted haptics read
+  as strong without being uncomfortable, and whether tier 3/4 now feel appropriately "a bit easier"
+  rather than trivial or still-too-hard are all unverified until tried physically.
+
+## Reset Progress Button (ADR-055)
+
+Date: 2026-07-20.
+
+Requested directly: "bisa di tambahin button buat reset level ga ke level 1 lagi." Recorded as
+ADR-055 in `ARCHITECTURE_DECISIONS.md`.
+
+### World
+
+- `World/World/Gameplay/ProgressionStore.swift`: added `reset()` — clears the persisted per-tier
+  catch counts back to zero (`level` then reads 1).
+- `World/World/Gameplay/FishFightController.swift`: added `resetProgression()` — calls
+  `progressionStore.reset()`, resyncs `currentLevel` from it, clears `levelUpAnnouncement`.
+- `World/World/ViewModels/WorldViewModel.swift`: added `resetProgression()`, a thin passthrough.
+- `World/World/Views/MainMenuView.swift`: added an `onResetProgression: () -> Void` parameter and
+  a "Reset Progress" button (`role: .destructive`), shown unconditionally next to the existing
+  "Forget Device" row — same styling/no-confirmation precedent already established for that
+  button. `World/World/ContentView.swift`'s call site updated.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the already-built `Shared` macOS module, for the full
+  `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean on every file this entry touched.
+- Not run: any live session.
+
+## Fix: Cast Hold Timer Reset on Classification Flicker (ADR-054 correction)
+
+Date: 2026-07-20.
+
+Reported directly after playing ADR-054's cast timer change: "cast mechanism nge bug." Investigated
+by re-reading `RodMotionInterpreter.interpret(_:isCastingArmed:)` line by line rather than guessing,
+before writing any fix.
+
+### Root cause
+
+`castHoldStartTimestamp` reset whenever `previousClassification != .cast` — i.e. on every frame
+classification freshly became `.cast`. `distances(from:).minimum` picks whichever of idle/cast/reel
+reads closest *this exact frame*, with no hysteresis. While the player holds still to charge,
+ordinary sensor jitter can make the pose read fractionally closer to `idlePose` than `castPose` for
+one single frame, flipping classification to `.idle` and back to `.cast` the very next frame — which
+looked identical to a genuine fresh backswing entry, silently zeroing the hold timer and discarding
+however long the player had already charged. This would read exactly as "the cast never charges no
+matter how long I hold it."
+
+A second, related gap: `castHoldStartTimestamp` was only cleared from inside the
+`case .cast where !isCastingArmed:` branch — reached only when the pose is *also* still
+cast-classified while disarmed. If, between two cast attempts, the pose swung all the way back to a
+genuinely idle classification instead of lingering near the idle/cast boundary, execution never
+passed through that branch, leaving a stale timestamp from the *previous* attempt sitting unreset
+for the next one to pick up.
+
+### Shared: RodMotionInterpreter
+
+- Added a top-level guard, run every frame before the classification `switch` regardless of which
+  branch executes: `if !isCastingArmed { castHoldStartTimestamp = nil }`. This is now the only
+  place the timer is cleared from cast-arming state (plus `updateProfile(_:)`/`setIdlePose(_:)`'s
+  existing full resets) — no longer tied to which classification branch happens to run.
+- `case .cast:` now starts the timer only `if castHoldStartTimestamp == nil`, instead of on every
+  classification transition — immune to a single flicker frame, since the timestamp simply isn't
+  touched unless it's actually unset.
+- Renamed the classification-transition variable used by the release-trigger's OR-condition from
+  `enteredCast` to `isFreshCastEntry`, to make clear it's now unrelated to the timer (kept for the
+  edge case of a release firing on the very first frame of an attempt that's already
+  forward-accelerating) — its own logic is otherwise unchanged.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: amended ADR-054's cast-timer section in place with a
+  "Live-tested correction, same day" paragraph, matching this project's existing precedent for
+  same-session fixes (e.g. ADR-034/039).
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session. The fix is reasoned from re-reading the exact code path rather than
+  reproduced on a device — whether classification flicker was in fact the specific symptom the
+  player hit (vs. some other cast issue) is not independently confirmed; if the cast still feels
+  wrong after this, that distinction is the first thing to check next.
+
+## Cast Power Drops Flick Entirely; Live Timer Shown in World (ADR-056)
+
+Date: 2026-07-20.
+
+Requested directly, right after an explanation of how cast/reel currently work: "bisa ga instead of
+pake 'flick' aja, gimana kalo timer aja yang ditampilin di World, berapa lama kita nahan hp
+kebelakang? jadi remove flick totally. Tampilin juga cast meter power yang nge charge di World view
+nya. Gimana? Jadi ketika user nge flick, baru jarak hook akan ke register, sesuai power yang udah di
+tahan tadi." Recorded as ADR-056 in `ARCHITECTURE_DECISIONS.md`.
+
+### Shared: CastResolver / RodMotionInterpreter
+
+- `CastResolver.resolve(_:)`: dropped the `flickPower` term entirely — `normalizedPower = holdPower`
+  directly, no more `* (0.7 + 0.3 * flickPower)` blend.
+- Removed `CastSnapshot.angularVelocity: CastVector3` and `CastConfig.minimumCastVelocity`/
+  `maximumCastVelocity` — confirmed via `grep` first that nothing else read them.
+- `RodMotionInterpreter.interpret(_:isCastingArmed:)`'s `.cast` case: removed the `flickPower`
+  calculation, `castPower` is now the hold-duration ratio directly.
+- Added `castHoldDuration: TimeInterval` to `RodMotionInterpretation` (and the `result(...)` helper
+  that builds it) — the live raw seconds-held value, threaded through both the charging-phase and
+  release returns. Added `releasedHoldDuration` (mirrors the existing `releasedCastPower`) so the
+  `followThrough` early-return replays the frozen final hold time instead of resetting it.
+- Removed `RodMotionInput.rotationRateX/Y/Z` — the only consumer anywhere in the repo was building
+  the now-deleted `angularVelocity`; `rotationRateMagnitude` (still used for reel speed) is
+  unaffected.
+- `snapshot(input:orientation:holdDuration:)` no longer builds an `angularVelocity` vector.
+
+### Rod: MotionManager / RodViewModel
+
+- `MotionManager.swift`: removed `rotationRateX/Y/Z` from `MotionSample` and its construction in
+  `start()` — CoreMotion's per-axis rotation rate is no longer read at all past computing the
+  aggregate `rotationRateMagnitude`.
+- `RodViewModel.swift`: removed `rotationRateX/Y/Z` from the initial `MotionSample` default and the
+  `motionInput` computed property. Threaded `castHoldDuration` into all three `RodState(...)`
+  construction sites — carried forward from `rodState.castHoldDuration` in `publishState()`, fresh
+  from `interpretation.castHoldDuration` in `updateAction()` (the `.hookPhase` idle-reset site
+  doesn't specify it, same as it already didn't for `motionPhase`/`castPower` — defaults to 0).
+
+### Shared: RodState
+
+- Added `castHoldDuration: TimeInterval` (default 0), transmitted every `.state` tick alongside the
+  existing `castPower`.
+
+### World: CastMeterView / ContentView
+
+- **Found `CastMeterView`'s call site fully commented out in `World/ContentView.swift`** — the view
+  itself was already correct (ADR-045's own finding held), it simply was never in the render tree.
+  Uncommented it.
+- `CastMeterView.swift`: added a `holdDuration: TimeInterval` parameter, rendered as a
+  `String(format: "Holding %.1fs", holdDuration)` readout next to the "Cast Meter" title, alongside
+  the existing normalized power bar.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-056.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: rewrote the "Cast Resolver Pipeline" section's power formula
+  and surrounding prose to drop the flick blend and describe the removed dead-code chain and the
+  now-uncommented `CastMeterView`; fixed a trailing sentence that had gone stale (previously said
+  `CastMeterView` "needed no changes," no longer true once its call site fix is accounted for).
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `grep` confirmed zero remaining references to `rotationRateX`/`rotationRateY`/`rotationRateZ`/
+  `angularVelocity`/`flickPower`/`minimumCastVelocity`/`maximumCastVelocity` anywhere in the repo
+  after removal.
+- `git diff --check` clean on every file this entry touched.
+- Not run: any live session. Whether pure hold-duration power (zero flick influence) feels good on
+  release, and whether the new "Holding X.Xs" readout is legible/well-timed during a real cast, are
+  both unverified until tried physically.
+
+## Cast Power Becomes an Oscillating Timing Mini-Game (ADR-057)
+
+Date: 2026-07-20.
+
+Requested directly: "gini, ketika user pencet tombol 'Start Casting', maka meteran akan naik turun
+perlahan (kaya di game yang nyari momen pas), baru ketika user nge flick, otomatis bakal ke
+register sebagai cast." Recorded as ADR-057 in `ARCHITECTURE_DECISIONS.md` — a direct redesign of
+ADR-054/056's charge-ramp model into a timing minigame, not a bugfix.
+
+### Shared: CastResolver / RodMotionInterpreter
+
+- `CastConfig`: removed `minimumBackswingHoldDuration`/`maximumBackswingHoldDuration`, added
+  `oscillationPeriod: TimeInterval = 2.0` (seconds for one full 0→1→0 cycle).
+- `CastResolver.resolve(_:)`: replaced the linear ramp-and-cap formula with
+  `power = (1 - cos(backswingHoldDuration * 2π / oscillationPeriod)) / 2` — continuously
+  oscillating for as long as the backswing is held, rather than climbing once and plateauing.
+- `RodMotionInterpreter`: replaced its `minimumBackswingHoldDuration`/`maximumBackswingHoldDuration`
+  private constants with its own `oscillationPeriod` (kept manually in sync with `CastConfig`'s,
+  same duplication pattern this file already used for the bounds it replaces). The `.cast` case's
+  `castPower` calculation now applies the identical oscillation formula to `holdDuration`.
+- Everything else in the pipeline is untouched: `castHoldStartTimestamp` tracking (including the
+  flicker-immunity fix from the ADR-054 correction), the `isCastingArmed` gate, `forwardMotion`'s
+  flick-detection threshold, `CastSnapshot`'s shape, and the transmission path to `RodState`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-057.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: rewrote the "Cast Resolver Pipeline" power-formula
+  paragraph to describe the oscillation curve in place of the ramp.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module directly from `find Sources/Shared -name "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `grep` confirmed zero remaining references to `minimumBackswingHoldDuration`/
+  `maximumBackswingHoldDuration` anywhere in the repo after removal.
+- `git diff --check` clean.
+- Not run: any live session. `oscillationPeriod` (2.0s) is a hand-picked first guess at "perlahan"
+  — whether a 2-second full cycle gives a comfortably timeable window (vs. too fast to react to, or
+  too slow to feel responsive) is unverified until tried physically.
+
+## Fix: Re-Arming Inherited the Previous Cast's Frozen Power (ADR-057 correction)
+
+Date: 2026-07-20.
+
+Reported directly after playing ADR-057's oscillating meter: "power nya meningkat terlalu cepat,
+sampai sampai ketika aku pencet 'start casting', tiba tiba powernya udah max aja."
+
+### Root cause
+
+`interpret(_:)`'s `followThrough` early-return (`input.timestamp < castEndsAt`, replaying
+`releasedCastPower`/`releasedHoldDuration`) was gated purely on Rod's own local post-release
+cooldown (`profile.castDuration`, ~0.15–0.8s) — entirely independent of `isCastingArmed`. Re-arming
+("Start Casting" again) shortly after a release, well within that short local window, hit this
+guard and kept replaying the *previous* cast's frozen power — which the oscillating meter (ADR-057)
+can easily have released at or near its peak. Read exactly as "the instant I press the button,
+power is already max," when it was really the last cast's leftover freeze-frame bleeding into the
+new attempt.
+
+### Shared: RodMotionInterpreter
+
+- Whenever `isCastingArmed` is true, `castEndsAt` is now reset to the current timestamp *before*
+  the `followThrough` check runs — a fresh arm always wins over any still-ticking cooldown from a
+  previous attempt, so the check never fires while armed, and a genuinely fresh oscillation (from
+  `castHoldStartTimestamp`, already correctly `nil` from the disarmed interval) starts immediately.
+- Also slowed `oscillationPeriod` 2.0s -> 3.5s, responding to the same report's "terlalu cepat" more
+  generally, not just the re-arm bug.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: amended ADR-057 in place with a "Live-tested correction" paragraph,
+  matching this project's precedent for same-session fixes.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the oscillation-period mention (2.0s -> 3.5s) and
+  added a short paragraph describing the re-arm fix.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module and an `arm64-apple-ios26.0-simulator`
+  module — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS) and the
+  full `Rod/Rod` file list (iOS simulator) — both exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session. Whether this was the complete explanation for the reported symptom
+  (vs. some other contributing factor), and whether 3.5s now feels appropriately "perlahan," are
+  both unverified until tried physically.
+
+## Session Handoff: WINDOW_2.md
+
+Date: 2026-07-20.
+
+Requested directly: "buatin WINDOW_2.md nya dong untuk handover." Documentation-only — no Swift,
+Xcode project, asset, or runtime structure touched.
+
+Added `WINDOW_2.md` (project root, matching `Archive/WINDOW_1.md`'s original shape and purpose): a
+navigation summary covering ADR-041 through ADR-057 (plus two in-place "live-tested correction"
+amendments, to ADR-054 and ADR-057). Content: an explicit git-state warning up front (uncommitted
+work on top of `dev`'s current tip `68d3f4d`, the mid-session detached-HEAD incident and how it was
+resolved, the pre-existing stashes that aren't this session's), a chronological TL;DR, a full
+ADR table with pointers, the standing "verified via typecheck only, never played" caveat carried
+forward from `WINDOW_1.md`, a known-issues section (including the still-unresolved ADR-030/031
+numbering collision, now flagged a third time across handoff documents), and suggested next steps
+led by "commit the pending work" and "actually play the cast mechanic."
+
+Explicitly recorded rather than glossed over: this window's ADR-044 through ADR-048 are **not**
+this session's own work — they landed via merging in a teammate's parallel `feat/playtest-refine`
+branch, which is also why this session's own four-feature batch needed renumbering from 044-047 to
+049-052 (a real ADR-numbering collision, resolved via `git merge` + manual renumbering + updating
+every cross-reference, documented in its own dated entry earlier in this file).
+
+No verification needed beyond confirming the file exists and reads correctly — pure documentation,
+no code path affected.
+
+## Documentation Fix: ADR-030/031 Numbering Collision Resolved (-> ADR-058/059)
+
+Date: 2026-07-21.
+
+Requested directly: "Beresin dulu known issue under WINDOW_2.md nya" (fix the known issue flagged
+in `WINDOW_2.md` first). Picked the ADR-030/031 numbering collision — flagged repeatedly across
+`Archive/WINDOW_1.md`, `WINDOW_2.md`, and multiple earlier `CHECKPOINT.md` entries (e.g. the
+"Documentation Cleanup" entry around line 4601) as cheap but never actually done.
+
+### Which pair moved, and why
+
+Two independent ADR-030s and two independent ADR-031s existed in `ARCHITECTURE_DECISIONS.md`:
+
+- **Gameplay-progression set (kept as-is):** ADR-030 "Resistance Scales With Rolled Size, Not Just
+  Species" and ADR-031 "Cast Distance, Fight Distance, and Search-Phase Reel State Fixes." Both sit
+  inside the tight, continuous ADR-029 -> ADR-057 chronological sequence and are cross-referenced by
+  several later entries (ADR-042's own text, `SOFTWARE_ARCHITECTURE_DOCUMENT.md`,
+  `FishFightConfig.swift`'s doc comment) — renumbering these would have touched far more call sites
+  than the alternative below, for no benefit.
+- **Merge-introduced set (renumbered):** ADR-030 "World Explicitly Authors the First-Person Camera"
+  and ADR-031 "Transport Delivery Mode Matches Message Freshness, Not a Blanket Default." Per this
+  file's own "Merge: `feat/asset-integration` synced onto `origin/main`" entry, the camera decision
+  started life as ADR-016 and got stamped "one past the highest existing number" during that merge
+  (029 at the time) without anticipating the gameplay track would later reach 029 -> 030 -> 031 on
+  its own. The transport-delivery decision was numbered the same way at a separate point. Renamed
+  in place to **ADR-058** and **ADR-059** (one past the current highest, 057) — same pattern this
+  project already used for the ADR-044 collision (renumbered to 049-052, see the "Merge origin/main
+  into dev" entry above).
+
+### Changes
+
+- `ARCHITECTURE_DECISIONS.md`: renamed the two headers in place; decision/rationale text untouched.
+  Checked both full entries for internal cross-references to their own old numbers — found none;
+  both only ever referenced `CHECKPOINT.md` by section title, never by ADR number.
+- Grepped every "ADR-030"/"ADR-031" hit repo-wide before touching anything: all remaining mentions
+  in `ARCHITECTURE_DECISIONS.md`, `SOFTWARE_ARCHITECTURE_DOCUMENT.md`, and `FishFightConfig.swift`
+  resolved to the surviving gameplay pair (Resistance/Cast Distance), so none needed updating.
+- Left the historical "Merge: `feat/asset-integration`..." entry's own narrative (the ADR-016 -> 030
+  rename story) untouched — it's an accurate record of what happened at that point in time, not a
+  live cross-reference; rewriting "renumbered as ADR-030 (one past the highest existing number, 029)"
+  to say 058 would misstate the actual history.
+- `WINDOW_2.md`: marked the known-issue line resolved, pointing back to this entry.
+
+### Verification
+
+- `git diff --check` clean.
+- Pure documentation — no Swift, Xcode project, or asset changes; nothing to typecheck.
+
+## Feature: Rod Haptics Maxed to CoreHaptics' Intensity Ceiling (ADR-060)
+
+Date: 2026-07-21.
+
+Requested directly: "Increase haptics feedback yang diberikan ke Rod di semua bagian. Multiply it
+to the largest number the phone supports." Recorded as ADR-060 in `ARCHITECTURE_DECISIONS.md`.
+
+### Rod: HapticManager
+
+- `Rod/Rod/Haptics/HapticManager.swift`: every `hapticIntensity` value raised to `1.0` —
+  `cast()` 0.75 -> 1.0, `splash()` 0.45 -> 1.0, `reelTick()` 0.4 -> 1.0, `fishBite()`'s four pulses
+  0.85/0.75/0.75/0.85 -> 1.0 each, `catchFish()`'s second pulse 0.6 -> 1.0 (first was already
+  1.0), `fishEscaped()`'s three pulses 0.7/0.55/0.35 -> 1.0 each, `fishInterested()` 0.35 -> 1.0.
+  `lineBreak()` was already 1.0, untouched. `sharpness` values left exactly as they were at every
+  call site.
+
+### Shared: FishFightConfig
+
+- `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: `lowBandIntensity`/
+  `mediumBandIntensity`/`highBandIntensity` defaults raised from ADR-054's 0.50/0.70/0.95 to
+  1.0/1.0/1.0 — these are the only haptic-intensity values that live outside `HapticManager`
+  itself, feeding `FishingHaptics.fightPulse(now:)`'s continuous tension-band rhythm. Grepped
+  `Rod/Rod` for any other `intensity:`/`hapticIntensity` call site before finishing — found none,
+  so this and `HapticManager.swift` are the complete set.
+
+`sharpness` was deliberately left untouched everywhere — it's a separate CoreHaptics parameter
+controlling timbre (crisp vs. dull), not felt strength, and it's still what differentiates the
+three fight-tension bands now that their intensity is identical.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-060.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "Tension-band haptics (ADR-039)" paragraph's
+  stated band-intensity numbers (0.50/0.70/0.95 -> 1.0/1.0/1.0) and noted the ADR-060 ceiling pass
+  alongside the ADR-054 history it already described.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx14.0` module directly from
+  `find Sources/Shared -name "*.swift"` — no errors.
+- Built `Shared` again as an `arm64-apple-ios17.0-simulator` module (`-emit-library`, since a
+  bare `-emit-module` with multiple inputs needs one of `-emit-library`/`-c` alongside it), then
+  `xcrun swiftc -typecheck` against it for the full `Rod/Rod` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session on a physical device. Whether a uniformly maxed intensity across all
+  three fight-tension bands still reads as escalating pressure (previously partly conveyed by
+  intensity, now conveyed by interval/sharpness alone) is unverified until tried physically —
+  same standing caveat as every other haptic/feel change in this project's history.
+
+## Fix: Five Playtest Notes (ADR-061)
+
+Date: 2026-07-21.
+
+Requested directly as five numbered playtest notes in one message ("note some stuff"). Recorded as
+ADR-061 in `ARCHITECTURE_DECISIONS.md` (one ADR covering all five, matching this project's own
+precedent of bundling one request's related sub-fixes — e.g. ADR-029, ADR-039).
+
+### 1. Cast meter delay on "Start Casting"
+
+- `Shared/Sources/Shared/Gameplay/RodMotionInterpreter.swift`: the charging/oscillation logic
+  (hold-duration tracking, the oscillation formula, backswing/forward-motion phase detection,
+  release) moved out of the pose-classification `switch`'s `case .cast:` branch into its own
+  `if isCastingArmed { ... }` block that runs before the switch, unconditionally once armed. The
+  switch (now `case .cast:`/`.reel`/`.idle` with no `where` clause) only still runs while *not*
+  armed. `previousClassification` is set to `.cast` explicitly inside the new block (previously
+  implicit via the switch's own `case .cast` match) so `isFreshCastEntry` bookkeeping across
+  frames is unaffected.
+
+### 2. Hook floating near the pier before landing
+
+- `World/World/ViewModels/WorldViewModel.swift`'s `reelHook(deltaTime:)`: replaced the
+  `dockLiftSpeed`-driven climb + `distance3D > 0.15` catch guard with an immediate snap-and-resolve
+  the instant `horizontalDistance <= hookLiftDistance` (1.0m) — `hookEntity.position =
+  hookLiftTargetPosition` followed by the same catch/empty-retrieve branch that used to sit behind
+  the climb. Removed the now-fully-dead `dockLiftSpeed` constant and its doc comment; updated
+  `hookLiftDistance`'s and the tug-of-war `else` branch's doc comments to stop referencing it.
+
+### 3. Cast distance -> fish size, discrete zones instead of a continuous ceiling
+
+- `World/World/Gameplay/FishFightController.swift`: added a private `CastZone` enum
+  (green/yellow/red) and `castZone` computed property (thirds of `currentCastDistance /
+  maxExpectedCastDistance`, matching `CastMeterView`'s three equal power-bar segments). Added
+  `sizeRollWindow` (floor/ceiling ratio pair per zone: green `[0, 0.375)`, yellow `[0.375,
+  0.875)`, red `[0.625, 1.0]` — derived by inverting `stars(forWeight:in:)`'s `1 + round(4 *
+  ratio)` at each star boundary). Replaced `sizeCeilingRatio`/`biasedRoll(in:ceilingRatio:)` with
+  `sizeRollWindow`/`biasedRoll(in:floorRatio:ceilingRatio:)`; `updateSearching(deltaTime:)`'s bite
+  branch now rolls weight/length through the new floor+ceiling window.
+
+### 4. Result screen dismissal
+
+- `Shared/Sources/Shared/Models/Rod/RodState.swift`: added `isCastingArmed: Bool = false`,
+  transmitted every `.state` message (same pattern as `isFishing`).
+- `Rod/Rod/ViewModel/RodViewModel.swift`: `startCasting()`'s guard now accepts `hookPhase == .idle
+  || hookPhase == .result`. The `.hookPhase` message handler's `isCastingArmed = false` reset now
+  only fires when the new phase is neither `.idle` nor `.result` (previously just `!= .idle`) —
+  otherwise World's own echoed `.result` phase would immediately clear the arm the player just set,
+  before World's dismissal round-trip ever completes. All three `RodState(...)` construction sites
+  now pass `isCastingArmed: isCastingArmed`.
+- `Rod/Rod/ContentView.swift`: `startCastingButton`'s `.disabled(...)` updated to match the relaxed
+  guard (`hookPhase` neither `.idle` nor `.result`, or already armed).
+- `World/World/ViewModels/WorldViewModel.swift`: `handle(_:)` calls `continueFishing()` whenever an
+  incoming `state.isCastingArmed` is true — idempotent via `continueFishing()`'s own existing
+  `hookPhase == .result` guard, so no extra "already consumed" bookkeeping was needed.
+- `World/World/Views/ResultView.swift`: removed the `onContinue` closure and "Continue Fishing"
+  button; added `Text("Press \u{201C}Start Casting\u{201D} on Rod to fish again")` in its place.
+- `World/World/ContentView.swift`: `ResultView(result:)` call site updated (no closure argument);
+  dropped the `sounds.uiClick()` call that used to fire on the button tap, since dismissal is no
+  longer a World-side tap.
+- `HookPhase.allowsCasting` itself (`Shared/Sources/Shared/Models/Gameplay/HookPhase.swift`) was
+  **not** touched — still only `.idle` — so a physical flick still cannot fire an actual cast until
+  World's round-trip completes; only the button's *arming* guard moved earlier.
+
+### 5. Retry Connection button
+
+- `World/World/ViewModels/WorldViewModel.swift`: added `retryConnection()` —
+  `transport.disconnect()` followed by `transport.connect()` in a `Task`, mirroring `start()`'s own
+  connect error handling.
+- `World/World/Views/MainMenuView.swift`: added an `onRetryConnection: () -> Void` parameter and a
+  "Retry Connection" button, shown only while `!isRodReady`.
+- `World/World/ContentView.swift`: `MainMenuView(...)` call site passes
+  `onRetryConnection: viewModel.retryConnection`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-061 (all five fixes, one entry).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the ADR-050 cast-arming paragraph (guard condition,
+  `.result` exception) and added a new ADR-061 paragraph on the meter-start fix; replaced the
+  ADR-044 guaranteed-climb paragraph with the ADR-061 instant-landing description; replaced the
+  ADR-031 continuous-ceiling paragraph with the ADR-061 discrete-zone description (also fixed a
+  pre-existing stale value, `maxExpectedCastDistance` documented as `10.0` vs. the code's actual
+  `20.0`); updated the Result Screen (ADR-029) paragraph and the Main Menu (ADR-036) flow
+  diagram/button list; added a "Manual retry (ADR-061)" paragraph after the existing automatic-
+  reconnection description.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-macosx26.0` module (RealityKit needs macOS 15+, not the
+  14.0 target used for a plain Shared-only typecheck) and an `arm64-apple-ios17.0-simulator`
+  module, each via `-emit-module -emit-library` directly from `find Sources/Shared -name
+  "*.swift"` — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `World/World` file list (macOS 26) and
+  the full `Rod/Rod` file list (iOS 17 simulator) — both exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session on physical devices. In particular unverified: whether the cast-zone
+  star tiers (item 3) feel right as a hard window rather than a soft ceiling, and whether
+  `retryConnection()` (item 5) actually recovers from the specific wedged CoreBluetooth states that
+  prompted the report — not something this environment can observe or reproduce directly.
+
+## Fix: Stuck at Main Menu — Rod's Stale Pairing Had No Recovery Path (ADR-062)
+
+Date: 2026-07-21.
+
+Reported directly after ADR-061 landed: World stayed stuck on "Press \u{201C}Start Fishing\u{201D}
+on Rod to play" (`connectionState` reading `.ready`/`.streaming`, so BLE looked fully connected)
+even though Rod's own UI confirmed `isFishing` had flipped true (button relabeled "End Fishing").
+Diagnosed in two passes.
+
+### Pass 1: ruled out a schema mismatch
+
+- Hypothesized that adding `RodState.isCastingArmed` (ADR-061) could cause a decode failure if only
+  one of Rod/World was rebuilt from the latest source — `NetworkMessage` decode used `try? ... else
+  { continue }` on both transports, silently dropping any failure with zero signal.
+- `World/World/Transport/TransportHost.swift` and `Rod/Rod/Transport/TransportClient.swift`: both
+  decode sites changed from `try?`/`continue` to `do`/`catch` with a `#if DEBUG print(...)` on
+  failure, so a real schema mismatch would now be visible in the console.
+- User rebuilt clean and reproduced with **no decode errors logged** — ruled out. Kept the logging
+  anyway; it's a real diagnostic improvement independent of this specific report, and was itself
+  what proved pass 1 wrong quickly instead of guessing further.
+
+### Pass 2: found the real root cause by reading `didSubscribeTo`
+
+- User's own follow-up report was the key clue: using World's "Forget Device" as a troubleshooting
+  step left Rod completely unable to connect afterward, surviving a full Rod app relaunch.
+  `PairedDeviceStore`/`PairedCentralStore` (ADR-049) are independently persisted per side —
+  World's "Forget Device" only ever clears World's own saved identifier, never Rod's.
+- Read `TransportClient.swift`'s `didSubscribeTo` (`peripheralManager(_:central:didSubscribeTo:)`)
+  and found its own comment already explains the mechanism: CoreBluetooth gives a peripheral no API
+  to reject a subscription, so a central whose identifier doesn't match `pairedCentralStore.
+  identifier` still subscribes successfully at the protocol level — the far side (World) correctly
+  reads `.ready`/`.streaming` — but Rod's app layer never assigns `subscribedCentral` to it, so
+  `sendTargets` (`subscribedCentral.map { [$0] }`) stays empty and Rod never actually transmits
+  anything, including the very first `.state` message carrying `isFishing`. Exactly reproduces
+  "looks connected, nothing ever happens, no error anywhere."
+- `RodViewModel.forgetPairedDevice()` -> `TransportClient.forgetPairedDevice()` already existed and
+  already worked correctly — it just had no reachable UI caller. Rod's original "Forget Paired Mac"
+  button lives inside the Developer Details `DisclosureGroup` in `Rod/Rod/ContentView.swift`, which
+  is commented out and predates this session (flagged as likely someone else's in-progress work in
+  `WINDOW_2.md`'s own known-issues section, left alone across multiple prior windows).
+
+### Fix
+
+- `Rod/Rod/ContentView.swift`: added a standalone `pairedDeviceRow` (shown only while
+  `viewModel.hasPairedDevice`) directly in the primary view — deliberately *not* by uncommenting
+  the Developer Details block, matching this project's precedent of not touching what looks like
+  someone else's in-progress work. Mirrors `World/World/Views/MainMenuView.swift`'s own
+  `pairedDeviceRow` for the same recovery action: "Paired with `<short ID>`" text + a destructive
+  "Forget Paired Mac" button calling `viewModel.forgetPairedDevice()`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-062 (both the decode-logging change and the pairing-
+  recovery fix, found together in one diagnosis).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the ADR-049 device-pairing paragraph (Rod's button
+  was documented as living in Developer Details, which was never actually true in practice since
+  that section is commented out — fixed to describe the new standalone row) and added a new
+  paragraph explaining the silent-subscription-mismatch mechanism and the decode-logging addition.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the iOS 17 simulator `Shared` module: the full `Rod/Rod` file
+  list — exit code 0, no errors. Also re-typechecked `World/World` after the `TransportHost.swift`
+  logging change — exit code 0.
+- `git diff --check` clean.
+- Not run: an actual live two-device session confirming the new "Forget Paired Mac" row restores a
+  working connection in the reporter's specific stuck state — this diagnosis was code-reading plus
+  process of elimination (ruling out pass 1 via the new logging), not a reproduction in this
+  environment, which cannot drive real CoreBluetooth hardware.
+
+## Fix: Cast Meter Charges Fine, Hook Never Launches — Every Cast Silently Dropped Over BLE (ADR-063)
+
+Date: 2026-07-21.
+
+Reported directly right after ADR-062's pairing fix confirmed working: the cast meter charged and
+released correctly on Rod, but the hook never launched in World. Diagnosed live, over several
+rounds, by adding targeted temporary logging and reading it back from the reporter's own device
+console each round.
+
+### Diagnosis, in order
+
+1. Added `#if DEBUG` logging in `RodMotionInterpreter`'s caller (`updateAction()`) showing
+   `phase`/`power`/`hold`/`hookPhase` on every armed frame, plus a dedicated line on the exact
+   frame a release fires. Console showed the meter oscillating correctly (hold climbing 0 -> 1+
+   seconds, power following the expected curve) and a clean release with `hookPhase=idle`,
+   `allowsCasting=true`, `isFishing=true` — ruled out every hypothesis about Rod's own
+   arm/charge/release logic or `HookPhase` gating being wrong.
+2. Added logging in `WorldViewModel.handle(_:)` (does a `.state` with `action == .casting` ever
+   arrive?) and `launchHook(solution:)` (does the scene-entity guard ever reject it?). Reporter's
+   World console showed **zero** `[CAST]` lines at all during a full, connection-stable test —
+   meaning the message carrying the cast never arrived, not that it arrived and got rejected.
+3. Considered and ruled out a connection-stability explanation first (the reporter's very first
+   paste of World's console showed a connect/scan/disconnect/reconnect sequence) — reporter
+   confirmed that was just start-up noise and the connection stayed fully stable (`.ready`/
+   `.streaming`) through the entire test, with no further disconnects.
+4. Added logging directly in `TransportClient.sendUnreliable(_:)` (Rod's actual BLE send call for
+   `.state`) — confirmed on the next round: every single `.state` message carrying a populated
+   `castSolution` logged `.state DROPPED (too big for one chunk): ~531-542 bytes, budget=512,
+   chunks=2`, repeating for the entire `followThrough` window (dozens of consecutive frames in the
+   capture). Root cause found: `sendUnreliable(_:)` never fragments — a message over budget is
+   dropped outright, with (until this diagnosis) zero logging anywhere in that path.
+
+### Fix
+
+- `Shared/Sources/Shared/Models/Rod/RodState.swift`: added explicit `CodingKeys` mapping every
+  property to a short wire name (`timestamp`->`"ts"`, `castSolution`->`"cs"`,
+  `castHoldDuration`->`"chd"`, `isCastingArmed`->`"ca"`, full mapping in the source). No property,
+  type, or call-site changes anywhere — purely a wire-format shrink.
+- Verified via a standalone encode test (compiled directly against the built `Shared` module, not
+  part of the app targets) using a representative populated-`castSolution` `RodState`: **540 bytes
+  under default keys -> 419 bytes under the new `CodingKeys`**, comfortably under the 512-byte
+  budget with ~93 bytes of margin, without touching `CastSolution`'s or `RodOrientation`'s own
+  keys at all.
+- `Rod/Rod/Transport/TransportClient.swift`: `sendUnreliable(_:)` now logs (under `#if DEBUG`) both
+  the over-budget-drop case and an `updateValue` returning `false` (send queue full) case — so a
+  future field addition that creeps back over budget is immediately visible instead of silently
+  failing the same way again.
+
+### Diagnostic scaffolding removed
+
+The following temporary `#if DEBUG` logging, added purely for this live diagnosis, was removed
+once the root cause was found and fixed — kept only what has lasting diagnostic value (the
+`sendUnreliable(_:)` logging above, and ADR-062's decode-failure logging):
+- `RodViewModel.updateAction()`'s per-armed-frame `[CAST] armed=...` line and the `[CAST] RELEASE
+  FIRED ...` line.
+- `RodViewModel.startCasting()`'s `[CAST] startCasting() REJECTED ...` line (guard-failure case).
+- `WorldViewModel.handle(_:)`'s `[CAST] handle(_:) set pendingCastSolution ...` line.
+- `WorldViewModel.launchHook(solution:)`'s success-path `[CAST] launchHook FIRING ...` line — the
+  guard-failure line was kept (renamed/reworded, not removed), since a silently-unready scene at
+  cast time is exactly the class of silent failure worth a permanent log, matching ADR-062's own
+  reasoning.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-063.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-ios17.0-simulator` and an `arm64-apple-macosx26.0`
+  module (`-emit-module -emit-library`) directly from `find Sources/Shared -name "*.swift"` — no
+  errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `Rod/Rod` file list (iOS 17 simulator)
+  and the full `World/World` file list (macOS 26) — both exit code 0, no errors.
+- Standalone encode test (see above) compiled and run directly against the built macOS `Shared`
+  module, confirming the actual byte-count reduction empirically rather than by estimate alone.
+- `git diff --check` clean.
+- Not yet re-confirmed on the reporter's own two-device setup that a cast now actually reaches
+  World and launches the hook — this fix directly addresses the exact byte counts captured live
+  from their device, but the loop hasn't been closed with a final "it works now" from them yet.
+
+## Feature: Onboarding Flow, Live Calibration Guidance in World, Calibration Any Time Idle (ADR-064)
+
+Date: 2026-07-21.
+
+Requested directly: add an onboarding flow before the player jumps into play (game explanation,
+main goal, levels, calibration tutorial); change calibration so it's available whenever
+`HookPhase == .idle` instead of only when World is at the Main Menu; add live calibration tutorial
+text in World, including which button to press. Recorded as ADR-064 in `ARCHITECTURE_DECISIONS.md`
+— closes the "World Main Menu + Tutorial + Calibration instructions" gap flagged open since
+ADR-029/038 (Main Menu itself already closed by ADR-036; Tutorial and Calibration-in-World were
+the still-open halves).
+
+### Shared: CalibrationStep moves out of Rod
+
+- New `Shared/Sources/Shared/Models/Rod/CalibrationStep.swift`: `Codable`/`Sendable`/`Equatable`
+  enum, `.idle`/`.cast`/`.reel`/`.complete` — same cases as the `MotionCalibrationStep` it
+  replaces, which was previously a Rod-local, non-transmittable enum.
+- `Shared/Sources/Shared/Models/Rod/RodState.swift`: added `calibrationStep: CalibrationStep`
+  (short wire key `"cal"`, following ADR-063's compact-`CodingKeys` convention). Verified via a
+  standalone encode test that a populated-`castSolution` payload (the largest `RodState` gets)
+  stays comfortably under ADR-063's 512-byte one-chunk BLE budget: 436 bytes measured, ~76 bytes
+  of margin.
+
+### Rod: calibration gating relaxed, field wired through
+
+- `Rod/Rod/ViewModel/RodViewModel.swift`: removed the local `MotionCalibrationStep` enum
+  (`calibrationStep` now typed `CalibrationStep`). `calibrateMotion()` gained a `hookPhase == .idle`
+  guard (previously ungated beyond `hasMotionSample`) — this is what actually makes recalibration
+  reachable mid-session, not just a UI-level change. All three `RodState(...)` construction sites
+  (`handle(_:)`'s `.idle`-hookPhase reset, `publishState()`, `updateAction()`) now pass
+  `calibrationStep: calibrationStep`.
+- `Rod/Rod/ContentView.swift`: Calibrate toolbar button's `.disabled(...)` changed from
+  `!hasMotionSample || isFishing` to `!hasMotionSample || hookPhase != .idle`. `startCastingButton`
+  gained an additional `calibrationStep != .complete` disabled condition — not a correctness fix
+  (a cast attempt mid-recalibration already silently can't do anything, since re-entering the
+  calibration sequence sets `profile.isComplete = false`), just keeps the button's own label
+  honest now that this state is newly reachable.
+
+### World: live calibration guidance + onboarding
+
+- New `World/World/Views/CalibrationGuidanceView.swift`: per-`CalibrationStep` title/instruction
+  text plus a "Press \u{201C}<label>\u{201D} on your Rod" callout (except at `.complete`), the
+  label hand-matched to Rod's own `calibrationButtonTitle` switch so the two can't drift apart.
+- `World/World/Views/MainMenuView.swift`: gained a `calibrationStep: CalibrationStep` parameter;
+  the "press Start Fishing" status row is replaced by `CalibrationGuidanceView` whenever
+  `isRodReady && calibrationStep != .complete`. Also gained a "How to Play" button
+  (`onShowOnboarding: () -> Void`).
+- `World/World/ContentView.swift`: added a `recalibrationOverlay` (scrim + centered card, matching
+  `ResultView`'s own treatment) shown whenever `screen == .playing && hookPhase == .idle &&
+  rodState.calibrationStep != .complete` — the mid-session recalibration case the Rod-side gating
+  change just made reachable. `MainMenuView(...)` call site updated with the two new parameters.
+- New `World/World/Views/OnboardingView.swift`: three static, manually-paged screens (page-style
+  `TabView` is an iOS idiom, this is a macOS app) — Welcome/two-device explanation, Main Goal
+  (catch fish, ultimately catch Scott), Levels & Fish Tiers (real `ProgressionStore` thresholds:
+  3/5/10/1 small/medium/big/boss) — with Back/Next, a page-dot indicator, a "Skip Intro" escape
+  hatch, and a final "Let's Calibrate" button. Deliberately does not embed calibration instructions
+  itself; its completion just returns to `.mainMenu`, where `MainMenuView`'s own guidance (above)
+  takes over automatically for a first-time player.
+- `World/World/ViewModels/WorldViewModel.swift`: `Screen` gains `.onboarding`. `init` sets the
+  initial `screen` from a new persisted `world.hasSeenOnboarding` `UserDefaults` flag —
+  `.onboarding` on a fresh install, `.mainMenu` on every later launch. Added `completeOnboarding()`
+  (persists the flag, returns to `.mainMenu`) and `showOnboarding()` (Main Menu's "How to Play,"
+  guarded to only fire from `.mainMenu` so it can't interrupt an active session).
+
+### Incidental fix
+
+- `World/World/Gameplay/ProgressionStore.swift`: fixed the class doc comment, which described an
+  older 10/10, three-level progression that no longer matches the shipped 3/5/10/1, four-level
+  code — found and fixed while writing the onboarding Levels page, which needed the real numbers.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-064; appended a short "Closed by ADR-064" note to
+  ADR-029's own historical "known gap" paragraph rather than rewriting it.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: added a full "Onboarding & Live Calibration Guidance
+  (ADR-064)" section; updated the World Main Menu flow diagram to include `.onboarding`; appended
+  the same "Closed by ADR-064" note to its own matching "known gap" paragraph.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-ios17.0-simulator` and an `arm64-apple-macosx26.0`
+  module (`-emit-module -emit-library`) directly from `find Sources/Shared -name "*.swift"` — no
+  errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `Rod/Rod` file list (iOS 17 simulator)
+  and the full `World/World` file list (macOS 26, including both new view files) — both exit code
+  0, no errors.
+- Standalone encode test (see above) confirming the payload-size margin empirically.
+- `git diff --check` clean.
+- Not run: any live session on physical devices. Unverified in particular: onboarding pacing/copy,
+  and whether recalibrating mid-session is actually discoverable in practice — there's no
+  in-gameplay hint pointing at Rod's Calibrate button until a recalibration is already underway.
+
+## Retune: Fish Pull Speed -50%, Player Reel-Pull Speed +50% (ADR-039 amendment)
+
+Date: 2026-07-21.
+
+Requested directly as two feel notes: "fish pull speed rasanya terlalu kencang. kurangi 50% di
+semua difficulty" and "ketika reel, jarak ikan ke tariknya terlalu pelan. tingkatkan 50% juga di
+semua difficulty." Amended ADR-039 in place (same precedent as its earlier live-tested
+corrections) rather than a new ADR — this is a pure retune of already-established, already-tunable
+values, not a new decision.
+
+### Shared: FishFightConfig
+
+- `basePullSpeed` default `0.7` -> `0.35`. Since `fishPullSpeed = basePullSpeed * (1 + resistance *
+  pullSpeedResistanceMultiplier)`, halving only the base term scales the fish's pull speed down
+  50% uniformly at every resistance/tier — `pullSpeedResistanceMultiplier` (1.8) untouched, so
+  tier differentiation is preserved, just against a lower floor.
+
+### World: WorldViewModel
+
+- `reelSpeed` (the private constant converting Rod's normalized `0...1` reel input into m/s for
+  `reelHook(deltaTime:)`'s tug-of-war) `3.0` -> `4.5`.
+- The paired minimum-guaranteed floor in the same function, `max(0.35, ...)` -> `max(0.525, ...)`
+  — raised by the same 50% so light reeling gets the full boost too, not just full-speed reeling.
+
+Both changes are difficulty-independent by construction: `basePullSpeed`'s scaling is
+multiplicative across every `resistance` value, and `reelSpeed`/its floor never read `resistance`
+at all — "di semua difficulty" fell out automatically from where each number already lived, no
+per-tier special-casing needed.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: appended a "Live-tested retune" paragraph to ADR-039's `Decision`
+  section, in place.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the `fishPullSpeed`/`basePullSpeed` paragraph's
+  stated value (`0.7` -> `0.35`) and added the `reelSpeed`/floor retune alongside it.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-ios17.0-simulator` and an `arm64-apple-macosx26.0`
+  module — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `Rod/Rod` and `World/World` file
+  lists — both exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session. Whether -50%/+50% actually lands at "feels right" (as opposed to
+  overshooting into "too easy now") is unverified until tried physically, per this project's own
+  standing caveat for every feel-tuning change.
+
+## Retune: Both Cut a Further 25% (ADR-039 amendment, same day)
+
+Date: 2026-07-21.
+
+Same-day follow-up to the -50%/+50% retune above. Requested directly: "oke kurangin keduanya by
+25%" — "both" referring back to the two values just retuned (fish pull speed, player reel-pull
+speed), not a reversal of either one's direction. Amended ADR-039 in place again, same paragraph.
+
+### Shared: FishFightConfig
+
+- `basePullSpeed` `0.35` -> `0.2625` (a further 25% cut on top of the prior 50% cut).
+
+### World: WorldViewModel
+
+- `reelSpeed` `4.5` -> `3.375`.
+- `reelHook(deltaTime:)`'s paired minimum-guaranteed floor `0.525` -> `0.39375`.
+
+Both moved by the same 25% as `basePullSpeed`, same reasoning as the prior pass: both scale
+uniformly regardless of `resistance`, so no per-tier adjustment was needed.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: appended a second "Same-day follow-up" paragraph to ADR-039's
+  `Decision` section, directly after the prior retune paragraph.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the `fishPullSpeed`/`basePullSpeed`/`reelSpeed`
+  paragraph to show both retune passes in sequence (`0.7 -> 0.35 -> 0.2625`, `3.0 -> 4.5 -> 3.375`,
+  `0.35 -> 0.525 -> 0.39375`).
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module — no errors.
+- `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session — same standing caveat as every feel-tuning change in this project.
+
+## Feature: Fight-Direction Penalty Eased, Reel-In Speed Now Tension-Scaled Risk/Reward (ADR-039 amendment, same day)
+
+Date: 2026-07-21.
+
+Requested directly as two related proposals in one message: "kurangin pull dari state ketika 'Fish
+Pulling' terjadi" and "balance pull nya dengan cara: ketika hijau, 1 rotasi reel misalnya narik
+0.5m/s, dan ketika ke merah reel distance nya naik jadi 1m/s gitu, jadi ada reward untuk player
+yang berani stay di red zone." Amended ADR-039 in place again, same paragraph run.
+
+### 1. Fight-direction penalty halved
+
+Confirmed "Fish Pulling" is `LineTensionView.swift:80`'s own literal label (`Label("Fish pulling",
+...)`, shown during the ADR-053 left/right juking sub-phase) before touching anything — grepped
+the whole codebase for "Pulling" to find the exact referent rather than guessing.
+
+- `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: `fightDirectionPenalty` default `0.20`
+  -> `0.10`. `fightDirectionCounterRelief` (the reward for countering correctly) left unchanged —
+  only the not-countering punishment was eased. No exact percentage was given for this one; halved
+  to match this session's own established retune magnitude, explicitly flagged to the user as a
+  first guess pending live feedback.
+
+### 2. Reel-in speed becomes tension-scaled (risk/reward)
+
+- `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: added four fields —
+  `reelSpeedSafeTension` (0.7, matches `LineTensionView`'s own `safeHigh` green-zone edge — the two
+  aren't code-shared, just numerically aligned so the mechanic feels consistent with what the bar
+  visibly shows), `reelSpeedDangerTension` (0.85, matches `LineTensionView`'s `dangerHigh` red-zone
+  edge), `reelPullSpeedSafe` (0.5 m/s), `reelPullSpeedDanger` (1.0 m/s).
+- `World/World/Gameplay/FishFightController.swift`: added a `reelPullSpeed: Float` computed
+  property — `reelPullSpeedSafe` at/below `reelSpeedSafeTension`, linearly interpolating up to
+  `reelPullSpeedDanger` at/above `reelSpeedDangerTension`, pure function of `lineTension`.
+- `World/World/ViewModels/WorldViewModel.swift`: `reelHook(deltaTime:)`'s `playerSpeed` calculation
+  now reads `fishFight.reelPullSpeed` instead of the flat `reelSpeed` constant **only while
+  `fishFight.hasFishOnHook`** (`pullSpeedPerUnit = fishFight.hasFishOnHook ? fishFight.reelPullSpeed
+  : reelSpeed`) — empty-line retrieves keep the old flat `reelSpeed` (3.375) unaffected, since
+  there's no tension to manage in that case. Minimum-guaranteed floor changed from `0.39375` to a
+  flat `0.1` — the new 0.5-1.0 m/s range is itself much narrower than the old constant's 3.375 m/s
+  ceiling, so the old floor would have dominated almost the entire new range otherwise. Updated the
+  `reelSpeed` constant's own doc comment to clarify it now only governs the empty-retrieve path.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: appended a third "Same-day follow-up" paragraph to ADR-039's
+  `Decision` section.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: replaced the tug-of-war paragraph's reel-speed description
+  with the new tension-scaled formula and its two thresholds.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-ios17.0-simulator` and an `arm64-apple-macosx26.0`
+  module — no errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `Rod/Rod` and `World/World` file
+  lists — both exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session. In particular unverified: whether 0.5/1.0 m/s (a much smaller absolute
+  range than the previous flat 3.375 m/s constant) still lets a player land a fish at all in the
+  safe zone, or whether the risk/reward curve actually reads as a deliberate choice rather than
+  just "reeling feels slow now" — both need a real playtest to confirm.
+
+## Feature: Idle Ambience Loop and Big-Catch Flourish SFX (ADR-065)
+
+Date: 2026-07-21.
+
+Player added two new assets directly under `World/World/Assets/SFX/` (`idle.wav`, `reel_fight.wav`)
+and requested them wired in: "idle.wav di play ketika user tidak melakukan apa apa (alias base
+state), dan play volume nya sekitar 30%. play reel_fight, kalau user mendapat ikan bintang 4 keatas
+(dengan volume sama, 30% juga)." Recorded as ADR-065.
+
+### World: SoundManager
+
+- `SoundManager.Sound` gains `.idle` ("idle") and `.reelFight` ("reel_fight"), both `.wav`
+  (default extension). `defaultVolume` gains a case for both at `0.3` (the requested ~30%,
+  alongside the existing 0.35/0.5/0.85 tiers already in that switch).
+
+### World: FishingSounds
+
+- Added `isIdleLoopActive` (mirrors `isReelLoopActive`).
+- Added `updateIdleLoop(active: Bool)` — frame-driven start/stop, identical pattern to the
+  existing `updateReelLoop(active:)`.
+- Added `bigCatch()` — one-shot `sounds.play(.reelFight)`, a direct World-triggered call (like
+  `castLaunched()`/`uiClick()`), not routed through `handle(_:FishingEvent)` since
+  `FishingEvent.catchFish` carries no star count.
+- `handlePhaseChange(_:)`: added a belt-and-suspenders stop for the idle loop on any phase other
+  than `.idle`, mirroring the existing `reelLoop`/`fishInterestedLoop` safety stops.
+- `handleScreenChange(isPlaying:)`: added a matching stop when leaving `.playing` (returning to
+  the Main Menu), since `idle.wav` is gameplay-only, unlike `ambienceLake`.
+
+### World: WorldViewModel
+
+- `tick(deltaTime:)`: added `sounds.updateIdleLoop(active: screen == .playing && hookPhase ==
+  .idle)` alongside the existing `updateReelLoop(...)` call.
+- `reelHook(deltaTime:)`'s catch-resolution branch: right after `fishFight.resolveCatch()` (which
+  populates `lastCatchResult` synchronously), checks `fishFight.lastCatchResult?.stars` and calls
+  `sounds.bigCatch()` when `stars >= 4`, before `beginCatchCutscene`/`emit(.catchFish)`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-065.
+- `CLAUDE.md`: updated the `Assets/SFX/` file listing in the project-structure tree to include
+  `idle.wav`/`reel_fight.wav` — was already stale before this (a general project-doc-accuracy
+  fix, not itself part of the feature).
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module (unaffected by this change, rebuilt only
+  to typecheck against) — no errors.
+- `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session — whether the two new assets actually load (right filename/extension
+  match, valid `.wav` files) can only be confirmed by actually running World, not by typechecking
+  Swift source. Whether 30% reads as the intended loudness relative to the existing 85% one-shots
+  is also unverified until heard.
+
+## Retune: Tension-Scaled Reel Speed Was Unplayably Slow — 0.5/1.0 -> 2.0/4.0 m/s (ADR-039 amendment)
+
+Date: 2026-07-21.
+
+Reported directly, live, right after the previous risk/reward retune landed: "fish reel speed nya
+kekecilan, the gameplay is not even playable now. coba base nya 2 m/s instead of 0.5 - 1. dan dari
+2 m/s di area green, naik jadi 4 m/s di area merah." Amended ADR-039 in place again.
+
+Note: `Shared/Sources/Shared/Gameplay/FishFightConfig.swift` was found with `reelPullSpeedSafe`/
+`reelPullSpeedDanger` already at `3.375`/`5.0` (an intermediate value restoring roughly the old
+flat `reelSpeed` constant's magnitude) rather than this session's last-written `0.5`/`1.0` — edited
+outside this conversation between turns. Treated as the authoritative starting point; this entry's
+change is on top of that.
+
+### Shared: FishFightConfig
+
+- `reelPullSpeedSafe` -> `2.0`.
+- `reelPullSpeedDanger` -> `4.0` (same 2x ratio as the original `0.5`/`1.0` pair).
+- `reelSpeedSafeTension`/`reelSpeedDangerTension` (0.7/0.85, the interpolation thresholds)
+  untouched — only the two speed endpoints moved.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: appended a fourth "Same-day follow-up" paragraph to ADR-039's
+  `Decision` section.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the reel-in-speed paragraph to show the full retune
+  history (`0.5/1.0` -> `3.375/5.0` -> `2.0/4.0`) instead of a single stale pair of numbers.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module — no errors.
+- `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session — same standing caveat as every feel-tuning change in this project.
+
+## Revision: reel_fight.wav Redefined From Star-Gated Flourish to Fight Music With Fade-Out (ADR-065 revision)
+
+Date: 2026-07-21.
+
+Reported directly, right after the previous SFX entry landed: "reel fight music harusnya hanya
+played ketika hook status nya ada fish. selama hook idle/inWater aja, play music idle. ketika
+berhasil catch fish, matikan perlahan music reel fight, dan kembali ke idle." A full redesign of
+`reel_fight.wav`'s trigger — from a one-shot 4+ star catch flourish to state-driven fight music —
+not a numeric retune. Amended ADR-065 in place.
+
+### World: SoundManager
+
+- `stopLoop(_:)` gained a `fadeDuration: TimeInterval = 0` parameter (source-compatible — every
+  existing call site keeps the old instant-stop behavior by default). `fadeDuration > 0` calls
+  `AVAudioPlayer.setVolume(_:fadeDuration:)` to ramp to silence, then schedules the actual
+  `.stop()`/`.currentTime = 0`/volume-restore via `Task { @MainActor in try? await Task.sleep(...) }`
+  once the fade completes, so the player is ready (at full volume again) for its next `startLoop`.
+- Updated `Sound.idle`/`Sound.reelFight`'s doc comments for the new semantics.
+
+### World: FishingSounds
+
+- Added `import Foundation` (needed for `TimeInterval`, previously only `import Shared`).
+- Added `private static let reelFightFadeDuration: TimeInterval = 1.5` and
+  `isReelFightLoopActive`.
+- Removed `bigCatch()` entirely (no longer applicable — there's no star-count check anymore).
+- Added `updateReelFightLoop(active: Bool)` — frame-driven, same pattern as `updateReelLoop`/
+  `updateIdleLoop`; its *stop* path is the one place that calls `stopLoop(_:fadeDuration:)` with a
+  nonzero duration, everywhere else stays instant.
+- `updateIdleLoop`'s doc comment/active-condition description updated: `HookPhase.idle` only ->
+  `.idle` or `.hookInWater` (matches "selama hook idle/inWater aja").
+- `handlePhaseChange(_:)`: idle-loop safety-stop condition widened to `phase != .idle, phase !=
+  .hookInWater`; added a new reel-fight safety-stop (`phase != .fishOnHook, phase != .reeling`),
+  instant (no fade) — this is the abrupt-reset path, not the natural transition.
+- `handleScreenChange(isPlaying:)`: added a matching instant reel-fight stop alongside the
+  existing idle-loop stop when leaving `.playing`.
+- `stopAll()`: resets `isReelFightLoopActive` alongside the other two loop flags.
+
+### World: WorldViewModel
+
+- `tick(deltaTime:)`: `updateIdleLoop`'s active condition widened to include `.hookInWater`; added
+  `sounds.updateReelFightLoop(active: screen == .playing && (hookPhase == .fishOnHook || hookPhase
+  == .reeling))`.
+- `reelHook(deltaTime:)`'s catch-resolution branch: removed the `stars >= 4` check and `sounds.
+  bigCatch()` call entirely — `updateReelFightLoop` already fades `reelFight` out on its own the
+  next tick after `hookPhase` leaves `.fishOnHook`/`.reeling`, so no explicit stop was needed here
+  even before this simplification.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: rewrote ADR-065's `Decision`/`Rationale` in place (title also
+  updated) rather than appending a separate amendment paragraph, since this changes what the
+  feature *is*, not just a tuning number — kept the original star-flourish description as a
+  labeled "Revision, same day" paragraph documenting what was replaced and why, rather than
+  erasing it.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module (unaffected by this change, rebuilt only
+  to typecheck against) — no errors.
+- `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session. In particular unverified: whether the 1.5s fade duration reads as
+  deliberate rather than "the music lagged," and whether the state-driven idle/fight-music split
+  actually feels like a coherent audio layer rather than two loops fighting each other at phase
+  transition boundaries.
+
+## Fix: Short (Green-Zone) Casts Could Land Inside the Dock's Own Footprint (ADR-066)
+
+Date: 2026-07-21.
+
+Reported directly: "jarak si cast nya, bisa di perbaiki ga? jadi kuning sekarang distancenya
+hijau, merah tetap, dan kuning yang baru itu between hijau dan merah (biar gaada lagi case cast di
+hijau tapi nembus pier kebawah)." Recorded as ADR-066.
+
+### Diagnosis
+
+Worked the projectile-range formula (`speed^2 * sin(2*angle) / gravity`) by hand for `power`
+0/0.33/0.66/1.0, then verified numerically with a standalone script. Old formula
+(`castSpeed * (0.5 + power*1.5)`) put the shortest possible cast (`power = 0`) at only ~0.46 m —
+well short of the ~2.4 m clearance needed to clear the dock's own measured mesh footprint
+(extends to `Z = -4.5`, from ADR-043's measurement, starting near the rod's held position around
+`Z = -2.1`). The ballistic simulation has no collision awareness of the dock mesh at all, so a
+too-short cast simply lands inside the dock's solid geometry — "nembus pier kebawah."
+
+### World: WorldViewModel
+
+- `launchHook(solution:)`: `let speed = castSpeed * (0.5 + (solution.power * 1.5))` ->
+  `castSpeed * (1.4 + (solution.power * 0.6))`. Chosen so `power = 1`'s ceiling is mathematically
+  identical to before (`castSpeed * 2.0` either way — "merah tetap") while `power = 0`'s floor
+  rises from `castSpeed * 0.5` to `castSpeed * 1.4`, pushing the minimum achievable distance from
+  ~0.46 m to ~3.62 m. Verified table (old -> new): power 0.00: 0.46 -> 3.62 m; power 0.33:
+  3.65 -> 9.40 m; power 0.66: 11.37 -> 16.51 m; power 1.00: 24.09 -> 24.09 m (unchanged).
+  Compressing the low end while holding the ceiling fixed is what naturally produces "yellow's old
+  distance becomes green's, red's ceiling stays, new yellow fills the gap" — a single parameter
+  change, not a hand-authored zone remap.
+
+Deliberately left `CastMeterConfig` (Rod's own displayed distance *estimate*, already documented
+as disconnected from real physics) untouched — out of scope for this specific bug, revisit only if
+the display mismatch itself gets reported.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-066, including the full verified distance table.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module (unaffected by this change, rebuilt only
+  to typecheck against) — no errors.
+- `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
+- Standalone Python script re-deriving the projectile-range formula for both old and new
+  coefficients at four power values, confirming the table above numerically rather than by hand
+  arithmetic alone.
+- `git diff --check` clean.
+- Not run: any live session. Whether ~3.62 m of clearance is comfortably enough margin past the
+  dock's ~2.4 m minimum (vs. right at the edge) is unverified until actually cast and watched.
+
+## Feature: fish_catched SFX, Tension-Slacking Eased 30% (ADR-067)
+
+Date: 2026-07-21.
+
+Requested directly as three items: "ok, play idle music itu selama hook masih inWater juga,
+jangan langsung di stop. terus, tambahin music fish_catched ketika ikan berhasil ditangkap. terus,
+benerin sedikit mekanisme fish pull nya, dengan mengurangi sedikit speed tension (maybe kurangi
+tension slacking sebesar 30%)." Recorded as ADR-067.
+
+### 1. Idle loop during `.hookInWater`
+
+Checked the current source before touching anything: `WorldViewModel.tick()`'s `sounds.
+updateIdleLoop(active: screen == .playing && (hookPhase == .idle || hookPhase == .hookInWater))`
+and `FishingSounds.handlePhaseChange(_:)`'s matching idle safety-stop (`phase != .idle, phase !=
+.hookInWater`) — both already implement this exactly, landed as part of ADR-065's same-day
+revision. No code change made; confirmed to the user instead of blindly re-editing.
+
+### 2. fish_catched.wav
+
+- Player added the asset directly under `World/World/Assets/SFX/`.
+- `World/World/Audio/SoundManager.swift`: `Sound` gains `.fishCatched` ("fish_catched"), default
+  `.wav`/`0.85` volume tier (the standard one-shot default — no specific volume requested this
+  time).
+- `World/World/Audio/FishingSounds.swift`: `handle(_:)`'s `.catchFish` case gains `sounds.play
+  (.fishCatched)` alongside the existing `sounds.play(.catchSplash)` — additive, matching
+  "tambahin" (add), not a replacement.
+
+### 3. Tension-slacking eased 30%
+
+- `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: `baseFishPullRate` default `0.15` ->
+  `0.105` (a 30% cut). `pullRateResistanceMultiplier` (tier differentiation) untouched — same
+  base-term-only scaling pattern as `basePullSpeed`'s earlier cut this session.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-067.
+
+### Verification
+
+- Rebuilt `Shared` as an `arm64-apple-macosx26.0` module — no errors.
+- `xcrun swiftc -typecheck` against it: the full `World/World` file list — exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: any live session — same standing caveat as every feel-tuning/SFX change in this project.
+
+Date: 2026-07-20.
+
+Requested directly: "skrg kita butuh animasi ikan ketangkep buat scene barusan, kamu bisa akses repo
+nya di sini /Users/radityaaydin/repos/new-blender-project, baca semua doc nya untuk bisa paham
+menggunakan repo itu, siapkan asset dan manfaatkan di repo ini" (we now need the caught-fish
+animation for the cutscene we just built; read the sibling asset repo's docs to understand how to
+use it, prepare the asset, and put it to use here).
+
+### Research: reading the asset repo
+
+Read `new-blender-project/CLAUDE.md` (confirms it's the dedicated asset-supply repo for this exact
+app — "The app repo is `~/repos/c4/CtSPoC`... this file is your entry point"),
+`FishAssets/AGENTS.md` (full pipeline spec: each species ships `Cruise`/`Bite`/`Caught`/`Preview` as
+GLB+USDZ pairs, `Caught` = 72-frame "struggle→calm→showcase" clip), and
+`FishAssets/APP_TEAM_HANDOFF.md` (a handoff note from an earlier session that worked this same app's
+now-shelved AR fish-preview feature — its per-species on-device test table was the deciding factor
+in species choice, see below).
+
+### Species selection: Mekong Giant Catfish
+
+Of the asset repo's 10 species, 8 have complete 4-state exports, but `APP_TEAM_HANDOFF.md` documents
+that **5 of those 8 have known, unresolved orientation/normals/UV export defects**, confirmed via
+on-device AR testing (Skipjack Tuna, Grouper, Giant Trevally still broken as of that note; Bluefin/
+Yellowfin Tuna fixed but unconfirmed on-device). Only two species are called reliable: Sailfish
+(different import chain, explicitly flagged as an outlier — "do not touch") and **Mekong Giant
+Catfish**, named the actual reference other species should be fixed to match ("the best-exported and
+best-oriented fish currently in the app... use its current Blender object transform, material setup,
+and export process as the template for everything else"). Picked Mekong Giant Catfish over Sailfish
+only because it's the more "normal" (non-outlier) pipeline, not because Sailfish is untrustworthy.
+
+Independently verified (not just trusted from the handoff note) that
+`Fish06_MekongGiantCatfish/Caught/MekongCatfish_Caught.usdz` actually contains real baked animation:
+`unzip`+`usdcat` on the extracted `.usdc` shows a `Skeleton "CatfishArm"` with a `SkelAnimation
+"Catfish_Caught"` carrying `rotations.timeSamples`.
+
+### Asset copy
+
+Copied `new-blender-project/FishAssets/Fish06_MekongGiantCatfish/Caught/MekongCatfish_Caught.usdz`
+(4.9 MB) to `CtSPoC/World/World/Assets/FishCaught/mekong_catfish_caught.usdz`, renamed to this
+project's snake_case convention (matches every `Assets/Environment/*.usdz` file; the source repo's
+own file used legacy PascalCase). `shasum -a 256` confirmed byte-identical on both sides before and
+after the copy. This is a new asset category (`Assets/FishCaught/`) — the source repo's "keep both
+copies byte-identical" sync rule (`CLAUDE.md`) is scoped specifically to `FishAssets/Environment/`,
+not fish, so this doesn't extend that rule, just follows its spirit for a first-time copy.
+
+### World: WorldViewModel
+
+- `makeSceneEntity()`: loads `caughtFishEntity` once via `Entity(named: "mekong_catfish_caught")` —
+  same pattern `EnvironmentSceneBuilder` already uses — disabled by default, added as a sibling of
+  `hookEntity`.
+- Added `caughtFishAuthoredLength: Float = 2.0` (this asset's authored body length per its own
+  `Source_Log.md` step 4, "scaled to 2.0 m").
+- `beginCatchCutscene(from:)`: now disables `hookEntity` and, if `caughtFishEntity` loaded, enables
+  it, positions it, scales it to `max(rolledLengthMeters / caughtFishAuthoredLength, 0.35)` (so the
+  displayed size tracks the actual `fishFight.lastCatchResult.length` roll, not a fixed 2 m
+  regardless of catch), and plays `caughtFishEntity.availableAnimations.first` (the asset's one baked
+  clip).
+- Factored the ADR-047 rise/freeze/settle height math out of `updateCatchCutscene` into a new shared
+  `catchCutsceneHeight(elapsed:)`.
+- `updateCatchCutscene(deltaTime:)`: now moves `caughtFishEntity` if enabled, falling back to
+  `hookEntity` only if the fish asset failed to load; disables both entities at cutscene end (instead
+  of just `hookEntity`).
+- `updateCameraFollow()`'s ADR-048 cutscene push-in branch: now computes its focus point from
+  `cutscene.origin + catchCutsceneHeight(elapsed:)` directly instead of reading `hookEntity.position`
+  — `hookEntity` is hidden and stale for the whole cutscene now that `caughtFishEntity` plays it
+  instead.
+- `returnToMenu()`: also disables `caughtFishEntity` alongside its existing `hookEntity`/cutscene
+  resets, so ending a session mid-cutscene can't leave the fish visible on a later session.
+
+### Explicitly not attempted this pass
+
+- **Per-tier species mapping.** `FishCatalog`'s four tiers (`fish_a`/`fish_b`/`fish_c`/`scott`) have
+  no asset reference field and remain placeholder data (see the catalog's own doc comment). Every
+  catch currently shows Mekong Giant Catfish regardless of tier — deciding which real species
+  represents which abstract tier (especially `scott`, a named "boss" fish) is a content/design
+  decision, not invented here.
+- **Orientation correction.** No corrective rotation was applied to `caughtFishEntity` — trusting the
+  source repo's own claim that this specific species needs none, unconfirmed on this app's own
+  renderer.
+- **CC-BY attribution.** `Source_Log.md` states this asset is CC-BY 4.0 (Sketchfab, "Ikan Patin"),
+  requiring attribution. This branch has no credits screen yet (that UI lives on the separate,
+  not-yet-merged `feat/ui-slice` branch) — the requirement is recorded here, not silently skipped,
+  but is **not yet satisfied** anywhere in the shipped app.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-068.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with an ADR-068
+  paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now describes the real fish and its current
+  every-tier-looks-the-same limitation.
+- No files changed inside `new-blender-project` — that repo was only read from, not modified; nothing
+  was re-exported there, so its own "re-export → re-copy + re-verify" sync rule doesn't apply here.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- `shasum -a 256` matched on both copies of `mekong_catfish_caught.usdz`.
+- `unzip`+`usdcat` on the copied file directly confirmed a real baked `SkelAnimation`, not just an
+  empty/placeholder skeleton.
+- `World.xcodeproj` uses `PBXFileSystemSynchronizedRootGroup` rooted at `World/World` with no
+  exclusions beyond `Info.plist` — confirmed the new `Assets/FishCaught/` folder is covered, same as
+  `Assets/Environment/`, no manual `project.pbxproj` edit needed.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. Unverified on-device: the fish's final display scale/framing within the
+  ADR-048 cutscene camera, whether `availableAnimations.first` actually resolves to the intended
+  "Caught" clip, and the model's world-space orientation (no corrective rotation applied).
+
+## Fix: Caught Fish Orients to the Rod, Struggle Plays Faster (ADR-069)
+
+Date: 2026-07-20.
+
+First live-playtest feedback on ADR-068's fish: "ikannya masih make animasi preview, kurang cocok,
+harusnya animasi ikan ngamuk ketika ditangkep, ngepak ngepak dan orientasi nya ngikuti arah pancing"
+(the fish still looks like it's using the preview animation, doesn't fit — it should look like it's
+thrashing when caught, flapping, and its orientation should follow the rod/line direction).
+
+### Diagnosis
+
+Before assuming which part was broken, re-confirmed directly (not re-trusted from the earlier pass's
+own claims) that `mekong_catfish_caught.usdz` really does contain live per-frame motion: `unzip`+
+`usdcat` on the file's `rotations.timeSamples` shows all 11 joints' quaternions changing frame to
+frame from frame 0. There is exactly one `SkelAnimation` embedded (`Catfish_Caught`), explicitly bound
+via the `Skeleton`'s `skel:animationSource` relationship — so `availableAnimations.first` (added in
+ADR-068) cannot be resolving to some other, wrong clip; there is only one to resolve to. This narrowed
+the likely cause to: a technically-animating fish sitting at RealityKit's default identity rotation
+for the entire cutscene (ADR-068 never set `caughtFishEntity.orientation` at all), whose silhouette
+from the ADR-048 cutscene camera didn't read as "hooked and struggling" regardless of the bones moving
+underneath.
+
+### Orientation: read the asset's actual axes, don't assume them
+
+Extracted the copied `.usdz` and read `Skeleton.bindTransforms` per named joint directly (not the
+source repo's Blender-side notes, which describe pre-export space): body length runs along local
+**Y** (`Root/Spine_00/Head` at Y≈−0.6; `.../Tail`/`Caudal_Fin` at Y≈+0.5/+0.75), dorsal-ventral runs
+along local **Z** (`Dorsal_Fin` at Z≈+0.1, `Anal_Fin` at Z≈−0.1). Confirmed this matches the
+pre-export note ("head −Y / tail +Y / dorsal +Z") because the file's own `upAxis = "Z"` metadata shows
+this USDZ export preserved Blender's native Z-up convention directly, rather than going through the
+Y-up axis-swap the sibling glTF exporter performs (per that repo's own AGENTS.md §5.3) — the two
+export paths could plausibly have disagreed, so this was checked rather than assumed.
+
+### World: WorldViewModel
+
+- Added `fishOrientation(facing:)` — builds a world-space rotation for a given target direction using
+  the axes above: two-step construction (shortest-arc align local `-Y` to `forward` via
+  `simd_quatf(from:to:)`, then a roll correction around `forward` so local `+Z` ends up close to
+  world-up) to avoid an arbitrary sideways/upside-down roll that a single shortest-arc rotation alone
+  would leave undefined.
+- Added `catchCutsceneFishOrientation(at:)` — supplies `forward` as `rodRig.tipEntity`'s live world
+  position minus the fish's current position (falling back to `controllerEntity.position` if the rig
+  isn't loaded), matching how `launchHook(solution:)` already derives cast aim from the tip rather
+  than the rig's root.
+- Both `beginCatchCutscene(from:)` and `updateCatchCutscene(deltaTime:)` now set
+  `caughtFishEntity.orientation` from this every frame, alongside the existing position update, so the
+  fish keeps facing the rod as it rises rather than staying frozen at whatever direction it happened
+  to face when the cutscene began.
+- Added `catchCutsceneFishAnimationSpeed: Float = 1.4`. `beginCatchCutscene`'s
+  `caughtFishEntity.playAnimation(clip)` now sets `.speed = catchCutsceneFishAnimationSpeed` on the
+  returned `AnimationPlaybackController` — addresses "ngamuk... ngepak ngepak" via tempo, the one
+  lever available without re-authoring the clip in Blender; the asset repo's own `Source_Log.md`
+  documents this species' authored motion as a deliberately gentler/slower-cadence amplitude profile
+  than other fish (catfish are flexible-bodied, not stiff thunniform swimmers), which a playback-rate
+  change cannot add to.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-069.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with an ADR-069
+  paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now mentions the fish facing the rod and its
+  brisker struggle tempo.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors (confirms `AnimationPlaybackController.speed` is settable this way and
+  `simd_quatf(from:to:)`/`.act(_:)` resolve as expected).
+- Direct `usdz` inspection (`unzip`+`usdcat`) for both the joint bind-transform positions (axis
+  claims) and the animation's per-frame rotation data (motion claim) — not assumed from
+  documentation.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. This is a direct response to the first live-playtest look at ADR-068's
+  fish, but the fix itself has not yet been re-tested on-device — the axis identification is
+  file-verified, not guessed, but the specific roll-correction behavior, the rod-tip reference choice,
+  and the `1.4` speed value are all still first-pass, pending a second live look.
+
+## Handoff: New "Caught" Struggle Animation + Rig, Written to the Blender Asset Repo (No CtSPoC ADR)
+
+Date: 2026-07-20.
+
+Second round of feedback on the catch cutscene fish: "butuh animasi baru dengan rigging baru, yang
+menggambarkan ikan ngamuk dan ada slowmotion ketika di cut scene ketangkep, jadi beneran kaya game
+mancing" (need a new animation with new rigging depicting a raging/thrashing fish, plus slow-motion
+in the catch cutscene, so it really feels like a fishing game).
+
+Checked first: this session has no live Blender/MCP connection (`ToolSearch` for "blender" returned
+no matching tool) — a session rooted in `CtSPoC` cannot reach the `blender` MCP server the same way
+`new-blender-project/.mcp.json` auto-connects for a session rooted there. Authoring new rigging/
+animation in Blender is out of reach from here. Asked the user how to proceed
+(`AskUserQuestion`: implement in-app slow-motion now with the existing asset / write a Blender
+handoff spec / both); the user chose **handoff spec only** — in-app slow-motion is explicitly a
+separate, not-yet-scheduled follow-up, not built this pass.
+
+### What was written
+
+`new-blender-project/FishAssets/APP_TEAM_HANDOFF_CAUGHT_STRUGGLE.md` — a new handoff document,
+following the exact precedent already established in that same folder
+(`APP_TEAM_HANDOFF.md`, an unrelated, still in-progress Preview-state orientation-fix task written by
+an earlier `CtSPoC`-rooted session for the same reason: no Blender MCP access from `CtSPoC`). Explicitly
+does not touch or reference altering that existing file — confirmed via `git status` in that repo that
+it's mid-flight (uncommitted `.blend`/Preview re-export changes), left untouched.
+
+Contents: why the request exists (tracing both rounds of feedback, ADR-068/069), what "ngamuk" should
+look like (large-amplitude thrash, head shake, rigid fins, explicit contrast with the current clip's
+gentle "struggle → calm → showcase"), a suggested timeline shape designed around an eventual in-app
+slow-motion segment (fast violent thrash ~0–1s, one big sweeping "peak" motion ~1–2.5s meant to be the
+slow-motion showcase, optional calming tail), the open content decision of redoing Mekong Giant
+Catfish's own clip vs. a distinct new species (left unresolved, flagged for whoever picks this up to
+confirm with the user), the current rig's exact joint hierarchy and local-axis convention (read
+directly from the shipped `.usdz`'s `bindTransforms`, not assumed), a strong preference to keep that
+same convention so `WorldViewModel.fishOrientation(facing:)`'s hardcoded axis constants don't also
+need changing, export/delivery steps mirroring the ADR-068 copy-and-shasum-verify process, and the
+CC-BY 4.0 licensing carryover if the existing model/rig is reused.
+
+### Why no ADR
+
+No `CtSPoC` code or architecture changed this pass — this was research (confirming no Blender access)
+plus writing a cross-repo request document. Recorded here per this project's "every task gets a
+checkpoint entry" rule, without a matching ADR since there's no decision about this app's own
+architecture to record yet; a real ADR follows once the new asset actually lands and gets integrated.
+
+### Verification
+
+- `ToolSearch` confirmed no Blender-related tool is available in this session.
+- Confirmed via `git status`/`ls` in `new-blender-project` that the existing `APP_TEAM_HANDOFF.md` is
+  unrelated and mid-flight, and was left untouched — only a new, distinctly-named file was added.
+- No `CtSPoC` files changed this pass (this entry itself is the only change, in `CHECKPOINT.md`).
+- Not run: any Blender work. This entry only records that a handoff request now exists; the requested
+  animation/rig has not been created yet.
+
+## Feature: In-Code Slow-Motion for the Catch Cutscene's Freeze Phase (ADR-070)
+
+Date: 2026-07-20.
+
+Follow-up to the handoff entry above. User said "try again" with no other context; asked directly
+what to retry (re-check Blender access / redo the handoff doc / implement slow-motion now in code),
+and the user picked **implement slow-motion in code now**, using the existing Mekong Catfish asset —
+the "new animation + rigging" half of the original request stays with the handoff doc written
+previously; this entry is purely the in-app slow-motion half.
+
+### World: WorldViewModel
+
+- Added `catchCutsceneSlowMotionFactor: Float = 0.3` and `catchCutsceneSlowMotionEaseFraction: Float
+  = 0.2`.
+- Added `catchCutsceneTimeDilation(elapsed:)` — returns `1` outside the freeze phase; inside it,
+  eases from `1` down to `catchCutsceneSlowMotionFactor` over the first 20% of the freeze window,
+  holds through the middle 60%, eases back to `1` over the last 20%.
+- `updateCatchCutscene(deltaTime:)`: `cutscene.elapsed` now advances by `deltaTime * dilation`
+  instead of raw `deltaTime`. Since `catchCutsceneHeight(elapsed:)` (position) and
+  `updateCameraFollow`'s ADR-048 dolly both already read `cutscene.elapsed`, this alone slows both the
+  fish's world-space motion and the camera push-in together — no separate changes needed to either.
+- Added `caughtFishAnimationController: AnimationPlaybackController?`, populated in
+  `beginCatchCutscene` from the `AnimationPlaybackController` `playAnimation(_:)` already returned
+  (previously discarded after setting `.speed` once). `updateCatchCutscene` now retargets its
+  `.speed` every frame to `catchCutsceneFishAnimationSpeed * dilation`, so the fish's own struggle
+  animation visibly slows and speeds back up in lockstep with everything else, instead of continuing
+  to flap at a fixed 1.4x while the world around it dips into bullet-time.
+- Cleared `caughtFishAnimationController = nil` alongside the existing cutscene-state resets in both
+  the normal end-of-cutscene path and `returnToMenu()`.
+
+### Effect on cutscene timing
+
+The freeze phase's nominal "story" duration (`catchCutsceneFreezeDuration`, 0.9 s) is unchanged, but
+real wall-clock time to get through it while dilated is now considerably longer (~2.3–2.4 s at these
+constants) — total cutscene runtime is now roughly 3 s, up from ~1.6 s before this pass.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-070.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with an ADR-070
+  paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now describes the slow-motion dip and its effect on
+  total length, and notes the still-pending new-animation handoff.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. `catchCutsceneSlowMotionFactor` (0.3), the ease fraction (0.2), and the
+  resulting ~3 s total cutscene length are all hand-picked — whether ~3 s feels dramatic or just slow
+  is an open question a live playtest would need to answer.
+
+## Handoff Doc Refreshed to Match ADR-070 ("handofer ke repo blender, nanti ada agent di sana")
+
+Date: 2026-07-20.
+
+User confirmed the new-animation/rig work should stay handed off to a future Blender-MCP session
+("hand it off to the Blender repo, there'll be an agent there [later]") rather than attempted here.
+Since ADR-070 (in-app slow-motion) was built *after* the original handoff doc was written, that doc
+still described slow-motion as a hypothetical future follow-up — stale and actively misleading for
+whoever picks the task up next, since the real mechanism's timing is exactly what the new animation
+should be authored around.
+
+### What changed
+
+Updated `new-blender-project/FishAssets/APP_TEAM_HANDOFF_CAUGHT_STRUGGLE.md` in place (same file,
+not a new one):
+
+- Added a "How the in-app slow-motion actually works now (ADR-070)" section: the three cutscene
+  phases in story time (rise 0.35 s, freeze 0.9 s, settle 0.35 s), the freeze phase's ease-in/hold/
+  ease-out dilation down to 0.3x, and the resulting real-world timing (~2.3–2.4 s freeze, ~3 s total
+  cutscene) — concrete numbers so the new clip's dramatic peak can be authored to actually land
+  inside the real slow-motion hold instead of a guessed-at one.
+- Rewrote the "structure the timeline" guidance from absolute seconds (which assumed slow-motion
+  didn't exist yet) to thirds of the clip's own timeline, cross-referenced against the phases above.
+- Updated the "Export + delivery" handback checklist to mention retuning
+  `catchCutsceneSlowMotionFactor`/`catchCutsceneSlowMotionEaseFraction` alongside the other timing
+  constants if the new clip's proportions differ from what's assumed here.
+- Left `new-blender-project/FishAssets/APP_TEAM_HANDOFF.md` (the unrelated, still in-progress
+  Preview-orientation task) and every other uncommitted file in that repo untouched.
+
+### Git state, intentionally left as-is
+
+`new-blender-project/FishAssets/APP_TEAM_HANDOFF_CAUGHT_STRUGGLE.md` remains untracked (`git status`
+shows `??`), matching the existing `APP_TEAM_HANDOFF.md`'s own state — not committed. That repo
+currently has substantial unrelated uncommitted work in progress (several `.blend`/Preview re-export
+changes from the orientation-fix task); committing there wasn't requested and risks bundling in work
+that isn't this session's to commit. If a future session needs this file committed/pushed for a
+differently-located agent to find, that's a separate, explicit ask.
+
+### Verification
+
+- Re-read the full updated handoff doc end-to-end to confirm no remaining stale "not yet built"
+  references to slow-motion.
+- `git status` in `new-blender-project` confirmed only the intended file changed (no accidental edits
+  to the other in-progress work there).
+- No `CtSPoC` Swift/architecture files changed this pass; this entry itself is the only `CtSPoC`
+  change.
+
+## Feature: New "Caught" Animation Integrated, Speed Derived to Center the Peak in Slow-Motion (ADR-071)
+
+Date: 2026-07-20.
+
+"udah ada animasi mekong fish yang baru untuk cut scene baru, implementasiin dong" (there's already a
+new Mekong fish animation for the new cutscene, please implement it) — the Blender-MCP session picked
+up the handoff and finished it. Found via `new-blender-project/FishAssets/CHECKPOINT.md` (CP44/CP45):
+the handoff doc itself was already deleted per its own "delete when done" instruction, confirming
+completion.
+
+### What the Blender session actually did (read from their CHECKPOINT, not re-derived)
+
+Re-animated `Fish06_MekongGiantCatfish`'s `Caught` clip in place (confirmed decision: same model/rig,
+not a new species — matches the handoff's own recommendation). New clip: 90 frames/24fps = 3.75 s
+(old: 72 frames/3.0 s), three literal thirds — violent thrash (frames 0–29), one coherent full-body
+arch peak (frames 30–59, peaking at frame 44 ≈ 1.83 s / ≈49% through), decaying ease (frames 60–89).
+Rig axes independently re-confirmed unchanged by that session (their own report, not just trusted).
+
+### Asset copy
+
+Copied `new-blender-project/FishAssets/Fish06_MekongGiantCatfish/Caught/MekongCatfish_Caught.usdz`
+over `CtSPoC/World/World/Assets/FishCaught/mekong_catfish_caught.usdz` (overwrite in place).
+`shasum -a 256`: new file's hash differs from the old ADR-068 file (confirms a real change landed,
+not a no-op copy) and matches the source repo's copy exactly.
+
+**Independently re-verified, not just trusted from the Blender session's own report:**
+`unzip`+`usdcat` on the new file directly — stage metadata `endTimeCode = 89`,
+`timeCodesPerSecond = 24` (confirms 90 frames/3.75 s), exactly one `SkelAnimation "Catfish_Caught"`
+still bound via `skel:animationSource`, and `bindTransforms` **byte-identical** to the previous
+file's values for every one of the 11 joints (same Head/Tail/Dorsal_Fin/Anal_Fin Y/Z positions) —
+confirms the rig genuinely didn't change, so `fishOrientation(facing:)`'s hardcoded axis constants
+need no update.
+
+### World: WorldViewModel
+
+- Added `caughtFishAnimationPeakTime: Float = 1.83` (the new clip's reported peak frame, in seconds).
+- Changed `catchCutsceneFishAnimationSpeed` from a hardcoded `let = 1.4` to a **computed** property:
+  `caughtFishAnimationPeakTime / (catchCutsceneRiseDuration + catchCutsceneFreezeDuration / 2)` —
+  derives to `2.2875` at current constants. Chose computed over hardcoding the arithmetic result so a
+  future rise/freeze retune (or another new clip) can't silently leave a stale speed behind.
+- Derivation (see ADR-071 for the full writeup): both `cutscene.elapsed`'s advancement and the
+  animation controller's `.speed` are scaled by the identical per-frame dilation value each tick
+  (ADR-070), so clip-time consumed per unit of *story* time reduces to a plain constant independent
+  of dilation — meaning the target story-time for the peak can be solved directly, without needing to
+  integrate over the dilation curve's shape.
+- Considered and rejected: keeping speed near `1.0x` and instead extending
+  `catchCutsceneFreezeDuration` to give the peak time to arrive naturally — a back-of-envelope
+  estimate put total cutscene length at 8+ seconds for that approach (freeze duration extension gets
+  amplified by the dilation itself), not viable for something that repeats every catch.
+- Updated stale comments referencing the old clip's "1.4/deliberately gentle" rationale (ADR-069) —
+  the new clip is already violent by design; the speed's only remaining job is peak-alignment timing.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-071.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended "Fish Species and Fight Simulation" with an ADR-071
+  paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" no longer describes the new animation as pending —
+  now describes it as built and tuned to land its peak inside the slow-motion hold.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- `shasum -a 256` confirmed the copy is byte-identical to the source, and differs from the previous
+  file (a real update, not a no-op).
+- `unzip`+`usdcat` independently re-verified stage metadata, animation binding, and every joint's
+  `bindTransforms` against the previous file — not re-derived from the Blender session's report alone.
+- Sanity-checked the `2.2875` derivation arithmetic directly (`1.83 / (0.35 + 0.9/2)`).
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. The peak-alignment math is exact given the stated assumptions, but
+  whether a ~2.29x base playback speed (during the non-dilated thrash phase) looks appropriately
+  violent or too fast/blurry is an open question only a live session can answer.
+
+## Merge: origin/main into feat/playtest-refine — ADR-049/050/051/052 Numbering Collision Resolved (-> ADR-064/065/066/067)
+
+Date: 2026-07-21.
+
+"pull main, resolve conflict." `feat/playtest-refine`'s prior tip (`a2ae594`) was already an ancestor
+of `origin/main` (merged via PR #14/#15), but `main` had since advanced substantially through `dev`
+— device pairing allowlist, an explicit "Start Casting" arm gate, a rod-rig pass, a floating bobber,
+the cast-power timing mini-game rewrite, maxed Rod haptics, five playtest fixes, pairing recovery,
+and an `RodState` wire-key fix (short JSON keys — casts were being silently dropped over BLE at the
+old key length) — and, critically, **reused ADR numbers 049 through 052 for those four unrelated
+decisions**, directly colliding with this session's own ADR-049 through ADR-052 (the fish-cutscene
+work: real animated fish, orientation, slow-motion, new "Caught" clip integration). This project has
+hit this exact collision pattern twice before (`8b03ce2 docs: resolve ADR-030/031 numbering
+collision`, and a `dev`-merge note referencing an earlier "ADR-044 numbering collision") — same root
+cause each time: independent branches numbering forward from the same branch-point without
+coordinating.
+
+### Sequence
+
+1. Committed this session's uncommitted work (`5b021b6`) as a clean checkpoint before merging, so
+   nothing was at risk during conflict resolution.
+2. `git merge origin/main --no-edit`. Two real conflicts (`ARCHITECTURE_DECISIONS.md`,
+   `CHECKPOINT.md`); everything else — including `World/World/ViewModels/WorldViewModel.swift`
+   itself, despite both branches modifying it heavily — auto-merged cleanly with no conflict markers.
+3. **`ARCHITECTURE_DECISIONS.md`**: kept `origin/main`'s ADR-063 down through ADR-049 unchanged (the
+   canonical, already-shipped continuation), then appended this session's four ADRs immediately after,
+   renumbered ADR-064–067 (052->067, 051->066, 050->065, 049->064) to sit right before the ADR-048
+   section both sides already shared identically. Verified no duplicate `# ADR-NNN` headers remain
+   anywhere in the file afterward.
+4. **`CHECKPOINT.md`**: same principle — `origin/main`'s new entries (chronologically already part of
+   the shipped history) placed first, this session's four entries appended after with the same
+   renumbering applied throughout (headers and inline body references both).
+5. **`SOFTWARE_ARCHITECTURE_DOCUMENT.md`** and **`World/World/ViewModels/WorldViewModel.swift`** both
+   auto-merged without conflict markers but ended up containing a genuine *mix* of `main`'s legitimate
+   ADR-049–052 references (device pairing, cast arming, rod rig, floating bobber) and this session's —
+   read every single occurrence in context line-by-line in both files (not a blind find-replace) to
+   classify which was which before renaming only this session's own, leaving every one of `main`'s
+   references at its original, correct number.
+6. Repo-wide `grep` afterward confirmed no ambiguous/stray old-numbered references remained anywhere
+   (`GAMEPLAY_ARCHITECTURE_V1.md`'s single `ADR-050` hit is `main`'s "Start Casting" arm reference —
+   confirmed correctly left untouched, not mine).
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-macosx26.0` and `arm64-apple-ios17.0-simulator` — exit code
+  0, no errors (confirms the merged `Shared` changes from `main` — `RodState`'s new `CodingKeys`,
+  `CastResolver`/`FishFightConfig`/`RodMotionInterpreter` changes — compile clean).
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` Swift file list against the iOS-simulator
+  `Shared` module — exit code 0, no errors.
+- `git diff --check` clean; no duplicate `private func`/`private var`/`private let` declarations in
+  `WorldViewModel.swift` (checked directly, since a clean auto-merge can still interleave logic
+  incorrectly without tripping a textual conflict).
+- Read `tick(deltaTime:)` directly post-merge to confirm `main`'s new branches (reel-spin, bobber
+  float, fight-direction drift) and this session's `.result`/catch-cutscene branch sit in genuinely
+  separate, non-overlapping cases — not just "compiles," but logically sound.
+- Excluded the same files this entire session has consistently excluded from every commit:
+  `Rod/Rod.xcodeproj/project.pbxproj` and `World/World.xcodeproj/project.pbxproj` (local
+  code-signing team diffs) and this machine's own `xcuserdata` — both remain unstaged/untracked,
+  matching every prior commit in this session.
+- Not run: any live session, and specifically not re-verified that `main`'s new features (casting
+  arm gate, floating bobber, rod rig bend/reel-spin) and this session's catch-cutscene/fish-orientation
+  work behave correctly *together* at runtime — only that the merged source compiles and reads
+  logically consistent from static inspection.
+
+## Fix: Caught Fish Uses a Fixed Horizontal Pose Instead of Facing the Rod (ADR-072)
+
+Date: 2026-07-21.
+
+First live look after the merge: "animasi ngamuk nya masih belum bener, ikannya masih normal vertical
+belum horizontal seperti kondisi ditangkep" (the raging animation still isn't right, the fish is
+still normal/vertical, not horizontal like when it's actually caught). Root cause traced, not
+guessed: ADR-069's `catchCutsceneFishOrientation(at:)` faced the fish's head toward
+`rodRig.tipEntity`'s *live* position every frame — the fish's cutscene position only moves in Y (a
+fixed `hookLiftTargetPosition` XZ), while the rod tip's actual height depends on the rig's live bend
+(`rodState.orientation`, whatever the player's phone was doing last) — an unpredictable, tip-dependent
+relationship that in practice produced a near-vertical, nose-up dangling pose, not the broadside
+"holding up the catch" reveal a fishing game's catch moment classically shows.
+
+### World: WorldViewModel
+
+- `catchCutsceneFishOrientation` changed from a function taking a `position` parameter (computing a
+  direction toward the rod tip each call) to a **constant** computed property: `fishOrientation(facing:
+  [1, 0, 0])` — always faces world `+X`, reusing `fishOrientation(facing:)`'s existing two-step
+  construction (shortest-arc head align, then dorsal-up roll correction) completely unchanged, just
+  fed a fixed direction instead of a dynamic one.
+- Removed the `rodRig.tipEntity`/`controllerEntity` fallback lookup that direction previously
+  required — no longer needed, since the result no longer depends on the fish's position or the rod's
+  live state at all.
+- Both call sites (`beginCatchCutscene(from:)`, `updateCatchCutscene(deltaTime:)`) updated to read the
+  property directly with no arguments.
+- Chose world `+X` specifically (not an arbitrary pick): the cutscene's own camera geometry
+  (`playerCameraPosition`, `catchCutsceneCameraStartOffset`, `catchCutsceneCameraEndOffset`) all share
+  `X = 0` and neither the fish nor the camera ever moves off that line during the cutscene — so a fish
+  facing along world `X` is *guaranteed* perpendicular to the camera's view axis, reading
+  broadside/horizontal on screen regardless of jump height, dolly progress, or the rod's live bend.
+  Simpler and more robust than trying to compute a "looks horizontal" direction from the rod's
+  actual, unpredictable position.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-072.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: rewrote the ADR-069 paragraph to describe the fixed-`+X`
+  orientation instead of the rod-facing one; also fixed a stale "`.speed = 1.4`" claim in the same
+  paragraph left over from before ADR-071 changed that to a derived value.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now describes a fixed horizontal showcase pose
+  instead of "faces the rod/line."
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. Whether facing `+X` specifically (versus `-X`) reads better for this
+  model/camera framing is unconfirmed — an easy one-line sign flip if the fish ends up facing away
+  from camera instead of broadside.
+
+## Fix: Caught Fish Reverts to a Fixed Vertical "Hooked and Hanging" Pose (ADR-073)
+
+Date: 2026-07-21.
+
+First live look at ADR-072's horizontal pose, one turn later: asked to clarify "masih horizontal"
+first via `AskUserQuestion` (ambiguous on its own — could have meant "still wrong the old way,"
+"wrong direction," or "horizontal but still not right"); the user's answer clarified it directly:
+"ikannya kaya berenang, harusnya kepala nya di x, vertical, skrg horizontal kaya posisi berenang"
+(the fish looks like it's swimming — the head should be up, vertical — right now it's horizontal
+like a swimming position). Direct reversal of ADR-072's chosen direction, one iteration after it
+shipped.
+
+### World: WorldViewModel
+
+- `catchCutsceneFishOrientation` changed from ADR-072's `fishOrientation(facing: [1, 0, 0])`
+  (horizontal) to a direct rotation-matrix construction: local `-Y` (head) → world `+Y` (straight
+  up), local `X` (the fish's lateral/thin axis) → world `-Z` (parallel to the fixed camera's view
+  direction, so the camera sees the fish's full length/height broadside silhouette rather than a
+  foreshortened view), local `Z` (dorsal) → the cross product of the first two, computed rather than
+  guessed, to keep the rotation proper (no mirroring).
+- Did **not** reuse `fishOrientation(facing:)` (ADR-069/072's two-step shortest-arc-plus-roll
+  helper) for this — that function's roll-correction step is degenerate when the facing direction is
+  exactly world-up (the "desired up minus its projection onto forward" term collapses to zero, since
+  forward and up become the same vector), so it would have silently fallen back to an uncontrolled
+  roll. `fishOrientation(facing:)` itself is left in place, unused by this property but still valid
+  for any future non-degenerate direction.
+- Independently verified the construction numerically, not just derived on paper: wrote a standalone
+  `swift` REPL script applying the resulting quaternion to the known local head/dorsal/lateral axes
+  — confirmed head lands at world `(0, ~1, 0)` and the lateral axis lands at world `(0, 0, ~-1)`,
+  matching the intended "vertical, broadside to camera" pose exactly.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-073, explicitly framed as reversing ADR-072's direction
+  while keeping its "fixed, not dynamic" insight.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: rewrote the orientation paragraph as a three-iteration history
+  (ADR-069 dynamic/broken -> ADR-072 horizontal/still wrong -> ADR-073 vertical) so the reasoning
+  trail stays legible instead of overwriting it silently.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now describes a vertical hanging pose instead of a
+  horizontal showcase pose.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors (confirms `simd_quatf(simd_float3x3)` and `simd_float3x3(columns:)` resolve as expected).
+- Standalone `xcrun swift` execution of the exact rotation construction, confirming the numeric
+  claims above (not just typechecking that the code compiles).
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. Which world direction the dorsal fin/lateral axis specifically face
+  (`-X`/`-Z` here, an arbitrary choice between two options once "head up, broadside to camera" is
+  satisfied) is unconfirmed to look correct on-device — same open question ADR-072 already flagged
+  for its own axis choice, inherited here.
+
+## Feature: Ending Slow-Motion Dip, +1.5s Duration, Hook/Line Stay Attached to the Fish (ADR-074)
+
+Date: 2026-07-21.
+
+Two "finishing touch" items requested together: "ketika cut scene catch udah mau beres, tambahin
+slow motion ikan nya dan durasi animasi nya tambah 1,5 detik lagi" (as the catch cutscene is about to
+finish, add slow-motion for the fish and extend the animation duration by another 1.5 seconds), and
+"juga refine agar tali dan bomber nya masih nyangkut dengan ikan ketika di cut scene" (also refine so
+the line and hook stay attached to the fish during the cutscene).
+
+### World: WorldViewModel — ending slow-motion + duration
+
+- `catchCutsceneSettleDuration`: `0.35` -> `1.85` (+1.5 s, as requested).
+- `catchCutsceneTimeDilation(elapsed:)` generalized from a single freeze-phase-only dip to a shared
+  helper that applies the same ease-in/hold/ease-out shape to *either* the freeze phase or the settle
+  phase, whichever `elapsed` currently falls in — reusing the existing
+  `catchCutsceneSlowMotionFactor`/`catchCutsceneSlowMotionEaseFraction` constants for both, so the two
+  dips feel consistent rather than each having independently-tuned shapes.
+- No changes needed anywhere else for this half — `updateCameraFollow`'s push-in and
+  `caughtFishAnimationController`'s speed retargeting already both derive from this one dilation
+  value every frame (ADR-048/070), so extending it into the settle phase automatically slows the
+  ending's descent, camera, and animation together.
+- **Flagged explicitly:** because slow-motion multiplies real wall-clock time well beyond the
+  nominal story-time duration (the same effect ADR-070 already produced for the freeze phase),
+  total cutscene real time is now roughly 7+ seconds (up from ~3 s before this pass) — the single
+  biggest open risk in this change, not confirmed live.
+
+### World: WorldViewModel — hook/line stay attached
+
+- Added `caughtFishHeadOffset: Float = 0.6` — the `Head` joint's local Y-distance from the fish's
+  root, read from the same `bindTransforms` inspection already used for orientation (ADR-069/073),
+  not eyeballed.
+- Added `catchCutsceneLineTension: Float = 0.8` — matches the mid-fight `.fishOnHook`/`.reeling`
+  tension value.
+- `beginCatchCutscene(from:)`: no longer unconditionally disables `hookEntity` when
+  `caughtFishEntity` takes over — instead repositions it to `caughtFishEntity.position +
+  caughtFishHeadOffset * scale` along the fish's head axis (world `+Y`, per ADR-073's vertical pose),
+  parking it at the fish's mouth.
+- `updateCatchCutscene(deltaTime:)`: repeats that same repositioning every frame (reading
+  `caughtFishEntity.scale.y`, set once at cutscene start) so the hook tracks the fish through the
+  whole rise/freeze/settle motion, not just at the start.
+- `tick(deltaTime:)`'s `rodRig?.applyLineTension(...)` call now branches: `catchCutsceneLineTension`
+  while `isShowingCatchCutscene` is true, `lineTension(for: hookPhase)` (unchanged, still `0` for the
+  rest of `.result`) otherwise — previously the line went fully slack for the entire `.result` phase,
+  including the cutscene itself.
+- The cutscene's existing end-of-cutscene cleanup (`hookEntity?.isEnabled = false` once
+  `catchCutscene.elapsed >= catchCutsceneTotalDuration`) is unchanged — both entities still hide once
+  the cutscene fully ends and `ResultView` takes over.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-074, covering both halves of the request together (they were
+  asked as one combined "polish" pass).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the ADR-070 slow-motion paragraph and added a new
+  paragraph for both the settle-phase dip and the hook/line attachment fix.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now mentions the ending's own slow-motion dip and
+  that the hook/line stay visibly attached throughout.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. Two specific open risks flagged above: the ~7+ s total real-time
+  cutscene length, and whether `caughtFishHeadOffset` visually lands the hook right at the fish's
+  mouth or noticeably off.
+
+## Fix: Cutscene Retuned to Exactly 5 Seconds; Hook Repositioned/Rescaled to the Actual Mouth (ADR-075)
+
+Date: 2026-07-21.
+
+First real screenshot from the app (attached to the message): fish correctly vertical, broadside,
+"CATCH!" title showing — ADR-073's orientation fix confirmed working live. But: "jadiin 5 detik deh,
+lalu masih aga broken begini bomber nya" (make it 5 seconds, and the bobber's still kind of broken
+like this) — the hook was sitting on/over the fish's eye and head in the screenshot, clearly wrong,
+and ADR-074's duration change was flagged as too long even before this message (the ~7+ s estimate
+from that entry's own "not run" caveat).
+
+### Duration: solved properly this time, not re-guessed
+
+ADR-074's `catchCutsceneSettleDuration = 1.85` was a flat "+1.5 s" applied to *story* time, without
+accounting for how much the slow-motion dilation multiplies that into *real* time. Derived the actual
+relationship this time: for a phase of story duration `D` under the shared ease-in/hold/ease-out
+dilation shape, real time is exactly `D × C` where `C = ∫₀¹ du/dilation(u)` — a constant independent
+of `D` (verified this proportionality holds: substituting `s = D·u` in the integral factors `D` out
+cleanly, since the ease fraction is defined proportionally to the phase, not as an absolute time).
+Computed `C ≈ 2.688` by numeric integration (`python3`/`numpy`, `trapz`), then solved
+`0.35 + C×(0.9 + settle) = 5.0` for `settle` directly.
+
+### hookEntity: read the mesh's actual extent, not a bone position
+
+ADR-074's `caughtFishHeadOffset = 0.6` came from the `Head` joint's bind-pose position — but a
+skeletal joint is a pivot, not the mesh's visible surface. Re-inspected `mekong_catfish_caught.usdz`
+for its `extent` attribute (the actual measured mesh bounding box, not the skeleton):
+`[(-0.26, -1.00, -0.36), (0.26, 1.00, 0.36)]` — real geometry (snout, whiskers included) reaches
+local Y ≈ −1.0, well past the joint's −0.6, explaining exactly why the hook fell short and landed on
+the head instead of the nose.
+
+### World: WorldViewModel
+
+- `catchCutsceneSettleDuration`: `1.85` -> `0.83` (derived, targets exactly 5.0 s real time; rise and
+  freeze durations, and the freeze-dependent `catchCutsceneFishAnimationSpeed` peak-alignment math,
+  are untouched).
+- `caughtFishHeadOffset`: `0.6` -> `1.0` (mesh-extent-sourced, not joint-position-sourced).
+- `hookEntity.scale` now set to match `caughtFishEntity.scale` in `beginCatchCutscene` — previously
+  fixed at its base `0.07` m radius regardless of the fish's own display scale (`0.35`–`1.0` range,
+  ADR-068), which visibly dwarfed a scaled-down fish's head on smaller catches, part of the same
+  "broken" look. Reset to `1` in `launchHook` so the next cast's hook isn't left at a stale scale.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-075.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the ADR-074 paragraph with the ADR-075 retune and its
+  derivation.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now states the fixed 5-second total and mentions the
+  hook being sized to match the fish.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- Independently verified the `5.0` s duration math via `python3`/`numpy` numeric integration, not
+  hand arithmetic — confirmed `settle = 0.83` produces exactly `5.0` at the current dilation
+  constants.
+- Re-extracted and re-read the `.usdz`'s `extent` attribute directly (`unzip`+`usdcat`) rather than
+  trusting the earlier `bindTransforms`-based estimate.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session with these specific values. The duration math is exact given the stated
+  model; whether the hook now visually lands right at the nose tip (versus still short, or now past
+  it) is the one claim not re-confirmed by a second screenshot.
+
+## Tune: Hook Offset Nudged 1.0 -> 1.15 After a Second Screenshot ("dikiiittt lagi")
+
+Date: 2026-07-21.
+
+A second live screenshot, this time also confirming ADR-073's orientation fix is genuinely working
+(fish vertical, broadside, "CATCH!" visible) — the hook itself was much closer than before but still
+sitting slightly short of the snout tip. Feedback: "dikiiittt lagi" (just a little more). Amended
+ADR-075 in place (still uncommitted at this point, so no separate ADR-076 needed for a same-day
+follow-up tune of an unshipped change): `caughtFishHeadOffset` `1.0` -> `1.15` — a small clearance
+past the mesh's measured extent (`-1.00`) rather than sitting exactly flush with it, following the
+same "measured bound plus a small margin" pattern ADR-043 already used for the dock-clearance offset.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- Updated `ARCHITECTURE_DECISIONS.md` and `SOFTWARE_ARCHITECTURE_DOCUMENT.md` in place (both still
+  describing ADR-075, now noting the two-screenshot iteration `1.0` -> `1.15`) rather than adding a
+  new ADR, since the original hasn't been committed yet.
+- Not run: any live session with `1.15` specifically. Still open whether this lands cleanly or needs
+  another small nudge — and separately, whether the `5.0` s total duration reads well once played.
+
+## Feature: Dedicated Cutscene Line, Hook to Rod Tip (ADR-076)
+
+Date: 2026-07-21.
+
+Third screenshot in this thread — hook placement confirmed "better" — followed by a new ask: "kalo
+tambahin tali pancing nya bisa ga" (can we add the fishing line?). The screenshot showed the hook
+floating with no line at all connecting it to anything.
+
+### Investigation before writing any code
+
+Read `World/World/Reality/RodRigController.swift` directly rather than guessing at the missing
+line's cause: `applyLineTension(_:)` only bends `rod_line.usdz`'s existing bone chain via procedural
+joint rotations — there's no code path that extends the rig's total reach. The cutscene's hook sits
+at `hookLiftTargetPosition`, roughly 2.6 m further from the rod's anchor than any mid-fight distance
+that rig was ever authored to span (per the coordinates already established in ADR-042/043) — so even
+at full tension, it never reached anywhere near the cutscene's framing. Confirmed as the actual root
+cause, not assumed from the screenshot alone.
+
+### World: WorldViewModel
+
+- Added `cutsceneLineEntity: ModelEntity?`, created once in `makeSceneEntity()` — a thin cylinder
+  (`generateCylinder(height: 1, radius: 0.012)`, white `SimpleMaterial`), disabled by default.
+- Added `updateCutsceneLine(from:)` — stretches/orients the cylinder every frame to span exactly from
+  the hook's current position to the live rod tip (`rodRig.tipEntity.position(relativeTo: nil)`,
+  falling back to `controllerEntity.position`): scales only the mesh's local `Y` axis to the measured
+  distance, positions it at the midpoint, rotates via `simd_quatf(from: [0,1,0], to:
+  normalize(rodPoint - hookPosition))`. Disables itself if there's no rod reference or the points are
+  degenerately close.
+- Called from both `beginCatchCutscene(from:)` and `updateCatchCutscene(deltaTime:)`, right after
+  each computes the hook's own position, so the line always matches exactly.
+- Disabled alongside `hookEntity`/`caughtFishEntity` at every point they already are: end-of-cutscene
+  cleanup in `updateCatchCutscene`, and `returnToMenu()`.
+
+### Why a new entity, not a stretched `rod_line.usdz`
+
+Considered and rejected driving the existing skinned rig beyond its bind-pose length — this project's
+own asset repo `AGENTS.md` §13 documents a related failure class ("Animating Multiple Bone Chains")
+for the fish rigs, and the same risk (mesh tearing/distortion) applies to any skinned asset pushed
+past its authored geometry. A plain cylinder driven by direct vector math sidesteps that risk
+entirely, and the cutscene already forces a constant tension value (ADR-074) rather than needing
+`rod_line`'s dynamic response, so its gameplay behavior isn't even relevant here.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-076.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: extended the fish/cutscene section with an ADR-076 paragraph.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" now mentions the visible line to the rod.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0`, real SDK via `xcrun --sdk macosx --show-sdk-path` — exit code 0, no
+  errors.
+- No `Shared` or `Rod` files changed this pass.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. Whether a plain white cylinder at this thickness reads convincingly as a
+  fishing line, and whether spanning the full ~2.6+ m distance looks right once actually rendered,
+  are both unconfirmed.
+
+## Fix: Cutscene Line Removed — Read as a Rigid Pole (ADR-077)
+
+Date: 2026-07-21.
+
+Two messages in immediate succession on ADR-076's line. First: "ini lebih ke tongkat ketimbang tali,
+pakai tali dari rod aja bisa ga" (this reads more like a stick than a line, can we use the rod's own
+line instead?) — confirming the exact risk ADR-076's own Status section had flagged as unconfirmed: a
+straight, constant-radius cylinder spanning ~2.6+ m read as a rigid pole, not a fishing line. Before
+starting the "try the real `rod_line` rig" investigation this implied, a second message arrived:
+"tali nya hapus dulu aja deh, makin jelek pakai tali itu" (just remove the line for now, it looks
+worse with it) — superseding the fix-it request in favor of a straight revert.
+
+### World: WorldViewModel
+
+Removed everything ADR-076 added: the `cutsceneLineEntity` property, its creation in
+`makeSceneEntity()` (the cylinder mesh + material), `updateCutsceneLine(from:)` in full, and all four
+call sites (`beginCatchCutscene(from:)`, both branches of `updateCatchCutscene(deltaTime:)`, the
+end-of-cutscene cleanup, `returnToMenu()`). `hookEntity`'s mouth-attachment (ADR-070/071) and
+`catchCutsceneLineTension` (ADR-070) are untouched — only the ADR-076 geometry is gone.
+
+This landed while an `origin/main` merge was still in progress (see the entries above/below) — kept
+as a distinct, separately-reasoned change rather than folded silently into the merge's own
+resolution, so the "why" (two direct pieces of live feedback) stays traceable on its own.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-077; added a "Superseded by ADR-077" note to ADR-076's own
+  Status section (not rewritten/deleted — the original decision and rationale stay intact as a
+  record of what was tried and why).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the ADR-076 paragraph to describe the removal.
+- `GAMEPLAY_ARCHITECTURE_V1.md`: "Catch Cutscene" no longer claims a visible line; now states plainly
+  that the cutscene currently shows no line, flagged as a known gap.
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-macosx26.0` and `arm64-apple-ios17.0-simulator` (needed
+  regardless, to pick up `origin/main`'s new `RodState.calibrationStep`/`CalibrationStep` additions
+  for the in-progress merge) — exit code 0, no errors both times.
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` Swift file list against the iOS-simulator
+  `Shared` module — exit code 0, no errors.
+- `grep` confirmed zero remaining references to `cutsceneLineEntity`/`updateCutsceneLine`/
+  `generateCylinder` anywhere in `WorldViewModel.swift`.
+- `git diff --check` clean on `World/World/ViewModels/WorldViewModel.swift`.
+- Not run: any live session. The cutscene's current no-line state is a known, explicitly-flagged gap,
+  not a final answer — a future pass may revisit using `rod_line.usdz`'s real rig, per the user's
+  first message.
+## Feature: Fight Direction Replaced by a Randomized Flick QTE (ADR-078)
+
+Date: 2026-07-21.
+
+Requested directly: "daripada fish pull dan lean rod, mending diganti jadi QTE yang randomized
+spawn ketika fishInHook. QTE nya adalah, flick device aja ke depan (atau sesuai arah cast)."
+Recorded as ADR-078 (renumbered from a colliding ADR-068 — see the merge-collision entry below) —
+a full replacement of ADR-053's lean-left/right mechanic, not an addition.
+
+### Shared: FishingEvent, FishFightConfig
+
+- `Shared/Sources/Shared/Models/Gameplay/FishingEvent.swift`: added `qtePrompt` (World -> Rod) and
+  `qteFlick` — the first `FishingEvent` case Rod itself ever constructs and sends; every other
+  case in this enum has only ever flowed World -> Rod.
+- `Shared/Sources/Shared/Gameplay/FishFightConfig.swift`: removed the entire "Fight direction
+  (lateral juke)" `MARK` section (`fightDirectionMinDuration`/`MaxDuration`,
+  `fightDirectionSwitchMinInterval`/`MaxInterval`, `fightDirectionRollThreshold`,
+  `fightDirectionCounterRelief`, `fightDirectionPenalty` — seven fields). Replaced with "Fight QTE
+  (flick prompt)": `qteSpawnMinInterval`/`qteSpawnMaxInterval` (4.0/8.0), `qteReactionWindow`
+  (1.5), `qteSuccessRelief`/`qteFailurePenalty` (0.15/0.15).
+
+### World: FishFightController
+
+- Removed `FightDirection` enum, `fightDirection` published property,
+  `fightDirectionRemainingDuration`/`fightDirectionSwitchTimer`, `updateFightDirection
+  (deltaTime:rodRoll:)`.
+- Added `isQTEActive: Bool`, `qteProgress: Float` (normalized `1.0 -> 0.0` countdown),
+  `qteSpawnTimer`/`qteReactionTimer` (private), a private `updateQTE(deltaTime:)` (spawn/reaction
+  timers, resolves a miss as an instant `lineTension += qteFailurePenalty`), and a new
+  `handleQTEFlick() -> Bool` (resolves a hit as an instant `lineTension -= qteSuccessRelief`,
+  no-op if no prompt active).
+- `updateFight(deltaTime:isReeling:reelSpeed:hookDistance:)`: dropped the now-unused `rodRoll`
+  parameter; calls `updateQTE(deltaTime:)` in place of the old `updateFightDirection(...)` call.
+  The main tension formula's `+ directionDelta` term is gone — QTE resolution is now a separate
+  instant adjustment, not folded into the per-second rate.
+- `updateSearching(deltaTime:)`'s bite branch seeds `qteSpawnTimer` (a random delay before the
+  *first* prompt, not instant) instead of `fightDirection`.
+- `resetForNewCast(castDistance:)` and `resolve(outcome:)` both clear the new QTE state instead of
+  the old `fightDirection` state.
+
+### World: WorldViewModel
+
+- Removed `fightDirectionLateralSpeed`/`fightDirectionMaxLateralOffset` constants and
+  `updateFightDirectionDrift(deltaTime:)` entirely (no QTE equivalent was requested).
+- `tick(deltaTime:)`: `fishFight.updateFight(...)` call site drops the `rodRoll: rodState.roll`
+  argument; added `syncQTE()` alongside the existing `syncTensionBand()`.
+- Added `lastQTEActive: Bool` (mirrors `lastSentTensionBand`'s rising-edge pattern) and `syncQTE()`
+  — sends `FishingEvent.qtePrompt` the instant `fishFight.isQTEActive` flips `true`.
+- `handle(_ message: NetworkMessage)` widened from `guard case let .state(state) = message else {
+  return }` to a full `switch`/`handleState(_:)` split, adding `case .fishingEvent(.qteFlick):
+  fishFight.handleQTEFlick()` — the first inbound (Rod -> World) `FishingEvent` this app has ever
+  needed to receive.
+
+### World: LineTensionView / ContentView
+
+- `LineTensionView`: `fightDirection: FishFightController.FightDirection?` parameter and its
+  "Fish pulling ←/→" / "Lean rod →/←" row replaced with `isQTEActive: Bool`/`qteProgress: Float`
+  and a "FLICK ROD NOW!" banner with a shrinking progress capsule.
+- `ContentView.swift`'s `LineTensionView(...)` call site updated to match.
+
+### World: FishingSounds
+
+- `handle(_:)`'s switch gained `case .qtePrompt, .qteFlick: break` (exhaustiveness) — deliberately
+  no dedicated sound; the visual banner and Rod's haptic alert already cover the cue, and no
+  existing sound fit without risking confusion with what it already means elsewhere (e.g.
+  `fishBite`'s own pattern, which already plays at the *start* of a fight).
+
+### Rod: RodViewModel, FishingHaptics, HapticManager
+
+- `RodViewModel`: added `wasFightFlicking: Bool` (edge-detection state) and
+  `detectFightFlick()`, called at the end of `updateAction()`. Checks `motion.accelerationZ *
+  motionInterpreter.profile.castAccelerationSign >= motionInterpreter.profile.castAcceleration` —
+  the identical threshold `RodMotionInterpreter` uses for cast-release detection — but entirely
+  independent of the interpreter/`isCastingArmed`, gated to `hookPhase == .fishOnHook || .reeling`.
+  Sends `.qteFlick` on the rising edge only.
+- `FishingHaptics.handle(_:)`: added `case .qtePrompt: haptics.qtePrompt()` and `case .qteFlick:
+  break` (Rod -> World only, Rod itself never receives this case, but the switch must stay
+  exhaustive).
+- `HapticManager`: added `qtePrompt()` — a sharp, fast double-tap (two pulses, 0.08s apart, both
+  intensity 1.0/sharpness 0.85), deliberately quicker/crisper than `fishBite()`'s slower 4-pulse
+  pattern so the two read as different things.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-078 (renumbered from a colliding ADR-068 during the
+  `origin/main` merge — see the merge-collision entry below); added a one-line "Superseded by
+  ADR-078" pointer at the top of ADR-053's own entry, keeping the rest of that entry as an
+  untouched historical record.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: replaced the "Fight direction (ADR-053)" paragraph with a
+  full description of the new QTE mechanic under ADR-078.
+
+### Verification
+
+- Rebuilt `Shared` as both an `arm64-apple-ios17.0-simulator` and an `arm64-apple-macosx26.0`
+  module (`-emit-module -emit-library`) directly from `find Sources/Shared -name "*.swift"` — no
+  errors on either.
+- `xcrun swiftc -typecheck` against those modules: the full `Rod/Rod` file list (iOS 17 simulator)
+  and the full `World/World` file list (macOS 26) — both exit code 0, no errors.
+- Grepped the whole `World`/`Shared`/`Rod` tree for `fightDirection`/`FightDirection` after every
+  edit — zero remaining references, confirming a complete removal rather than a partial one.
+- `git diff --check` clean.
+- Not run: any live session on physical devices. Unverified in particular: whether the 1.5s
+  reaction window accounts for real BLE round-trip latency between Rod's flick detection and
+  World's resolution, and whether the 4-8s spawn interval feels appropriately "randomized" during
+  a real fight.
+
+## Merge: origin/main into dev — ADR-068 Numbering Collision Resolved (-> ADR-078)
+
+Date: 2026-07-21.
+
+"pull dari main dong dan merge ke dev. sekalian atasin conflictnya." `dev`'s only local commit ahead
+of `origin/main` was `00adf32` (the QTE feature above, including its own debug-disable comment).
+Meanwhile `origin/main` had advanced through PR #18 (`feat/playtest-refine`, merge commit `f24bf05`)
+with a full catch-cutscene-fish arc — real animated fish, orientation fixes, slow-motion timing, a
+cutscene line added then removed — spanning **ADR-068 through ADR-077**, directly colliding with
+this session's own ADR-068 (the flick QTE). Same collision pattern this project has now hit three
+times (`8b03ce2` ADR-030/031, the ADR-044 note, and the ADR-049–052 merge above) — independent
+branches numbering forward from the same branch-point without coordinating.
+
+### Sequence
+
+1. `git status` on session resume found the merge already in progress (`git merge origin/main` had
+   been run, `.git/MERGE_HEAD` present) with two real conflicts (`ARCHITECTURE_DECISIONS.md`,
+   `CHECKPOINT.md`, both `UU`) and four files already auto-merged without conflict markers
+   (`GAMEPLAY_ARCHITECTURE_V1.md`, `SOFTWARE_ARCHITECTURE_DOCUMENT.md`,
+   `World/World/ViewModels/WorldViewModel.swift`, plus the new
+   `World/World/Assets/FishCaught/mekong_catfish_caught.usdz` staged as an addition).
+2. `git log --oneline dev..origin/main` confirmed the exact collision range (fadc215's commit message
+   states "ADR-068 through ADR-072"; the actual file content on `main` runs through ADR-077 —
+   confirmed by reading the headers directly, not trusting the commit message's own count).
+3. **`ARCHITECTURE_DECISIONS.md`**: kept `origin/main`'s ADR-077 down through ADR-072 unchanged (the
+   canonical, already-shipped continuation — `main`'s numbering wins per this project's established
+   precedent), renumbered this session's single colliding entry 068 -> 078 and placed it first (this
+   file orders newest-first), with an explicit note at the top of the renumbered entry recording the
+   collision and its resolution. Also fixed ADR-053's own "Superseded by ADR-068" forward-pointer to
+   "Superseded by ADR-078".
+4. **`CHECKPOINT.md`**: same principle, opposite placement (this file orders chronologically,
+   oldest-first) — `origin/main`'s fourteen dated entries (2026-07-20 through 2026-07-21, ADR-068
+   through ADR-077) kept first, this session's renumbered QTE entry appended after.
+5. **`SOFTWARE_ARCHITECTURE_DOCUMENT.md`** and **`World/World/ViewModels/WorldViewModel.swift`** both
+   auto-merged cleanly but ended up containing a genuine *mix* of `main`'s legitimate ADR-068
+   references (the catch-cutscene fish) and this session's — read every occurrence in context,
+   line-by-line, in both files before renaming only this session's own (`WorldViewModel.swift`:
+   `lastQTEActive`'s doc comment, `syncQTE()`'s doc comment, and the `.qteFlick` handler's inline
+   comment; `SOFTWARE_ARCHITECTURE_DOCUMENT.md`'s single "Fight QTE" paragraph heading), leaving
+   `main`'s eight WorldViewModel.swift references and two SOFTWARE_ARCHITECTURE_DOCUMENT.md
+   references at their original, correct ADR-068.
+6. **`GAMEPLAY_ARCHITECTURE_V1.md`** auto-merged with no `ADR-068`/QTE content at all — this session
+   never touched this file, so everything in it came from `main`. Its "Fish Fight" section still
+   flatly stated "It is not a quick-time event," now false given ADR-078 — updated to describe the
+   flick QTE and note ADR-053's supersession, matching this file's role as the product source of
+   truth (not something the automatic 3-way merge could have caught, since no textual conflict
+   existed).
+7. Repo-wide `grep` for `ADR-068` afterward, classifying every hit: every remaining occurrence either
+   belongs to `main`'s catch-cutscene feature (its correct, canonical number) or is this session's
+   own retrospective note about the renumbering (e.g. "renumbered from a colliding ADR-068"); none
+   stray/unclassified.
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-macosx26.0` and `arm64-apple-ios17.0-simulator`
+  (`-emit-module -emit-library`) — exit code 0, no errors on either.
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list (macOS 26) and the full
+  `Rod/Rod` Swift file list (iOS 17 simulator) — both exit code 0, no errors.
+- `git diff --check` clean.
+- Repo-wide `grep` for `fightDirection`/`FightDirection` across `Shared`/`Rod`/`World` — zero
+  remaining references, confirming `main`'s merge didn't reintroduce anything ADR-078 removed.
+- Repo-wide `grep` for leftover `<<<<<<<`/`=======`/`>>>>>>>` conflict markers — none found.
+- Not run: any live session on physical devices, and specifically not re-verified that `main`'s new
+  catch-cutscene fish work and this session's flick QTE behave correctly *together* at runtime — only
+  that the merged source compiles and every ADR-068 reference resolves to the correct feature.
+- Not yet pushed to `origin/dev` — merge commit only, per this session's standing rule of not pushing
+  without an explicit request.
+
+## Fix: Rod Root Rotation Restricted to Yaw Only (ADR-079)
+
+Date: 2026-07-21.
+
+Requested directly: "aku mau agar asset Rod nya cukup diam di tempat, dan ga ikut muter muter as I
+reel the Rod. Kalo bisa, movement Rod di World yang valid itu cuma yaw kanan dan kiri, just like di
+real life aja."
+
+### World: WorldViewModel
+
+- `updateRodPose()`: `controllerEntity.orientation` no longer set directly from
+  `RodState.orientation`'s full pitch/roll/yaw quaternion — now set from a new
+  `yawOnly(from:)` instead.
+- Added `yawOnly(from: RodOrientation) -> simd_quatf`: applies the full corrected quaternion to the
+  scene's fixed forward direction `(0, 0, -1)`, projects the result onto the horizontal plane, and
+  derives a single yaw angle via `atan2(forward.x, -forward.z)` — the same signed-angle convention
+  `clampedToForwardCone` already uses — then builds a fresh Y-axis-only `simd_quatf`. Geometric
+  derivation chosen over algebraic decomposition because `RodState.orientation` is
+  `inverse(reference) * current` (the calibration correction), a quaternion product that doesn't
+  cleanly separate back into independent pitch/roll/yaw terms.
+- `rodRig?.applyBend(pitch: rodState.pitch, roll: rodState.roll)` — the rig's per-bone flex
+  visualization — left untouched; it's a secondary bend effect on the mesh, not a rotation of the
+  whole entity, and wasn't part of the reported "muter muter" (spinning) problem.
+
+### Amendment: fixed diagonal rest tilt
+
+Same-day follow-up: "tolong turunin pitch rod nya (maksudnya biar rod nya ga horizontal, tapi
+diagonal gitu)." Once yaw-only landed, the rod read as flat/horizontal at rest — no pitch at all.
+
+- Added `rodRestPitch: Float = .pi / 6` (30°, about the rod's local right axis) — a fixed,
+  sensor-independent art-direction constant, not derived from `RodState`.
+- `updateRodPose()`: `controllerEntity.orientation` now `yaw * simd_quatf(angle: rodRestPitch, axis:
+  [1, 0, 0])` — the rest tilt composed *under* the live yaw (in the rod's own local frame) so it
+  turns together with the player's yaw rather than staying pinned to a world axis.
+
+### Documentation
+
+- `CLAUDE.md`: updated the `updateRodPose()` architecture-contract line to state yaw-only rotation.
+- `ARCHITECTURE_DECISIONS.md`: added ADR-079, amended in place with the rest-tilt addition (kept as
+  one entry — same decision, extended same day — rather than a new ADR number).
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "World Controller and Hook Separation" section to
+  describe the yaw-only reduction plus the rest tilt.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0` — exit code 0, no errors, for both the yaw-only change and the rest-tilt
+  amendment.
+- `git diff --check` clean.
+- Not run: any live session. Unverified in particular: whether the derived yaw sign matches the
+  player's actual left/right hand motion 1:1, whether dropping pitch/roll entirely (rather than,
+  say, damping toward zero) ever reads as visually abrupt during fast tilt changes, and whether 30°
+  specifically looks like the intended "diagonal" angle once actually seen.
+
+## Feature: Cast Direction Follows the Rod's Own Live Yaw (ADR-080)
+
+Date: 2026-07-21.
+
+Requested directly: "would it be possible untuk arah throw nya itu sesuai arah rod nya itself? jadi
+kalo rod nya lagi ke arah 'kiri', ya throw hook nya ke arah kiri juga."
+
+### World: WorldViewModel
+
+- Refactored `yawOnly(from:)`'s body out into a new `rodYawAngle(from: RodOrientation) -> Float`,
+  returning just the signed angle instead of a quaternion; `yawOnly(from:)` now calls it and wraps
+  the result. Single source, two callers (`updateRodPose()` for the rod's visual rotation,
+  `launchHook(solution:)` for cast direction) — they can't disagree about which way the rod points.
+- Noticed in passing while refactoring: `rodYawAngle`'s `atan2` result is negated
+  (`-atan2(forward.x, -forward.z)`) relative to what this session originally wrote for
+  `yawOnly(from:)` in the ADR-079 entry above — left as-is (not reverted) per this session's
+  standing rule of treating externally-observed changes to values/signs as authoritative rather than
+  assuming stale memory of a prior edit is still correct.
+- `launchHook(solution:)`: replaced the entire tip-position-vector aim derivation (`tipPosition -
+  controllerEntity.position`, `rotatedAroundY` by the empirical `aimCorrectionAngle` constant, then
+  `clampedToForwardCone`) with `rodYawAngle(from: rodState.orientation)`, clamped directly into
+  `±castConeHalfAngle`, then converted to a horizontal direction vector inline.
+- Removed `aimCorrectionAngle` (the empirical 180°-ish correction constant), `rotatedAroundY(_:by:)`,
+  `clampedToForwardCone(_:)`, and `signedAngleDegrees(_:)` — all now unused; grepped the file
+  afterward to confirm zero remaining references. `castConeHalfAngle` itself is kept unchanged (135°
+  total) as a safety bound, its doc comment updated to explain it now clamps a trustworthy signal
+  rather than compensating for an unreliable one.
+- `debugRawAimDegrees`/`debugCorrectedAimDegrees` (unchanged property names, `ContentView.swift`'s
+  "Raw Aim Angle"/"Corrected Aim Angle" debug rows untouched) now populate directly from the yaw
+  angle in degrees, pre- and post-clamp, rather than from `signedAngleDegrees(vector:)`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-080.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0` — exit code 0, no errors.
+- `git diff --check` clean.
+- Repo-wide `grep` for the four removed helpers/constant — zero remaining references anywhere.
+- Not run: any live session. Unverified in particular: whether the cast direction now visually
+  matches the rod's own on-screen heading 1:1 (the whole point of this change), and whether
+  `castConeHalfAngle`'s ±67.5° bound (originally sized to mask the old unreliable signal, not tuned
+  as a deliberate gameplay limit) still feels like the right limit now that the underlying direction
+  is trustworthy.
+
+## Feature: Main Menu Restyled — Background Photo, Logo, Stacked-Rectangle Buttons (ADR-081)
+
+Date: 2026-07-21.
+
+Requested directly with a reference screenshot: "ganti tampilan main menu kaya di desain ini. aku
+udah masukin main_menu_bg dan logo_cts ke dalam World/Assets/Images. button itu pake rectangle yang
+di stack btw. sesuaiin button nya dan desain language nya ke dalam UI sekarang."
+
+### Investigation: how loose bundled images actually resolve
+
+Before writing any image-loading code, confirmed empirically (not assumed) how
+`World/World/Assets/Images/main_menu_bg.png`/`logo_cts.png` — dropped directly into the filesystem,
+not added to `Assets.xcassets` — actually land in the built app. Built the real target
+(`xcodebuild -project World/World.xcodeproj -target World -configuration Debug
+CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO`, succeeded) and inspected the resulting
+`World.app/Contents/Resources/`: both PNGs sit flattened at the bundle root, alongside every other
+loose asset (`.wav`, `.usdz`, `.jpg`) — confirms `World.xcodeproj`'s
+`PBXFileSystemSynchronizedRootGroup` flattens nested folders the same way it already does for
+`Assets/FishCaught/mekong_catfish_caught.usdz`. Concluded the plain `Image("name")` SwiftUI
+initializer (reliable mainly for `Assets.xcassets` entries) was the wrong tool; used
+`Bundle.main.url(forResource:withExtension: "png")` + `NSImage(contentsOf:)` instead, which only
+depends on the resource being *somewhere* in the bundle, not on catalog membership.
+
+### World: MainMenuView
+
+- Added `bundleImage(_ name: String) -> Image`, loading via the bundle-URL + `NSImage` path above;
+  falls back to an SF Symbol only if the resource is genuinely missing (a build-config problem, not
+  a runtime one — a blank/crashing menu would be worse than a visible gap).
+- `backgroundImage`: `main_menu_bg`, full-bleed (`resizable().scaledToFill()`), with a top-to-bottom
+  black gradient overlay (clear at top, ~45% opaque at bottom) so the status panel/buttons over the
+  photo's busier lower half stay legible.
+- Plain-text title replaced with `logo_cts`, `scaledToFit()` capped at 360pt wide, drop shadow added.
+- New `StackedMenuButtonStyle` (private `ButtonStyle`): cream, dark-bordered rounded-rectangle card
+  with a second, darker rectangle offset behind it — matches the reference's "two stacked cards"
+  button look. `isProminent` scales text/padding for primary vs. secondary role. Pressing narrows the
+  offset between the two rectangles (reads as the top card pressing onto its stack).
+- Applied to `Retry Connection` (prominent while disconnected) and `How to Play` (prominent once
+  connected, since `Retry Connection` disappears at that point — whichever is the only actionable
+  button showing gets the larger treatment). `Forget Device`/`Reset Progress` deliberately kept their
+  existing small plain-text destructive styling, not promoted to stacked-card buttons — preserves the
+  visual hierarchy between common and dangerous actions.
+- Status/calibration area wrapped in a new translucent dark rounded-rectangle background
+  (`Color.black.opacity(0.38)`) for legibility against the photo. `CalibrationGuidanceView` itself
+  unchanged.
+- Not added: a literal "Start Fishing"/"Credits" button pair matching the reference 1:1 — those don't
+  correspond to real actions in this app (ADR-038: Rod, not World, owns the session-start boundary).
+  Read the request as a visual-language transplant onto this screen's *existing* buttons, not a
+  literal recreation of the reference's exact button set.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-081.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: updated the "World Main Menu" section's description of
+  `MainMenuView`'s appearance (was "solid black background... title, subtitle"), added a "Visual
+  design (ADR-081)" paragraph.
+
+### Verification
+
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Launched the built `.app` (`open`) and confirmed via `ps`/no crash that it ran without a
+  missing-resource crash or SwiftUI layout exception.
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0` — exit code 0, no errors.
+- `git diff --check` clean.
+- **Not verified**: an actual visual screenshot. `screencapture` failed ("could not create image
+  from display") — this environment has no screen-recording permission granted, so the rendered
+  menu's layout, colors, gradient legibility, and button-stack effect are confirmed only by code
+  inspection and a successful (non-crashing) launch, not by eye. Flagged explicitly as the one
+  meaningful gap in this pass — a live look is needed before calling this fully done.
+
+## Feature: Loading Screen Covers the Initial Async Asset Load (ADR-082)
+
+Date: 2026-07-21.
+
+Requested directly, with a reference screenshot: "tambahin loading screen dong, di awal aja waktu
+nge load semua asset. image background nya udah ditambahin under folder yang sama, 'loading_screen'.
+tambahin semacam rectangle layer dengan fills #505277 dengan opacity 40%."
+
+### World: WorldViewModel
+
+- `Screen` gained a new first case, `.loading`. `screen`'s initial value changed from
+  `Self.hasSeenOnboarding ? .mainMenu : .onboarding` (computed immediately in `init`) to `.loading`;
+  that same decision moved into a new `sceneDidFinishLoading()`.
+- Added `sceneDidFinishLoading()`: guards `screen == .loading`, then applies the exact same
+  onboarding-vs-menu logic `init` used to run immediately. Called once from `ContentView`'s
+  `RealityView` `make` closure, right after `makeSceneEntity()`'s assets are added to the scene.
+- `returnToMenu()`: added `screen != .loading` to its existing `screen != .mainMenu` guard — a Rod
+  disconnect arriving mid-load must not skip past the loading screen straight to the menu.
+
+### World: new views
+
+- `BundleImage.swift` (new file): factored `bundleImage(_:)` out of `MainMenuView` into a shared,
+  file-scope function — `LoadingScreenView` needs the same loose-bundled-PNG loading behavior for
+  its own images. `MainMenuView`'s private copy removed, its `import AppKit` (no longer directly
+  needed) removed too; no behavior change there.
+- `LoadingScreenView.swift` (new file): full-bleed `loading_screen` background, a flat
+  `Color(red: 0x50/255, green: 0x52/255, blue: 0x77/255).opacity(0.4)` layer over it (a flat color,
+  not a gradient, per the request), `logo_cts` top-left, "Loading..." text bottom-left.
+- `ContentView.swift`: added `if viewModel.screen == .loading { LoadingScreenView() }` to the overlay
+  `ZStack`, alongside the existing `.onboarding`/`.mainMenu` overlays; added
+  `viewModel.sceneDidFinishLoading()` to the `RealityView` `make` closure, right after
+  `content.add(rod)`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-082.
+
+### Verification
+
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Confirmed `loading_screen.png` lands in the built `.app`'s `Contents/Resources/` alongside
+  `main_menu_bg.png`/`logo_cts.png` (same flattened `PBXFileSystemSynchronizedRootGroup` layout
+  ADR-081 already confirmed).
+- Launched the built `.app` and confirmed via `ps` that it ran without a missing-resource crash or
+  SwiftUI layout exception.
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list, target
+  `arm64-apple-macosx26.0` — exit code 0, no errors.
+- `git diff --check` clean.
+- **Not verified**: an actual visual screenshot, for the same reason as ADR-081 (no
+  screen-recording permission in this environment) — nor how long the loading screen is actually
+  visible in practice, since asset loading may finish fast enough that a live tester barely sees it.
+
+## Amendment: Loading Screen Gets a 10-Second Minimum Display Duration (ADR-082)
+
+Date: 2026-07-21.
+
+Requested directly, same day: "kasih delay 10 detik dong ke loading screen" — a direct response to
+this feature's own flagged risk that fast asset loading could make the loading screen barely visible.
+
+Also reported around the same time: four Xcode compile errors in `ContentView.swift` (an `==`
+mismatch between `WorldViewModel.Screen` and RealityKit's unrelated `VideoPlayerComponent.
+RenderingStatus`, plus three `@ObservedObject`/dynamic-member errors on `viewModel`). Investigated
+before touching any code: `grep`'d the whole repo and found exactly one `Screen` type anywhere
+(`WorldViewModel.Screen` itself) — `VideoPlayerComponent` is never referenced in this codebase at
+all. Ran a full `xcodebuild -target World -configuration Debug` (unsigned) — succeeded with zero
+errors — then a from-scratch `xcodebuild ... clean build` in a fresh `SYMROOT` — also succeeded with
+zero errors. Concluded this is Xcode's own stale index/derived-data state (classic Swift
+ViewBuilder cascading-diagnostic behavior — one root issue can make the type checker report
+nonsense errors at unrelated lines, referencing unrelated types it examined as fallback candidates)
+rather than a real bug in the merged code, most likely from the just-added `BundleImage.swift`/
+`LoadingScreenView.swift` files not yet being picked up by a stale Xcode session. No source change
+made in response to this — advised a Clean Build Folder (⇧⌘K) + rebuild instead.
+
+### World: WorldViewModel
+
+- Added `loadingStartedAt: Date` (set once in `init`, the instant `.loading` begins) and
+  `minimumLoadingScreenDuration: TimeInterval = 10`.
+- `sceneDidFinishLoading()` is now `async`: measures elapsed time since `loadingStartedAt`, and if
+  under 10 seconds, `Task.sleep`s out the remainder before transitioning `screen` off `.loading`.
+  Additive to the real-completion gating already in place, not a replacement — the loading screen
+  now requires both the actual asset load *and* 10 seconds to have elapsed, whichever is longer.
+  Re-checks `screen == .loading` after the sleep (defensive — nothing currently moves `screen` off
+  `.loading` during the wait, given `returnToMenu()`'s existing guard, but cheap to keep correct).
+
+### World: ContentView
+
+- `RealityView`'s `make` closure: `viewModel.sceneDidFinishLoading()` call site now `await`s it,
+  since the function became `async`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: amended ADR-082 in place with an "Amendment: 10-Second Minimum
+  Display Duration" section (same decision extended same day, not a new ADR number).
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Launched the built `.app`, confirmed via `ps` it was still running unchanged 11+ seconds later
+  (past the 10-second floor) with no crash/relaunch.
+- `git diff --check` clean.
+- Not run: any live session, and specifically not re-confirmed on the user's own Xcode that a Clean
+  Build Folder actually clears the four reported errors — only confirmed independently that a
+  from-scratch `xcodebuild` build has none.
+
+## Fix: Ambient Sound Redesign, Loading-Screen Silence, Deferred "Start Casting" (ADR-084/085)
+
+Date: 2026-07-21.
+
+Three notes given together:
+
+1. "loading screen ga seharusnya nge play sfx apapun."
+2. "ketika di main menu, matiin semua suara environment, dan hanya play idle. ketika bermain, idle
+   dimatikan, dan hanya reel_fight yang aktif ketika reeling."
+3. "saat berhasil catch, ada slight delay karena menunggu layar ikan dan tulisan CATCH!! menghilang,
+   baru tombol Start Casting bisa aktif lagi."
+
+Asked one clarifying question before touching code: whether note 2's "reel_fight aktif ketika
+reeling" meant the whole fight (`fishOnHook || reeling`, this session's own already-tuned ADR-065/
+067 behavior) or literally only `RodState.action == .reeling`. Confirmed: the whole fight, unchanged.
+
+### Investigation: why note 1's bug actually happens
+
+Traced `start()` (called from `ContentView`'s `.onAppear`, firing immediately at launch,
+independent of asset loading): it called `sounds.handleScreenChange(isPlaying: screen ==
+.playing)` unconditionally. Since `screen` is always `.loading` at that exact point (ADR-082), and
+`FishingSounds.Config.ambiencePlaysInMenu` defaulted `true`, the lake ambience started playing
+immediately — before any asset had loaded, before the loading screen's own minimum-duration gate
+had even begun counting. This single call site was the entire root cause.
+
+### World: SoundManager
+
+- Removed `Sound.ambienceLake` case entirely, and `Category.ambience` (its only user). `fileExtension`
+  simplified to a constant `"wav"` (was a ternary only ever selecting `.mp3` for the now-removed
+  case). `defaultVolume`'s `.ambienceLake` branch removed. `categoryVolumeMultipliers`' initial
+  dict drops the `.ambience` entry.
+- `ambience_lake.mp3` left on disk, unreferenced — not deleted.
+
+### World: FishingSounds
+
+- Removed `Config` struct entirely (its only field, `ambiencePlaysInMenu`, is now meaningless) and
+  the `config` parameter from `init`.
+- Removed `handleScreenChange(isPlaying:)` entirely.
+- `updateIdleLoop(active:)`'s doc comment rewritten to describe its new role (menu-only ambient,
+  not gameplay "waiting for a bite" layer) — no change to the method body itself, only to what
+  `WorldViewModel.tick()` now passes in.
+- `handlePhaseChange(_:)`: removed the `idle`-stopping block (`if phase != .idle, phase !=
+  .hookInWater { sounds.stopLoop(.idle); ... }`) — idle's lifecycle is `screen`-driven now, not
+  `HookPhase`-driven, so this belt-and-suspenders block was actively wrong under the new design.
+
+### World: WorldViewModel
+
+- `start()`: removed the eager `sounds.handleScreenChange(...)` call — the actual fix for note 1.
+- `returnToMenu()` and the `.playing` transition in `handleState(_:)`: removed their
+  `sounds.handleScreenChange(...)` calls too (now dead code, and unnecessary — `tick()`'s
+  frame-driven `updateIdleLoop`/`updateReelFightLoop` calls already react to `screen` changes on
+  the very next frame with no explicit call needed).
+- `tick()`: `updateIdleLoop`'s active condition changed from `screen == .playing && (hookPhase ==
+  .idle || hookPhase == .hookInWater)` to `screen == .mainMenu || screen == .onboarding`.
+  `updateReelFightLoop`'s condition unchanged (`screen == .playing && (hookPhase == .fishOnHook ||
+  hookPhase == .reeling)`), per the confirmed answer to the clarifying question above.
+- `continueFishing()`: added `!isShowingCatchCutscene` to its existing `hookPhase == .result` guard
+  (ADR-085) — fixes note 3. Traced why this was needed: `hookPhase` becomes `.result` at the
+  *start* of the catch cutscene (required so `tick()`'s `case .result:` branch keeps calling
+  `updateCatchCutscene(deltaTime:)` every frame), not the end, and Rod's "Start Casting" button has
+  no awareness of `isShowingCatchCutscene` (a World-only presentation flag never sent over the
+  wire) — so without this guard, a press during the cutscene would flip `hookPhase` to `.idle`
+  immediately, silently freezing the cutscene mid-animation (`tick()` stops entering `case
+  .result:`, so `updateCatchCutscene` never runs again) while `isShowingCatchCutscene` stayed stuck
+  `true`. The armed press isn't lost — `handleState(_:)` re-checks `state.isCastingArmed` on every
+  incoming `.state` message, so the instant the cutscene's own completion clears
+  `isShowingCatchCutscene`, the next message dismisses the result as normal. No Rod/Shared/wire
+  changes needed.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-084, ADR-085.
+- `SOFTWARE_ARCHITECTURE_DOCUMENT.md`: rewrote the "World Audio Subsystem" section's closing
+  paragraph (was describing the now-retired lake-ambience design) and updated its
+  `FishingSounds`-helpers list; updated the Result Screen section's `continueFishing()` mention to
+  note the new cutscene guard.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Launched the built `.app` and confirmed via `ps` it ran without crashing.
+- Repo-wide `grep` for `ambienceLake`/`ambiencePlaysInMenu`/`handleScreenChange`/
+  `FishingSounds.Config` across `World`/`Shared`/`Rod` — zero remaining references.
+- `git diff --check` clean.
+- Not run: any live session. Unverified in particular: whether the new sparser ambient design (idle
+  only at menu, silence during ordinary gameplay, reel_fight only during a fight) feels right in
+  practice, and whether the deferred "Start Casting" press reads clearly to a player as "registered,
+  taking effect shortly" rather than "unresponsive."
+
+## Feature: World Launches Directly Into Fullscreen (ADR-086)
+
+Date: 2026-07-21.
+
+Requested directly: "kalo nge buka World, langsung otomatis masuk mode full screen (jadi ga bisa
+windowed)."
+
+### World: WorldApp
+
+- Added `WorldAppDelegate: NSObject, NSApplicationDelegate`, attached via
+  `@NSApplicationDelegateAdaptor`. Its `applicationDidFinishLaunching(_:)` finds
+  `NSApplication.shared.windows.first` and calls `toggleFullScreen(nil)` on it (guarded to skip if
+  already fullscreen), wrapped in `DispatchQueue.main.async` since SwiftUI's `WindowGroup` window
+  can be created a beat after AppKit's own launch-finished callback fires.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-086.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Launched the built `.app` and directly confirmed fullscreen engaged — not just inferred from the
+  code. This environment has no Accessibility permission for AppleScript/System Events UI scripting
+  (`AXFullScreen` unreadable), so verified instead via `CGWindowListCopyWindowInfo`: the running
+  app's on-screen window layers span the full display including the menu-bar row (`Y:0, Height:33`
+  present), which only a fullscreen window occupies — every windowed app queried the same way
+  (Xcode, Chrome, etc.) sits at `Y:33`, below the menu bar. Positive confirmation, not absence of
+  evidence.
+- `git diff --check` clean.
+- Not run: any live session on an actual multi-display setup, or confirmation that the standard
+  fullscreen-exit affordances (green button, Control-Command-F) still work as expected afterward —
+  only that fullscreen engages automatically on launch.
+
+## Fix: `ambienceLake` Restored, Scoped to Gameplay Only (ADR-084 amendment)
+
+Date: 2026-07-21.
+
+Reported directly, from a live playtest of the previous ADR-084 change: "ada bug sedikit, ketika in
+game, semua suara yang seharusnya main sebelumnya, tiba tiba berhenti semua. I believe aku minta ke
+kamu buat specifically matiin idle.wav aja ketika in game (karena idle intended untuk dimainkan di
+main menu aja)."
+
+### Diagnosis
+
+Re-read ADR-084's own two source clauses separately instead of re-guessing: "ketika di main menu,
+matiin semua suara environment, dan hanya play idle" is scoped entirely to the *menu*; "ketika
+bermain, idle dimatikan, dan hanya reel_fight yang aktif ketika reeling" says idle turns off during
+gameplay and reel_fight is the only *fight* loop — neither clause actually asked for gameplay's
+continuous background bed to disappear outside of a fight. The previous pass over-applied the
+menu clause's "turn off all environment sound" globally (retiring `ambienceLake` outright), leaving
+ordinary gameplay (casting, waiting for a bite) completely silent — which read to the player as
+"everything stopped," when only `idle.wav` was ever meant to stop.
+
+### World: SoundManager
+
+- Re-added `Sound.ambienceLake = "ambience_lake"` (category `.ambience`, `.mp3`, default volume
+  `0.35`) and `Category.ambience`, both removed in the previous pass — restored verbatim to their
+  pre-ADR-084 definitions.
+- `categoryVolumeMultipliers`'s initial dict: `.ambience: 1` re-added.
+
+### World: FishingSounds
+
+- Added `isAmbienceLoopActive: Bool` and a new `updateAmbienceLoop(active:)` — same frame-driven
+  start/stop pattern as `updateIdleLoop`/`updateReelFightLoop`, looping/stopping `.ambienceLake`.
+- `stopAll()`: resets `isAmbienceLoopActive` alongside the other three flags.
+
+### World: WorldViewModel
+
+- `tick()`: added `sounds.updateAmbienceLoop(active: screen == .playing)`, alongside the existing
+  `updateIdleLoop`/`updateReelFightLoop` calls. Net effect: exactly one base ambience active at a
+  time (`ambienceLake` during gameplay, `idle` at the menu), never both, never neither outside
+  `.loading`. `updateIdleLoop`/`updateReelFightLoop` themselves are unchanged from the previous pass.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: amended ADR-084 in place with an "Amendment: `ambienceLake` Restored,
+  Scoped to Gameplay" section (same decision corrected same day, not a new ADR number).
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Launched the built `.app` and confirmed via `ps` it ran without crashing.
+- Repo-wide `grep` confirmed `ambiencePlaysInMenu`/`handleScreenChange`/`FishingSounds.Config`
+  remain correctly absent (not accidentally reintroduced), and that `ambienceLake` now appears only
+  in its restored, gameplay-scoped form.
+- `git diff --check` clean.
+- Not run: any live session. This exact fix path (ADR-084's original change) was only caught after
+  one live playtest already, so — same as that entry's own Status — unverified live until played
+  again.
+
+## Merge PR #7 (feat/ui-slice) into main (ADR-087)
+
+Date: 2026-07-21.
+
+Requested directly: "ada 2 pr ke main, tolong di merge dan resolve conflictnya sekalian" (there are
+2 PRs into main, please merge them and resolve the conflicts too). PR #20 (this session's own work)
+merged cleanly first. PR #7 (`feat/ui-slice`, by Radiit/Raditya Aydin, opened 2026-07-18) did not —
+investigating before touching anything found it wasn't a simple textual conflict: it independently
+built a full competing Main Menu/loading/navigation system (`RootView.swift`'s own screen router,
+pill-shaped buttons, a Fredoka-font `Theme.swift`) that directly collides with this session's own
+ADR-081/082 Main Menu/loading-screen redesign and `WorldViewModel.Screen`-driven overlay model.
+Surfaced this to the user rather than picking a side unilaterally — confirmed: keep main's Main
+Menu/loading/navigation entirely, port `feat/ui-slice`'s genuinely new, non-overlapping features
+(`CreditsView.swift`, `TutorialView.swift`) onto main's kept navigation model instead of discarding
+them outright.
+
+### Investigation
+
+`git merge-tree` against the merge-base (`7f47d557`, 2026-07-18 — `feat/ui-slice` never rebased
+after) found real conflicts in six files: `CHECKPOINT.md`, `CLAUDE.md`,
+`World/World/Assets.xcassets/AppIcon.appiconset/Contents.json`, `World/World/Info.plist`,
+`World/World/Reality/EnvironmentSceneBuilder.swift`, `World/World/WorldApp.swift` — plus an add/add
+conflict on `World/World/Views/MainMenuView.swift` (both branches created it independently after
+the merge-base, with entirely different content). Read each side's actual diff before deciding
+anything: `EnvironmentSceneBuilder.swift` and `CLAUDE.md` on `feat/ui-slice`'s side were stale
+July-18 snapshots relative to main's much-since-evolved versions (`CLAUDE.md` still described
+MultipeerConnectivity, pre-ADR-041 audio, etc.); `AppIcon.appiconset/Contents.json` on their side
+would have regressed the app icon to one incomplete iOS-only entry, silently dropping the working
+macOS multi-size icon set (confirmed the actual `CTS-Logo_*.png` files were all still present in
+the tree, so this was a manifest regression, not a missing-asset situation).
+
+### Resolution
+
+- **`World/World/Views/MainMenuView.swift`**: kept main's (ADR-081) entirely, discarded
+  `feat/ui-slice`'s pill-button version. Added a "Credits" button (`StackedMenuButtonStyle
+  (isProminent: false)`, matching "How to Play") that presents the ported `CreditsView` via local
+  `@State private var isShowingCredits`, not a new `WorldViewModel.Screen` case — Credits has no
+  bearing on session/gameplay state, unlike every case that enum already models.
+- **`World/World/WorldApp.swift`**: kept main's (`ContentView()` + the ADR-086 fullscreen delegate)
+  — the auto-merge had silently kept `feat/ui-slice`'s `RootView()`/`.defaultSize(...)` without
+  flagging a conflict (both sides' diffs landed in non-overlapping line ranges), caught only by
+  actually reading the resolved file rather than trusting a clean `git merge` exit.
+- **`World/World/Assets.xcassets/AppIcon.appiconset/Contents.json`**: same silent-wrong-auto-merge
+  pattern — `git status` reported no conflict, but the auto-merged result was `feat/ui-slice`'s
+  regressed single-entry manifest. Restored main's full multi-size version explicitly via `git show
+  origin/main:... > ...`, not trusted from the auto-merge.
+- **`World/World/Reality/EnvironmentSceneBuilder.swift`**: kept main's evolved version entirely.
+- **`World/World/Info.plist`**: combined — kept main's (near-empty, `NSBonjourServices` already
+  intentionally removed as MultipeerConnectivity-era dead config, confirmed unreferenced anywhere
+  via `grep`) as the base, added `feat/ui-slice`'s `UIAppFonts`/`ATSApplicationFontsPath` keys
+  (needed for `Theme.swift`'s Fredoka font). Did not resurrect `NSBonjourServices`.
+- **`CLAUDE.md`**: kept main's content for all three conflicting sections (project structure tree,
+  tech stack, verification command — the last one's `feat/ui-slice` side, `cd Shared && swift
+  build`, was actually taken instead of main's stale hardcoded per-file list, since it's what the
+  file's own unchanged surrounding prose already argues for). Added small project-structure notes
+  for `Support/Theme.swift`, `Fonts/`, `CreditsView.swift`, `TutorialView.swift`, and the
+  `ATSApplicationFontsPath`/`UIAppFonts` dual-registration requirement.
+- **`CHECKPOINT.md`**: kept main's content as the continuation; `feat/ui-slice`'s own ~245-line
+  history section (Main Menu pill-button redesign, Loading screen fixes, the original Tutorial
+  overlay work, a `CLAUDE.md`/`.gitignore` cleanup pass) preserved verbatim underneath an editorial
+  note explaining what was/wasn't ultimately adopted — per this project's "never delete previous
+  checkpoint entries" rule, not summarized or dropped even though the Main Menu/Loading design it
+  describes wasn't shipped.
+- **Dropped entirely**: `World/World/Views/RootView.swift`, `LoadingView.swift`, and their
+  Main-Menu/Loading-specific asset catalog entries (`Assets.xcassets/Image/LoadingScreen.imageset`,
+  `landingImage.imageset`, `logo.imageset`) — superseded by main's ADR-081/082 work, no longer
+  referenced by anything once `MainMenuView.swift`/`WorldApp.swift` were resolved to main's side.
+- **Ported as new additions**: `World/World/Views/CreditsView.swift` (unchanged — self-contained,
+  only needs `Theme.swift`), `World/World/Views/TutorialView.swift` (unchanged aside from one doc
+  comment correcting its "composed by `RootView`" claim), `World/World/Support/Theme.swift`
+  (trimmed — the `overlay`/`menuButtonFace`/`menuButtonEdge`/`menuButtonText` tokens existed solely
+  for the dropped pill-button `MainMenuView`, so removed as dead weight; kept `buttonFill`/
+  `buttonLabel`/`buttonLabelShadow`/`Color(hex:)`/`Font.fredoka`/`fredokaBold`/`ShadowedLabel`,
+  which `CreditsView`/`TutorialView` actually use), `World/World/Fonts/Fredoka-{Bold,Regular}.ttf`,
+  `Assets.xcassets/Image/{FrameIcon,HandTutor}.imageset` (referenced by `TutorialView`), and a root
+  `.gitignore` (xcuserdata/build-artifact excludes — harmless, doesn't retroactively untrack
+  anything already committed).
+- **`World/World/ViewModels/WorldViewModel.swift`**: added `isShowingTutorial: Bool` (set `true`
+  alongside `screen = .playing` in `handleState(_:)`, matching `feat/ui-slice`'s own "shown
+  unconditionally on every Start Fishing" behavior — persisted first-session-only gating was
+  explicitly flagged as future work on the original branch and is inherited as-is, not implemented
+  here either) and `dismissTutorial()`; reset alongside the other overlay flags in `returnToMenu()`.
+- **`World/World/ContentView.swift`**: added `TutorialView(onFinished: viewModel.dismissTutorial)`
+  to the overlay `ZStack`, shown while `screen == .playing && isShowingTutorial` — same composition
+  pattern (`ContentView` + a transparent overlay on top) `RootView` originally used, just reached
+  through this screen's own overlay stack instead of a separate top-level router.
+
+### Verification
+
+- Confirmed via `git write-tree` + `git ls-tree` diff against `origin/main` that the final result is
+  *exactly* `origin/main` plus the deliberate additions listed above — nothing else differs,
+  confirming no unintended regression slipped through anywhere in the six-file conflict resolution.
+- Rebuilt `Shared` for both `arm64-apple-macosx26.0` and `arm64-apple-ios17.0-simulator` — exit code
+  0, no errors on either.
+- `xcrun swiftc -typecheck` against the full `World/World` and `Rod/Rod` Swift file lists — exit
+  code 0, no errors on either.
+- Built the actual `World.xcodeproj` target end to end (`xcodebuild -target World -configuration
+  Debug`, code signing disabled) — `** BUILD SUCCEEDED **`; confirmed via the compiler's own file
+  list that `TutorialView.swift`/`MainMenuView.swift`/`LoadingScreenView.swift` compiled and
+  `RootView.swift`/`LoadingView.swift` did not (i.e. actually gone, not just untracked).
+- Launched the built `.app` and confirmed via `ps` it ran without crashing.
+- Repo-wide `grep` confirmed zero remaining code references to `RootView`/`LoadingView`/
+  `menuButtonFace`/`menuButtonEdge`/`menuButtonText`/`Theme.overlay` (only historical doc-comment
+  mentions of `RootView` remain, describing where `TutorialView`'s composition pattern came from).
+- `git diff --check` clean.
+- Not run: any live session — Credits/Tutorial are newly rewired onto a navigation model neither
+  was originally built against, and `TutorialView` in particular was never visually confirmed live
+  even on its origin branch (no Accessibility/UI-scripting permission there either, per that
+  branch's own CHECKPOINT history above) — worth an explicit playtest of both before considering
+  this fully settled.
+
+## Feature: Bite Window — Flick to Set the Hook, 3 Attempts Before the Fish Gives Up (ADR-088)
+
+Date: 2026-07-22.
+
+Requested directly: "sekarang fish insta-bite the hook setelah beberapa detik. gimana kalo, 1.
+haptics nya gedein, jadi user tau kalo hook nya lagi digigit ikan 2. tambahin action untuk 'flick'
+(samain aja kaya cast) untuk actually start the reeling game 3. kalo setelah 3x haptics gede, ga
+nge 'cast', otomatis hook nya hening lagi. jadi literally kaya mancing beneran."
+
+### Shared: FishingEvent, FishFightConfig
+
+- `FishingEvent.swift`: added `biteAlert` (World -> Rod, a bite window just opened), `hookSet`
+  (Rod -> World, the player flicked during one), `fishGaveUp` (World -> Rod, every attempt missed).
+- `FishFightConfig.swift`: added `biteWindowDuration` (1.5s), `maxBiteAttempts` (3),
+  `biteRetryMinInterval`/`biteRetryMaxInterval` (0.8...1.6s, the delay before a retry after a miss).
+
+### World: FishFightController
+
+- `SearchEvent`: `.bite` replaced with `.biteAlert` (a window opened, fish still not hooked) and
+  `.gaveUp` (every attempt missed, fish swims off).
+- Added `isBiteWindowActive: Bool`, `biteWindowProgress: Float` (normalized `1.0 -> 0.0`), private
+  `biteWindowTimer`/`biteAttemptsUsed`.
+- `updateSearching(deltaTime:)`: the old "roll a species and hook instantly" block moved out into
+  a new `handleHookSetFlick() -> Bool`, called only on an actual flick, not automatically when
+  `biteTimer` elapses. Elapsing `biteTimer` now opens a bite window instead. A window timing out
+  either starts a new attempt (below `maxBiteAttempts`) or ends the search entirely (`isFishInterested`
+  cleared, fresh `interestTimer` seeded) once the limit is hit.
+- `resetForNewCast(castDistance:)`: resets the new bite-window state alongside the existing fields.
+
+### Rod: RodViewModel
+
+- `detectFightFlick()` renamed to `detectFlickGesture()` (`wasFightFlicking` -> `wasFlicking`) —
+  the same acceleration-threshold check now also gates on `hookPhase == .hookInWater`, sending
+  `.hookSet` in that phase instead of `.qteFlick`. No new gesture, no new calibration — identical
+  detector, one more `HookPhase` it's meaningful in.
+
+### World: WorldViewModel
+
+- `tick()`'s `.hookInWater` case: `updateSearching`'s switch updated for the new `SearchEvent`
+  cases — `.biteAlert` emits `.biteAlert`, `.gaveUp` emits `.fishGaveUp`. Hooking itself moved to a
+  new `case .fishingEvent(.hookSet):` arm in `handle(_:)`, calling `fishFight.handleHookSetFlick()`
+  and only then `setHookPhase(.fishOnHook)`/`ensureFightDistance()`/`emit(.fishBite)` — mirrors the
+  existing `.qteFlick` arm exactly.
+
+### World: FishingSounds, HUD
+
+- `FishingSounds.handle(_:)`: `.biteAlert`/`.hookSet` — no dedicated asset (same reasoning as the
+  QTE prompt/response), the new HUD banner and Rod's haptic already cover it. `.fishGaveUp` stops
+  the interest bubble loop (no `HookPhase` change happens for World to catch this otherwise).
+- Added `World/World/Views/BiteAlertView.swift` (new file): mirrors `LineTensionView`'s QTE banner
+  — a "FISH ON! FLICK TO HOOK!" label over a shrinking orange progress capsule — shown in
+  `ContentView`'s HUD `Group` whenever `fishFight.isBiteWindowActive`.
+
+### Rod: FishingHaptics, HapticManager
+
+- `FishingHaptics.handle(_:)`: `.biteAlert` -> `haptics.biteAlert()`, clears `isFishInterested`.
+  `.fishGaveUp` -> `haptics.fishGaveUp()`. `.hookSet` is Rod -> World only (break, exhaustiveness).
+- `HapticManager`: added `biteAlert()` — five sharp, tightly-spaced full-sharpness pulses,
+  deliberately the single most insistent pattern Rod has, bigger/faster than both `fishBite()`
+  (now a softer *confirmation* once the hook is actually set, not the bite moment itself) and
+  `qtePrompt()` (a quick double-tap for a routine mid-fight reaction) — directly answers "haptics
+  nya gedein." Added `fishGaveUp()` — a soft, two-pulse, trailing-off pattern, distinct from
+  `fishEscaped()`.
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-ios17.0-simulator` and `arm64-apple-macosx26.0` — exit
+  code 0, no errors on either.
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` and `World/World` Swift file lists — exit
+  code 0, no errors on either.
+- Built both actual targets end to end (`xcodebuild`, unsigned): `World` — `** BUILD SUCCEEDED **`,
+  launched and confirmed via `ps` it ran without crashing; `Rod` (iphonesimulator SDK) — `**
+  BUILD SUCCEEDED **`.
+- Repo-wide `grep` confirmed zero remaining references to the old `SearchEvent.bite` case.
+- `git diff --check` clean.
+- Not run: any live session on physical hardware — the whole point of this change is a haptic/
+  timing feel change, which can't be evaluated from static analysis or a simulator build. In
+  particular unverified: whether `biteWindowDuration` (1.5s) is fair given real BLE latency,
+  whether 3 attempts feels right, and whether `biteAlert()` actually reads as "bigger" than
+  `fishBite()` on a real device (both are `intensity: 1.0` already — ADR-060 maxed that everywhere
+  — so the felt difference is sharpness/pulse-count only).
+
+## Fix: Mid-Fight QTE Prompt Removed — Every Flick Now Eases Tension Unconditionally (ADR-089)
+
+Date: 2026-07-22.
+
+Reported directly: "when fish on, gagal nge flick? pake aja movement flick dari semua state yang
+sama jadi ga perlu bikin flick movement lagi."
+
+### Diagnosis
+
+Traced the actual cause before changing anything: `FishFightController.updateFight(...)`'s single
+call to `updateQTE(deltaTime:)` had been commented out earlier this same session for debugging
+("untuk debug ini, disable dong QTE nya — cukup comment aja") and never re-enabled. With it
+disabled, `isQTEActive` could never become `true`, so `handleQTEFlick()`'s own `guard isQTEActive`
+never passed — Rod was detecting and sending every flick exactly as designed, but World silently
+dropped every one as a no-op, with no prompt ever shown explaining why. Reads exactly as "flicking
+fails."
+
+### Decision: remove the mechanic, don't just re-enable it
+
+The request's second half ("pake aja movement flick dari semua state yang sama, ga perlu bikin
+flick movement lagi") asks for something more specific than a one-line fix: don't reintroduce a
+mechanic gated behind a separate timed prompt at all — make the flick gesture Rod already detects
+reliably elsewhere (the bite window, ADR-088) equally unconditional here.
+
+### Shared: FishingEvent, FishFightConfig
+
+- `FishingEvent.swift`: removed `qtePrompt` (never sent by anything else now) and `qteFlick`;
+  added `fightFlick` (Rod -> World, sent on every flick while a fish is on, no gating).
+- `FishFightConfig.swift`: removed `qteSpawnMinInterval`/`qteSpawnMaxInterval`/`qteReactionWindow`/
+  `qteFailurePenalty`. Renamed `qteSuccessRelief` -> `fightFlickRelief` (same default, `0.15`, now
+  applied on every flick instead of only a successful timed reaction).
+
+### World: FishFightController
+
+- Removed `isQTEActive`, `qteProgress`, private `qteSpawnTimer`/`qteReactionTimer`,
+  `updateQTE(deltaTime:)`, `handleQTEFlick()` entirely — not commented out, deleted.
+- Added `handleFightFlick() -> Bool`: applies `config.fightFlickRelief` to `lineTension`, gated
+  only on `hasFishOnHook`. No-op outside a fight; no prompt to wait for or miss.
+- `resetForNewCast(castDistance:)` and `resolve(outcome:)`: dropped their now-removed QTE-state
+  resets.
+
+### Rod: RodViewModel
+
+- `detectFlickGesture()`'s event selection: `.qteFlick` -> `.fightFlick` for `.fishOnHook`/
+  `.reeling`; `.hookSet` for `.hookInWater` unchanged.
+
+### World: WorldViewModel
+
+- Removed `lastQTEActive`, `syncQTE()`, and the `case .fishingEvent(.qteFlick):` arm.
+- Added `case .fishingEvent(.fightFlick):` calling `fishFight.handleFightFlick()`.
+- `tick()`: dropped the `syncQTE()` call (nothing left to sync — Rod never needed a rising-edge
+  alert message for this mechanic in the first place, since it now has no "prompt started" moment).
+
+### World: FishingSounds, LineTensionView, ContentView
+
+- `FishingSounds.handle(_:)`: `.qtePrompt, .qteFlick` case replaced with `.fightFlick` (still no
+  dedicated asset, same reasoning).
+- `LineTensionView.swift`: removed the `isQTEActive`/`qteProgress` parameters and the "FLICK ROD
+  NOW!" banner entirely — no prompt event left for a banner to represent.
+- `ContentView.swift`: updated the `LineTensionView(...)` call site to match.
+
+### Rod: FishingHaptics, HapticManager
+
+- `FishingHaptics.handle(_:)`: `.qtePrompt`/`.qteFlick` cases replaced with a single `.fightFlick`
+  (Rod -> World only, break).
+- `HapticManager.qtePrompt()` removed entirely — nothing calls it anymore.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-089.
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-ios17.0-simulator` and `arm64-apple-macosx26.0` — exit
+  code 0, no errors on either.
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` and `World/World` Swift file lists — exit
+  code 0, no errors on either.
+- Built both actual targets end to end (`xcodebuild`, unsigned): `World` — `** BUILD SUCCEEDED **`,
+  launched and confirmed via `ps` it ran without crashing; `Rod` (iphonesimulator SDK) — `**
+  BUILD SUCCEEDED **`.
+- Repo-wide `grep` confirmed zero remaining references to any removed QTE symbol
+  (`isQTEActive`/`qteProgress`/`qteSpawnTimer`/`qteReactionTimer`/`handleQTEFlick`/`qtePrompt`/
+  `qteFlick`/`qteSuccessRelief`/`qteFailurePenalty`/`qteSpawnMinInterval`/`qteSpawnMaxInterval`/
+  `qteReactionWindow`).
+- `git diff --check` clean.
+- Not run: any live session on physical hardware. Unverified in particular: whether removing the
+  timed prompt/alert makes mid-fight tension management feel too passive now that there's no
+  specific moment demanding attention — this trades that for pure player-initiated simplicity per
+  the direct request, not evaluated live yet.
+
+## Fix: Reeling Motion Was Misfiring as Fight-Flick Relief, Draining Tension (ADR-090)
+
+Date: 2026-07-22.
+
+Reported directly, immediately after ADR-089 shipped: "ada bug di line tension. ketika udah
+berhasil masuk ke reel, kok line tensiun malah turun turun turun sampai losing fish."
+
+### Diagnosis
+
+Traced directly to ADR-089's own change: `FishFightController.handleFightFlick()` subtracts
+`fightFlickRelief` from `lineTension` on every reported flick, gated only on a fish being hooked —
+no timed window or attempt limit like the bite window has. The physical motion of actually
+cranking a reel can itself cross the same forward-acceleration threshold used to detect a
+deliberate flick (both are forward-ish hand/wrist accelerations), so active reeling was
+intermittently misread as repeated flicks — each one draining tension in the relief direction
+while `updateFight(...)`'s reel-tension-gain formula was simultaneously trying to raise it. Enough
+false flicks during real reeling could overwhelm the gain entirely, reading exactly as "tension
+only ever goes down while reeling."
+
+### Rod: RodViewModel
+
+- `detectFlickGesture()`'s guard narrowed from `hookPhase == .fishOnHook || hookPhase == .reeling
+  || hookPhase == .hookInWater` to `hookPhase == .fishOnHook || hookPhase == .hookInWater` —
+  dropping `.reeling`. No other change: same threshold, same detector, same two events.
+  "Flick to relieve tension" and "reel to gain tension" are now two distinct physical actions
+  (paused vs. actively cranking) that can't misfire into each other.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-090.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` Swift file list — exit code 0, no errors.
+- Built the actual `Rod.xcodeproj` target end to end (`xcodebuild -target Rod`, iphonesimulator
+  SDK, code signing disabled) — `** BUILD SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: any live session on physical hardware. Unverified in particular: whether excluding
+  `.reeling` still leaves enough opportunity to use the relief mechanic in practice — a player
+  fighting a strong fish may rarely pause reeling long enough to deliberately flick.
+
+## Fix: Flick Follow-Through Double-Counting, Continuous Bite-Alert Haptic (ADR-091/092)
+
+Date: 2026-07-22.
+
+Two requests together: "once aku 'flick' untuk mulai reel, tiba tiba line tension berkurang
+sedikit di awal sebelum kembali normal rate. tambahin juga haptic intensity, bikin continuous aja
+waktu ikan udah gigit gigit."
+
+### Diagnosis (tension dip)
+
+The hook-set flick that opens a fight is detected, `hookPhase` moves from `.hookInWater` to
+`.fishOnHook` the same instant — and if that same physical flick's natural follow-through (hand/rod
+decelerating, dipping under threshold, wobbling back over it while settling) crosses the threshold
+a second time, the edge-detector (`wasFlicking`) sees it as a genuinely new flick, now read as a
+`.fightFlick` in the new phase. That immediately subtracts `fightFlickRelief` from a freshly-set
+`lineTension` — the reported dip right at the start of a fight.
+
+### Rod: RodViewModel
+
+- Added `lastFlickSentAt: Date` and `Self.flickCooldown: TimeInterval = 0.4`.
+- `detectFlickGesture()`'s send condition gains a third term: at least `flickCooldown` seconds must
+  have passed since the last sent flick, regardless of `hookPhase` or which event either one was.
+  General fix, not scoped to only the hookSet-then-fightFlick transition — the same
+  follow-through double-count risk exists for any two flicks sent close together.
+
+### Rod: FishingHaptics, RodViewModel (continuous bite alert)
+
+- `FishingHaptics`: added `isBiteAlertActive: Bool`, `biteAlertPulse(now:)` — same recurring-
+  callback pattern as `interestPulse`/`fightPulse`, throttled to a new `biteAlertPulseInterval`
+  (0.4s, faster than `interestPulseInterval`'s 1.1s — a bite window is urgent, not ambient).
+  `.biteAlert` sets `isBiteAlertActive = true` (unchanged: still plays `haptics.biteAlert()`
+  immediately); `.fishBite`/`.fishGaveUp` clear it. Added `stopBiteAlert()`, mirroring
+  `stopInterest()`'s belt-and-suspenders pattern for when `HookPhase` leaves `.hookInWater`.
+- `RodViewModel.updateAction()`: added `fishingHaptics.biteAlertPulse()` alongside the existing
+  `interestPulse()`/`fightPulse()` calls. `handle(_ message:)`'s hookPhase-change branch: added
+  `fishingHaptics.stopBiteAlert()` alongside `stopInterest()`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-091 (flick cooldown), ADR-092 (continuous bite alert).
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` Swift file list — exit code 0, no errors.
+- Built the actual `Rod.xcodeproj` target end to end (`xcodebuild -target Rod`, iphonesimulator
+  SDK, code signing disabled) — `** BUILD SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: any live session on physical hardware. Unverified in particular: whether 0.4s is long
+  enough to absorb a real flick's follow-through without also blocking a genuinely deliberate
+  second flick performed in quick succession, and whether the now-continuous bite-alert pulse
+  feels appropriately urgent rather than overwhelming.
+
+## Fix: Fight-Flick Relief Suppressed for a Grace Window Right After Hooking (ADR-093)
+
+Date: 2026-07-22.
+
+Reported directly, continuing the same thread as the previous fix: "masih aga nge bug dikit, ketika
+nge 'flick' buat grab ikannya, meter line tension kadang suka loncat loncat turun sedikit."
+
+### Diagnosis
+
+ADR-091's cooldown prevents one flick's own follow-through from double-counting as a second, but
+does nothing about the player's hand naturally continuing to move — sometimes crossing the flick
+threshold again as a genuinely separate edge more than `flickCooldown` (0.4s) after the first,
+while still settling from the gesture that just set the hook. Each such edge is legitimate from the
+detector's point of view, so `handleFightFlick()` had no reason to distrust it — each shaved
+another `fightFlickRelief` off a `lineTension` that had just been set to `initialTension`,
+visibly stepping the bar down in hops.
+
+### Shared: FishFightConfig
+
+- Added `fightFlickGraceDuration: Float` (default `1.0`s).
+
+### World: FishFightController
+
+- Added private `fightFlickGraceTimer: Float`.
+- `handleHookSetFlick()`: sets `fightFlickGraceTimer = config.fightFlickGraceDuration` the instant
+  a fish is hooked.
+- `updateFight(...)`: counts `fightFlickGraceTimer` down every tick.
+- `handleFightFlick()`: gains a second guard, `fightFlickGraceTimer <= 0`, alongside the existing
+  `hasFishOnHook` check — a World-side gate on time-since-hooked (not time-since-last-flick, which
+  ADR-091 already covers), directly addressing "several loosely-spaced follow-through motions"
+  rather than just back-to-back double-fires.
+- `resetForNewCast(castDistance:)`/`resolve(outcome:)`: reset the timer to `0` alongside every
+  other per-fight field they already clear.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-093.
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-ios17.0-simulator` and `arm64-apple-macosx26.0` — exit
+  code 0, no errors on either.
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no
+  errors.
+- Built both actual targets end to end (`xcodebuild`, unsigned): `World` — `** BUILD SUCCEEDED **`,
+  launched and confirmed via `ps` it ran without crashing; `Rod` (iphonesimulator SDK) — `**
+  BUILD SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: any live session on physical hardware. Unverified in particular: whether 1.0s is long
+  enough to absorb the settling motion without also silently eating a genuinely fast, deliberate
+  first flick the player intends as an immediate tension-management move right after hooking.
+
+## Fix: Fight-Flick Detection Disabled Entirely — Third Report Against the Same Mechanic (ADR-094)
+
+Date: 2026-07-22.
+
+Requested directly: "flick movement ketika reel (hook: fish in hook) masih ke register, harusnya
+disable aja." Third report against ADR-089's "flick while `.fishOnHook` eases tension" mechanic,
+after ADR-091 (flick cooldown) and ADR-093 (post-hook grace window) each fixed a real, distinct
+failure mode without fully resolving it. Rather than attempt a fourth patch, disabled per the
+direct instruction.
+
+### Rod: RodViewModel
+
+- `detectFlickGesture()`'s guard narrowed from `hookPhase == .fishOnHook || hookPhase ==
+  .hookInWater` to `hookPhase == .hookInWater` only — no flick ever detected/sent while a fish is
+  hooked, in any state. The now-unreachable `.fightFlick` branch of the event-selection ternary
+  removed (dead code); Rod always sends `.hookSet` inside the guard.
+- Left `FishFightController.handleFightFlick()`, `FishFightConfig.fightFlickRelief`/
+  `fightFlickGraceDuration`, and `FishingEvent.fightFlick` all in place, unreachable rather than
+  deleted — matches this project's precedent for disabling a not-yet-working mechanic without
+  discarding it (the QTE prompt system was disabled the same way, ADR-078, before ADR-089 replaced
+  it outright). Re-enabling is a one-line change if a more reliable trigger is found later.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-094.
+
+### Verification
+
+- Rebuilt `Shared` for `arm64-apple-ios17.0-simulator` (directory had been cleaned since the last
+  Rod build) — exit code 0, no errors.
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` Swift file list — exit code 0, no errors.
+- Built the actual `Rod.xcodeproj` target end to end (`xcodebuild -target Rod`, iphonesimulator
+  SDK, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Repo-wide `grep` confirmed `.fightFlick` only remains in World-side code (kept intentionally
+  unreachable) — no stray Rod-side references.
+- `git diff --check` clean.
+- Not run: any live session on physical hardware.
+
+## Feature: Cast Meter Restyled, Fish Counter Badge Added (ADR-095)
+
+Date: 2026-07-22.
+
+Requested directly, with two reference images (a full gameplay screenshot and a cropped close-up of
+the cast meter): "aku udah nambahin asset 'fish.png' dan 'roll.png' ke dalam assets/images di
+World. aku mau kamu buatin beberapa hal seperti yang aku kirim ini. ini tampilan dimana kamu
+menyimpan posisi si 'cast_meter'. ini contoh cast meternya. warnanya nge blend dari hijau-merah,
+dan sesuaiin aja kaya di gambar." Third reference-image-driven UI pass this session, after the Main
+Menu (ADR-081) and Loading Screen (ADR-082).
+
+### World: CastMeterView
+
+- Rewrote the bar from three hard-edged `.green`/`.yellow`/`.red` blocks to a single smooth
+  `LinearGradient` `Capsule` (green -> yellow -> red).
+- Capped the bar's left end with the new `roll.png` asset (via the existing `bundleImage(_:)`
+  helper), sized by a new `reelSize: CGFloat = 56` constant that the bar's leading inset derives
+  from so the reel visually caps the bar rather than sitting beside it.
+- Kept the live power-position marker (a white `Capsule`), restyled with a shadow to read against
+  the gradient.
+- Demoted the existing holding-duration/resolved-power/distance text from bar-woven rows to small
+  `.caption2`/`.secondary` text below the bar — the reference shows no text inside the bar.
+
+### World: FishCounterBadgeView (new file)
+
+- New view reproducing the reference's round fish-icon "caught/needed" badge: a circular badge
+  (new `fish.png` asset, via `bundleImage(_:)`) overlapping the leading edge of a dark pill showing
+  `"\(caught)/\(needed)"`, falling back to `"\(caughtCount)"` once
+  `FishFightController.progressTowardNextLevel` is `nil` (all tiers unlocked).
+
+### World: ContentView
+
+- Added a `FishCounterBadgeView(progress: fishFight.progressTowardNextLevel, caughtCount:
+  fishFight.caughtCount)` call site at the top of the HUD `Group`.
+- Removed the now-redundant "Caught {count}" / "Level {level} ... {caught}/{needed} to next
+  tier"/"All tiers unlocked" `HStack` rows from the `GroupBox` — it now holds only the
+  last-catch-result row it already had.
+
+### Scope excluded (not requested)
+
+- No coins display: no persistent coin total exists anywhere in the codebase (`coins` is only ever
+  computed per-catch inside `FishCatchResult`, never accumulated) — nothing to source it from.
+- No top-left "X" close button — not mentioned in the request.
+- No HUD repositioning — the badge and restyled cast meter stay in their existing position inside
+  `ContentView`'s vertical `Group`, rather than moving to a floating overlay matching the
+  reference's exact framing.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-095.
+
+### Verification
+
+- `swift build` for `Shared` (macOS) — exit code 0, no errors.
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no
+  errors; confirmed the `Cannot find 'bundleImage' in scope` and `No such module 'Shared'`
+  diagnostics flagged mid-edit were stale SourceKit index noise, not real errors.
+- Built the actual `World` target end to end (`xcodebuild -workspace CtSPoC.xcworkspace -scheme
+  World`, unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app (`open World.app`), confirmed running via `ps`, then quit — no crash.
+- Not run: visual comparison against the reference images on an actual live run, and any session on
+  physical hardware.
+
+## Feature: Gameplay Scene Goes Fullscreen, HUD Becomes a Floating Overlay (ADR-096)
+
+Date: 2026-07-22.
+
+Requested directly: "rod meter seharusnya jadi overlay diatas screen utama, jadi sekarang screen
+game bisa full memakan semua bagian layar (ga perlu ada bagian paling bawa lagi). juga, kurangin
+panjang meteran jadi sekitar 40% original length, dan 80% original height, lalu taruh di top dan
+kasih padding dari atas (agar di tengah-atas, tapi ga nempel top). selain itu, penanda nya (yang
+sekarang kotak putih), ganti pake asset fish_sign.png."
+
+### World: ContentView
+
+- Restructured `content` from a `VStack` (RealityView top, HUD bar below) to a `GeometryReader` +
+  `ZStack`: `RealityView` gains `.ignoresSafeArea()` and fills the entire window — there is no
+  longer a separate bottom HUD region.
+- fps/connection indicator: now a top-leading overlay on the fullscreen scene.
+- `CastMeterView`: now a top-center overlay, width constrained to `geometry.size.width * 0.4`,
+  `.padding(.top, 24)` so it floats below the top edge rather than touching it.
+- `FishCounterBadgeView`, `LineTensionView`, `BiteAlertView`, the catch-result `GroupBox`, and the
+  error text: kept together as a bottom-leading overlay (same relative position they had when
+  below the RealityView), width also constrained to `geometry.size.width * 0.4`.
+
+### World: CastMeterView
+
+- `reelSize` (56 -> 45) and `barHeight` (30 -> 24): both dropped to 80% of their ADR-095 values,
+  per "80% original height" — shrinks the bar to match its new role as a small floating element.
+- Power-position marker: replaced the plain white `Capsule` (ADR-095) with the existing
+  `fish_sign.png` asset via `bundleImage(_:)`, sized `18x(barHeight + 16)`, same live-offset
+  positioning logic as before.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-096.
+
+### Verification
+
+- `swift build` for `Shared` (macOS) — exit code 0, no errors.
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no
+  errors.
+- Built the actual `World` target end to end (`xcodebuild -workspace CtSPoC.xcworkspace -scheme
+  World`, unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps`, took a screenshot — landed on the Main Menu
+  (no Rod paired) — then quit. No crash.
+- Not run: visual confirmation of the actual in-scene gameplay HUD (fullscreen RealityView,
+  top-centered cast meter, bottom-leading badge/tension/bite/catch-result stack) against the
+  request, since that screen is only reachable with a paired/connected Rod device. Open
+  device-validation gap.
+
+## Fix: Cast Meter and Line Tension Visuals Swapped Back to Their Correct Roles (ADR-097)
+
+Date: 2026-07-22.
+
+Reported directly, with a second more precise reference image of the cast meter alone: "cast meter
+itu harusnya ini. yang sekarang di implement di cast meter itu malah line tension meter. also, taro
+line tension di posisi yang sama kaya cast meter." The gradient/reel/marker visual built in
+ADR-095/096 (ending in red) read as a tension gauge, not a charge gauge — it had been assigned to
+the wrong view.
+
+### World: CastMeterView
+
+- Gradient's third stop: `.red` -> `Self.darkEnd` (`Color(red: 0.16, green: 0.12, blue: 0.09)`,
+  matching `FishCounterBadgeView`'s dark pill color). Structure (gradient, `roll.png` reel cap,
+  `fish_sign.png` power marker) unchanged.
+
+### World: LineTensionView
+
+- Rewritten from a plain solid-color proportional-fill capsule (color switching by danger zone,
+  filled safe-zone highlight, "Slack"/"Snap" labels) to the gradient-capsule + `roll.png` reel cap
+  + `fish_sign.png` marker structure `CastMeterView` had before this ADR, keeping `.red` as the
+  third gradient stop (correct here — red genuinely means danger for tension). Safe zone now a
+  stroked outline over the gradient instead of a filled overlay. "LOSING FISH"/"SNAPPING" warning
+  labels kept.
+- Offset math broken into named local `let`s (`trackWidth`, `clampedTension`, `safeZoneWidth`,
+  `safeZoneOffset`, `markerOffset`) inside the `GeometryReader` closure — the original single
+  inline expression triggered a real "unable to type-check in reasonable time" compiler error, not
+  stale-index noise.
+
+### World: ContentView
+
+- Moved `LineTensionView`'s call site from the bottom-leading HUD stack into the same top-center
+  `VStack` as `CastMeterView` (same `geometry.size.width * 0.4` width, `.padding(.top, 24)`) — the
+  two are mutually exclusive by game phase, so they now share one HUD slot instead of two.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-097.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no
+  errors (confirmed the type-check-timeout error was real and required breaking up the expression,
+  unlike the `bundleImage`/`Shared`-module diagnostics alongside it, which were stale index noise).
+- Built the actual `World` target end to end (`xcodebuild -workspace CtSPoC.xcworkspace -scheme
+  World`, unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps`, then quit — no crash.
+- `git diff --check` clean.
+- Not run: visual confirmation of the actual in-scene gameplay HUD against either reference image,
+  since that screen requires a paired/connected Rod device. Open device-validation gap, same as
+  ADR-096.
+
+## Fix: Cast Meter Becomes a True Proportional Fill Over a Bordered Track (ADR-098)
+
+Date: 2026-07-22.
+
+Requested directly, with a close-up reference of the meter at rest: "instead of ini ke fill semua,
+harusnya kaya gambar kedua. dimana ada rectangle coklat as the back layer, dan meterannya nge fill
+dari hijau-kuning-merah gradiently di dalem rectangle itu. also, kasih border white untuk
+rectanglenya." ADR-097's dark-brown gradient stop was a partial step toward this same reference but
+had been read as "change the gradient's third color," not "the dark color is an unfilled track
+behind the fill, not part of the fill gradient itself."
+
+### World: CastMeterView
+
+- Bar restructured from a static, always-fully-visible gradient to a genuine progress-bar fill:
+  - Back layer: fixed-width `Self.darkEnd`-filled `Capsule`, now with a white `.stroke()` border.
+  - Fill: a track-width green -> yellow -> red gradient `Capsule`, clipped down to `fillWidth`
+    (`power`-proportional) via `.frame(width: fillWidth, alignment: .leading).clipped()` — a fixed-
+    position gradient revealed progressively, not a gradient stretched to fit the fill, so a given
+    power value always reads the same color regardless of current fill amount.
+- `fish_sign.png` marker: kept, now positioned directly off `fillWidth` (`markerOffset`) instead of
+  a separately-computed power offset (the two were already numerically equivalent).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-098.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no
+  errors.
+- Built the actual `World` target end to end (`xcodebuild -workspace CtSPoC.xcworkspace -scheme
+  World`, unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps`, then quit — no crash.
+- `git diff --check` clean.
+- Not run: visual confirmation of the actual in-scene gameplay HUD against the reference image,
+  since that screen requires a paired/connected Rod device. Open device-validation gap, same as
+  ADR-096/097.
+
+## Fix: Line Tension Bar Border Moves to the Whole Rectangle; Safe-Zone Box Dropped (ADR-099)
+
+Date: 2026-07-22.
+
+Requested directly: "ini juga sama. the whole rectangle harusnya pake border. untuk coloring full
+mentok aja kanan kiri" — same screenshot pattern as the cast meter fix, applied to the line tension
+bar.
+
+### World: LineTensionView
+
+- Removed the partial, middle-only safe-zone `Capsule().stroke()` outline (`safeLow`...`safeHigh`)
+  and the now-unused `safeLow`/`safeHigh` constants.
+- Added `.overlay(Capsule().stroke(.white, lineWidth: 2))` directly on the full-width gradient
+  `Capsule`, so the border now wraps the entire bar — matching `CastMeterView`'s track border.
+- Gradient coloring unchanged (already full edge-to-edge, unlike the cast meter which needed
+  ADR-098's proportional-fill fix — tension is a live position, not a fill-toward-a-goal value).
+- `dangerLow`/`dangerHigh` and the "LOSING FISH"/"SNAPPING" warning label unchanged.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-099.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no
+  errors.
+- Built the actual `World` target end to end (`xcodebuild -workspace CtSPoC.xcworkspace -scheme
+  World`, unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps` (checked twice, a few seconds apart), then
+  quit — no crash.
+- `git diff --check` clean.
+- Not run: visual confirmation of the actual in-scene gameplay HUD against the reference image,
+  since that screen requires a paired/connected Rod device. Open device-validation gap, same as
+  ADR-096/097/098.
+
+## Feature: One Card Design Language Across the HUD — Badge, Last-Catch Box, Catch Cutscene (ADR-100)
+
+Date: 2026-07-22.
+
+Requested across two messages: "fish counter badge juga rectangle nya pake border yang sama. terus,
+yang fishfight last catch result itu bikin designnya similar kaya style rectangle semuanya. I trust
+your design deh (intinya bahasa designnya mirip). taroh di kanan aja jadi kaya small statistics box
+gitu"; followed by "sekarang catchcutscene nya, sesuaiin bahasa design nya dengan
+sebelum-sebelumnya." Continues the design-consistency pass started by ADR-098/099's cast meter and
+tension bar restyle — every other HUD surface built before that point still had its old, mismatched
+look.
+
+### World: FishCounterBadgeView
+
+- Circular badge border: `.white.opacity(0.25)`/`lineWidth: 1.5` -> solid `.white`/`lineWidth: 2`.
+- Progress pill: gained `.overlay(Capsule().stroke(.white, lineWidth: 2))` (had none before).
+
+### World: LastCatchStatBoxView (new file)
+
+- New small floating card: `Self.panelColor` (`Color(red: 0.16, green: 0.12, blue: 0.09)`, same
+  dark brown as `CastMeterView`'s track / `FishCounterBadgeView`'s pill) background,
+  `RoundedRectangle(cornerRadius: 14)`, white 2pt border — "LAST CATCH" label plus the
+  outcome/species/weight/length row (or "No catch attempts yet"), replacing the plain default-
+  chrome `GroupBox` that used to hold this.
+
+### World: ContentView
+
+- Removed the old catch-result `GroupBox` from the bottom-leading HUD stack (kept `BiteAlertView`
+  and the error text there).
+- Added `LastCatchStatBoxView(result: fishFight.lastCatchResult)` as a new top-trailing overlay,
+  mirroring `fpsIndicator`'s top-leading placement, per "taroh di kanan aja" (put it on the right).
+
+### World: CatchCutsceneView
+
+- "CATCH!" title: moved from bare text with a drop shadow onto the same card treatment
+  (`Self.panelColor` background, `RoundedRectangle(cornerRadius: 24)`, white 2pt border). Letterbox
+  bars and radial glow left untouched as full-bleed cinematic effects.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-100.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no
+  errors, after each edit pass.
+- Built the actual `World` target end to end (`xcodebuild -workspace CtSPoC.xcworkspace -scheme
+  World`, unsigned) — `** BUILD SUCCEEDED **`, after each edit pass.
+- Launched the built app, confirmed running via `ps` (checked twice a few seconds apart), then
+  quit — no crash, after each edit pass.
+- `git diff --check`: clean except one pre-existing trailing-whitespace line in `ContentView.swift`
+  (line 174, a blank line inside the HUD `VStack`) from an earlier external edit outside this
+  session's changes — left as-is since an attempt to clean it up was declined.
+- Not run: visual confirmation of the badge/stat-box/cutscene against the request, and of the
+  cutscene specifically (only plays mid-gameplay after a resolved catch) — both require a paired
+  Rod device and live gameplay. Open device-validation gap, same as ADR-096 through ADR-099.
+
+## Fix: Result Screen Joins the Card Design Language Too (ADR-101)
+
+Date: 2026-07-22.
+
+Reported directly, with a screenshot of the post-catch `ResultView` screen still showing its old
+look: "masih gini jir? maksud gue bikin coklat yang sama kaya last catch juga. bahasa designnya gue
+serahin ke elo. tambahin fish_sign juga deh." ADR-100's "catch cutscene" fix only touched the brief
+`CatchCutsceneView` transition — this separate, longer-lived `ResultView` screen (the one holding
+all the catch stats on screen) had been missed.
+
+### World: ResultView
+
+- `card`'s background: `.regularMaterial` -> `Self.panelColor` (`Color(red: 0.16, green: 0.12,
+  blue: 0.09)`, same dark brown used everywhere else in the HUD), plus a new
+  `.overlay(RoundedRectangle(cornerRadius: 20).stroke(.white, lineWidth: 2))` border.
+- Every `Text` that relied on `.primary`/`.secondary`'s automatic contrast against
+  `.regularMaterial` (title, species name, stat values, "press to fish again" line) now uses an
+  explicit `.white`/`.white.opacity(...)` foreground — those defaults would otherwise be
+  near-invisible against the new solid dark background.
+- Added a `fish_sign.png` icon (`bundleImage(_:)`) beside the "Catch!" title.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-101.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no
+  errors.
+- Built the actual `World` target end to end (`xcodebuild -workspace CtSPoC.xcworkspace -scheme
+  World`, unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps`, then quit — no crash.
+- Not run: visual confirmation of this screen against the request, since it only appears after a
+  resolved catch mid-gameplay, requiring a paired Rod device. Open device-validation gap, same as
+  ADR-096 through ADR-100.
+
+## Feature: Result Screen Restructured Around the Scott Mascot (ADR-102)
+
+Date: 2026-07-22.
+
+Requested directly, with a reference screenshot and a new `scott_yeah.png` asset already added by
+the user: "gue udah nambahin karakter scott_yeah itu. bikin catch nya kaya gini di tengah screen
+(tambahin aja yang details tadi, i believe in your design taste)."
+
+### World: ResultView
+
+- Restructured around a new `greeting` view: `scott_yeah.png` mascot overlapping the top-leading
+  corner of a "You caught an **{species}**" card (`ZStack(alignment: .topLeading)`, mascot on top,
+  `112x112`, `offset(x: -14, y: -30)`; card reserves `Spacer().frame(width: 88)` so text never sits
+  under the mascot).
+- Previous catch stats (weight, length, stars, coins, "NEW RECORD") moved into their own
+  `statsCard`, same dark-brown + white-border card treatment, kept per "tambahin aja yang details
+  tadi" rather than dropped.
+- Former long instruction line replaced with a short green pill, "Press Start Casting"
+  (`Self.ctaColor`, `Color(red: 0.2, green: 0.78, blue: 0.35)`) — still just a label, not
+  interactive.
+- Mascot size/offset tuned against an offscreen `NSHostingView` render of the real view code with
+  the real asset (throwaway scratchpad script, not committed) before being applied — no paired Rod
+  was available to trigger this screen live for comparison.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-102.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no
+  errors.
+- Built the actual `World` target end to end (`xcodebuild -workspace CtSPoC.xcworkspace -scheme
+  World`, unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps`, then quit — no crash.
+- Offscreen `NSHostingView` snapshot of the exact `ResultView` layout with the real
+  `scott_yeah.png` asset and panel colors, used to visually tune mascot size/offset against the
+  reference (first pass overlapped the mascot's face with the "You caught an" text; corrected).
+- Not run: the actual in-app screen, since it only appears after a resolved catch mid-gameplay,
+  requiring a paired Rod device — final in-context rendering (fonts, safe areas, window chrome)
+  unconfirmed. Open device-validation gap, same as ADR-096 through ADR-101.
+
+## Feature: Bite-Window QTE Prompt Restyled and Recentered; Top HUD Gets Breathing Room (ADR-103/104)
+
+Date: 2026-07-22.
+
+Requested directly, as two parts of one message: "sisa satu lagi, yaitu qte untuk nge flick hp nya
+ketika fish bite. serah deh, mau taro tengah apa dimana bebas. oya, satu lagi, cast meter sama reel
+tension turunin kebawah dikit, bersamaan dengan amount of fish caught nya (biar ga terlalu nempel
+ke atas)."
+
+### World: BiteAlertView (ADR-103)
+
+- Restyled from bare `Label`/`.quaternary`-progress-bar onto the same dark-brown card + white
+  border language as the rest of the HUD: `Self.panelColor`-filled, white-bordered
+  `RoundedRectangle(cornerRadius: 20)` card, `fish_sign.png` icon beside a bold "FLICK TO HOOK!"
+  label (shortened from "FISH ON! FLICK TO HOOK!"), white-bordered dark track with an orange
+  clipped-proportional fill (same pattern as `CastMeterView`'s fill, ADR-098).
+- Visually confirmed via an offscreen `NSHostingView` snapshot with the real asset before
+  committing (throwaway scratchpad script).
+
+### World: ContentView (ADR-103/104)
+
+- `BiteAlertView`'s call site moved out of the bottom-leading stat stack to a bare top-level
+  position inside the fading `Group`, centering it via `ZStack`'s default alignment — a QTE-style
+  prompt needs to command full attention, not sit in a corner.
+- `lastError` text, previously grouped alongside `BiteAlertView`, is now its own conditional
+  bottom-leading overlay so its container isn't left half-empty.
+- Top-center HUD stack (`FishCounterBadgeView`, `CastMeterView`, `LineTensionView`) gains
+  `.padding(.top, 32)` so it no longer sits flush against the screen's top edge.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-103, ADR-104.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no
+  errors.
+- Built the actual `World` target end to end (`xcodebuild -workspace CtSPoC.xcworkspace -scheme
+  World`, unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps`, then quit — no crash.
+- `git diff --check` clean.
+- Not run: the actual in-app bite window and top-HUD positioning, since both require a paired Rod
+  device and live gameplay to trigger/observe. Open device-validation gap, same as ADR-096 through
+  ADR-102.
+
+## Fix: FPS/Connection Readout Moves to Bottom-Leading, Joins the Card Language (ADR-105)
+
+Date: 2026-07-22.
+
+Requested directly: "sekarang tampila si 120 fps, sama status streaming, itu pindahin ke pojok kiri
+bawah, dan tambahin design language yang sama." Last HUD element still using ad hoc styling instead
+of the dark-card + white-border language established since ADR-098.
+
+### World: ContentView
+
+- Merged the standalone `fpsIndicator` (its own small dark-pill background) and the bare connection
+  status `Text` into one `statusBox`: `Self.panelColor`-filled, white-bordered
+  `RoundedRectangle(cornerRadius: 12)` card holding both lines.
+- Moved the overlay from top-leading (`VStack { fpsIndicator; Text(...); Spacer() }`) to
+  bottom-leading (`VStack { Spacer(); statusBox }`).
+- Removed the now-unused `fpsIndicator` computed property.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-105.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no
+  errors.
+- Built the actual `World` target end to end (`xcodebuild -workspace CtSPoC.xcworkspace -scheme
+  World`, unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps` (checked twice, a few seconds apart), then
+  quit — no crash.
+- `git diff --check` clean.
+- Not run: final in-context placement (corner spacing against the safe area, live fps/connection
+  values), since that requires a paired Rod device. Open device-validation gap, same as ADR-096
+  through ADR-104.
+
+## Feature: Procedural Tip-to-Hook Fishing Line (ADR-106)
+
+Date: 2026-07-22.
+
+Requested directly: "ketika hookInWater, line nya bisa ga dibuat physics nya biar nge 'snatch' ke
+hook, jadi kalopun geser kanan kiri rod nya, line nya ngikut arah hook nya?" The old skeletal
+`rod_line.usdz` is pinned to the rod tip (rotates with it) and its fixed short bones can't reach a
+hook cast meters out — so it dangled off the tip and swung with rod yaw instead of connecting to the
+hook.
+
+### World: WorldViewModel
+
+- Added `castLineEntity: ModelEntity?` — a unit-tall (+Y) thin box (`generateBox([0.015, 1,
+  0.015])`, `UnlitMaterial(.lightGray)`) created in `makeSceneEntity()`, added to the **scene root**
+  (world space, not the yaw-rotated rig root), initially disabled.
+- Added `updateCastLine()`, called each `tick` after the hook-moving switch: positions the line at
+  the tip/hook world-position midpoint, orients its +Y axis onto the normalized tip->hook direction
+  (with explicit (anti)parallel-pole handling where `simd_quatf(from:to:)` returns NaN — the hook
+  routinely sits nearly straight below the tip), and scales its Y to the live tip->hook distance.
+- Active only while `hookEntity.isEnabled && !isShowingCatchCutscene` and `hookPhase ∈ {.flying,
+  .hookInWater, .fishOnHook, .reeling}`. Neither endpoint comes from the rod's rotation, so yawing
+  the rod no longer swings the line off the hook — it stays locked on the hook's world position.
+
+### World: RodRigController
+
+- Added `setSkeletalLineVisible(_:)` (toggles the skinned `rod_line` mesh's `isEnabled`) — the
+  procedural line hides the skeletal droop while active so they don't fork near the tip; restored
+  for the reeled-in `.idle` resting look.
+
+### Scope note
+
+- Straight taut connector (the requested "always points at the hook, independent of rod yaw"), not
+  a full rope/catenary/spring simulation — sag/lag dynamics can be layered later if a ropier feel is
+  wanted; left out to keep the change scoped.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-106.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- Built the actual `World` target end to end (`xcodebuild -workspace CtSPoC.xcworkspace -scheme
+  World`, unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps`, then quit — no crash.
+- `git diff --check` clean.
+- Not run: the actual in-scene line, since it only appears once a hook is cast in live gameplay,
+  requiring a paired Rod device — in-scene look (thickness/color against water, behavior through a
+  real cast/fight, antiparallel-pole handling with a hook directly below the tip) unconfirmed. Open
+  device-validation gap, same as ADR-096 onward.
+
+## Fix: Cast-Line Orientation — Robust Look-Rotation (ADR-107)
+
+Date: 2026-07-22.
+
+Reported directly after ADR-106 shipped: "unknown att error? jadinya sekarang line gabisa di cast,
+dan fishing line rasanya masih stuck ke rod (alias gaada motion physics nya)."
+
+### Diagnosis
+
+ADR-106's `updateCastLine()` oriented the line with `simd_quatf(from: [0,1,0], to: direction)`,
+which is numerically unstable in a *band* around antiparallel — not just exactly at the pole my
+`±0.9999` guard covered. The tip->hook direction is routinely in that band (the hook floats steeply
+*below* the tip → direction ≈ straight down ≈ antiparallel to the +Y base axis), so the product
+yielded a near-invalid quaternion → RealityKit rejected the transform (the "unknown attribute" render
+error) → the line didn't render toward the hook, leaving only the old skeletal droop visible ("stuck
+to the rod"). Could not be reproduced headless (the line needs a live cast to activate), so the fix
+was root-caused by inspection and validated by a standalone `simd` math check.
+
+### World: WorldViewModel
+
+- Replaced the `simd_quatf(from:to:)` + pole-handling with an explicit orthonormal look-rotation
+  basis: reference axis (`[0,1,0]`, or `[1,0,0]` when `direction` is near-vertical), `xAxis =
+  normalize(reference × direction)`, `zAxis = xAxis × direction`, `orientation =
+  simd_quatf(float3x3(columns: (xAxis, direction, zAxis)))`. No singularity in any direction.
+- `updateCastLine()` now flips `isEnabled` (procedural line + skeletal droop) only on an active/
+  inactive transition, via a new `castLineActive` flag, instead of every frame.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-107.
+
+### Verification
+
+- Standalone `simd` script: confirmed the new basis produces finite quaternions correctly mapping
+  +Y -> direction for the exact steep-down/straight-down/straight-up/diagonal/near-horizontal cases
+  that broke the old path (`mapsY->dir: true` for all).
+- `xcrun swiftc -typecheck` against the full `World/World` file list — exit code 0, no errors.
+- Built the actual `World` target (`xcodebuild -workspace CtSPoC.xcworkspace -scheme World`,
+  unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps`, then quit — no crash.
+- `git diff --check` clean.
+- Not run: on-device confirmation that the "att error" is gone and the line now tracks the hook —
+  requires a paired Rod and a live cast. Deferred to the user's device. Open device-validation gap.
+
+## Feature: Fishing Line Becomes a Verlet Rope — Idle Sway + Cast-to-Hook Physics (ADR-108)
+
+Date: 2026-07-22.
+
+Reported directly after ADR-107: "line nya ilang waktu udah casted (harusnya ngikut arah hook
+relatif ke rod). terus kalo belom ngelempar hook, harusnya line nya ngikut physics kalo gue geser
+rod ke kiri atau kanan dong." Two things the rigid single-box line couldn't do: it vanished after
+casting (0.015-thick box ~sub-pixel at cast distance), and the user wants actual *physics* — sway
+when idle, follow-the-hook when cast.
+
+### World: FishingLineRope (new file, Reality/)
+
+- Verlet-integrated rope: `segmentCount + 1` points (12 segments, ~2.2 m rest length), one thin
+  `UnlitMaterial(.lightGray)` box per segment (0.03 thick). Per frame: verlet integrate
+  (inertia + gravity), pin point 0 to the rod tip and (when a hook is out) the last point to the
+  hook, relax segment-length constraints, then orient/scale each segment box (singularity-free
+  look-rotation from ADR-107).
+- Idle (far end free): hangs under gravity, sways as the tip moves. Cast (far end pinned to hook):
+  taut with a faint catenary, lags/settles as hook/rod move. One mechanism, both behaviors.
+- Tunables (`gravity`, `damping`, `iterations`, `segmentCount`, `totalRestLength`, `thickness`) are
+  constants at the top for easy adjustment once seen on hardware.
+
+### World: WorldViewModel
+
+- Replaced `castLineEntity`/`castLineActive` (ADR-106/107) and `updateCastLine()` with a
+  `fishingRope: FishingLineRope?` and `updateFishingRope(deltaTime:)`, called each tick after the
+  hook-moving switch. Feeds the rope the tip's and (when a hook is out) the hook's world positions.
+- `makeSceneEntity()`: creates the rope, adds `rope.root` to the scene root, and hides the skeletal
+  `rod_line.usdz` droop once via `RodRigController.setSkeletalLineVisible(false)` — the rope owns the
+  line's whole visual role now, idle included.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-108.
+
+### Verification
+
+- Standalone `simd` simulation of the exact integrator/constraint code: idle hangs ~2.2 m straight
+  below the tip; a swinging tip makes the free end trail; a far cast pins taut to the hook with a
+  slight mid sag; a bobbing hook stays stable — no NaN in any point in any scenario.
+- `xcrun swiftc -typecheck` against the full `World/World` file list — exit code 0, no errors.
+- Built the actual `World` target (`xcodebuild -workspace CtSPoC.xcworkspace -scheme World`,
+  unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check` clean.
+- Not run: the on-device look/feel (visibility at 0.03 thickness, idle-sway and cast-follow feel,
+  gravity/damping tuning) — the rope only renders in a live `.playing` session behind a paired Rod.
+  Deferred to the user's device. Open device-validation gap.
+
+## Feature: Line Shown Only In-Water; Hook Becomes a Leaning Bobber (ADR-109)
+
+Date: 2026-07-22.
+
+Reported directly after ADR-108: "line nya gausah dibuat ngikutin ketika lempar hook. cukup tampilin
+ketika udah hookInWater aja. terus, hooknya sekarang masih horizontal di plane air. sehrusnya, nempel
+dan floating kaya seakan 'ketarik' dari rod."
+
+### World: FishingLineRope
+
+- Added `setHidden(_:)` (disables the rope root; clears `initialized` so the next show re-seeds
+  straight tip->bobber).
+
+### World: WorldViewModel
+
+- `updateFishingRope()`: shows the rope only while `hookPhase ∈ {.hookInWater, .fishOnHook,
+  .reeling}` — not during `.flying` or idle (per "cukup tampilin ketika udah hookInWater aja"). Hides
+  it otherwise. Supersedes ADR-108's idle-hang visibility (the sway physics remains in the rope but
+  is no longer reached).
+- Hook is now a bobber: `hookEntity` is an empty container with a yellow float sphere + a thin red
+  vertical antenna (0.16 tall, +0.11 up) as children. `leanHookTowardRod(tip:hook:)` tilts the
+  container ~20° toward the rod each in-water frame (antenna makes the tilt visible; a sphere shows
+  none). `bobberFloatHeight` (0.04) lifts the rest position so it rides on the surface. `launchHook`
+  resets orientation to upright so it flies straight and only leans once in water.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-109.
+
+### Verification
+
+- Standalone `simd` check: hook lean is a consistent ~19.8° tilt toward the rod in every horizontal
+  direction, valid finite quaternion.
+- `xcrun swiftc -typecheck` against the full `World/World` file list — exit code 0, no errors.
+- Built the actual `World` target (`xcodebuild -workspace CtSPoC.xcworkspace -scheme World`,
+  unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check` clean.
+- Not run: on-device look (antenna reading as a bobber, lean/float feel, line appearing only at
+  splashdown) — only renders in a live in-water session behind a paired Rod. Deferred to the user's
+  device. Open device-validation gap.

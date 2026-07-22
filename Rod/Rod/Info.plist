@@ -4,9 +4,5 @@
 <dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Rod uses the camera to place fish in AR for preview.</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_cts-poc._tcp</string>
-	</array>
 </dict>
 </plist>

@@ -2,28 +2,71 @@
 //  FishingHaptics.swift
 //  Rod
 //
+//  Created by Calzy Akmal Indyramdhani on 17/07/26.
+//
 
 import Foundation
 import Shared
 
 final class FishingHaptics {
 
+    /// Continuous fight-haptic rhythm tier (ADR-039), set by World's `reelTension*` events and
+    /// rendered by `fightPulse(now:)`. Maps to `GAMEPLAY_ARCHITECTURE_V1.md`'s
+    /// resistance-through-rhythm spec: spaced taps -> regular taps -> rapid near-continuous taps.
+    /// Rhythm/intensity/sharpness per band live in `FishFightConfig` (ADR-039), not here — see
+    /// `parameters(for:)`.
+    enum FightBand {
+        case low
+        case medium
+        case high
+    }
+
     private let haptics: HapticManager
+    /// Shared with `WorldViewModel`'s `FishFightController` conceptually — both should be
+    /// constructed with the same `FishFightConfig` values so Rod's haptic rhythm always matches
+    /// the tension bands World is actually computing. See `FishFightConfig`'s own doc comment.
+    private let config: FishFightConfig
     private var lastReelTick = Date.distantPast
     private var lastInterestPulse = Date.distantPast
+    private var lastFightPulse = Date.distantPast
+    private var lastBiteAlertPulse = Date.distantPast
     private(set) var isFishInterested = false
+    private(set) var fightBand: FightBand?
+    /// Whether a bite window is currently open (ADR-092) — drives `biteAlertPulse(now:)`'s
+    /// repeating alert while `true`. Set on `.biteAlert`, cleared the instant the window resolves
+    /// either way (`.fishBite`/`.fishGaveUp`), plus `stopBiteAlert()` as a belt-and-suspenders
+    /// safety net.
+    private(set) var isBiteAlertActive = false
 
     private let interestPulseInterval: TimeInterval = 1.1
+    /// Deliberately faster than `interestPulseInterval` (ADR-092, "bikin continuous aja waktu
+    /// ikan udah gigit gigit") — a bite window is a short, urgent "act now" moment, not a passive
+    /// ambient cue, so the repeating alert should feel closer to continuous than a slow pulse.
+    private let biteAlertPulseInterval: TimeInterval = 0.4
 
-    init(haptics: HapticManager = HapticManager()) {
+    init(haptics: HapticManager = HapticManager(), config: FishFightConfig = FishFightConfig()) {
         self.haptics = haptics
+        self.config = config
+    }
+
+    private func parameters(for band: FightBand) -> (interval: TimeInterval, intensity: Float, sharpness: Float) {
+        switch band {
+        case .low:
+            return (config.lowBandInterval, config.lowBandIntensity, config.lowBandSharpness)
+        case .medium:
+            return (config.mediumBandInterval, config.mediumBandIntensity, config.mediumBandSharpness)
+        case .high:
+            return (config.highBandInterval, config.highBandIntensity, config.highBandSharpness)
+        }
     }
 
     func handle(_ event: FishingEvent) {
         switch event {
         case .cast:
+            fightBand = nil
             haptics.cast()
         case .hookSplash:
+            fightBand = nil
             haptics.splash()
         case .reelTick:
             haptics.reelTick()
@@ -33,16 +76,56 @@ final class FishingHaptics {
             haptics.fishInterested()
         case .fishBite:
             isFishInterested = false
+            isBiteAlertActive = false
             haptics.fishBite()
         case .fishEscaped:
             isFishInterested = false
+            fightBand = nil
             haptics.fishEscaped()
         case .lineBreak:
             isFishInterested = false
+            fightBand = nil
             haptics.lineBreak()
         case .catchFish:
             isFishInterested = false
+            fightBand = nil
             haptics.catchFish()
+        case .reelTensionLow:
+            isFishInterested = false
+            fightBand = .low
+        case .reelTensionMedium:
+            isFishInterested = false
+            fightBand = .medium
+        case .reelTensionHigh:
+            isFishInterested = false
+            fightBand = .high
+        case .fightFlick:
+            // Rod -> World only; Rod itself never receives this case. Exhaustive switch requires
+            // a branch anyway.
+            break
+        case .biteAlert:
+            // ADR-088: a fish is testing the bait *right now* — the player has
+            // `FishFightConfig.biteWindowDuration` to flick the rod forward and actually set the
+            // hook, or this attempt is lost. Deliberately the strongest/most insistent pattern
+            // Rod has (`haptics.biteAlert()`), distinct from `fishBite()`'s softer 4-pulse
+            // confirmation (now only played once the hook is actually set). ADR-092: plays once
+            // immediately here, then repeats via `biteAlertPulse(now:)` for as long as the window
+            // stays open, instead of firing only once.
+            isFishInterested = false
+            isBiteAlertActive = true
+            lastBiteAlertPulse = Date()
+            haptics.biteAlert()
+        case .hookSet:
+            // Rod -> World only; Rod itself never receives this case. Exhaustive switch requires
+            // a branch anyway.
+            break
+        case .fishGaveUp:
+            // ADR-088: every bite-alert attempt was missed and the fish swam off. A soft,
+            // deflating cue — distinct from `fishEscaped()` (a hooked fish getting away mid-fight
+            // is a bigger, different kind of loss) — so the player isn't left with no feedback at
+            // all after the tension of `biteAlert()`.
+            isBiteAlertActive = false
+            haptics.fishGaveUp()
         }
     }
 
@@ -66,10 +149,48 @@ final class FishingHaptics {
         haptics.fishInterested()
     }
 
+    /// Call every motion sample; throttles itself to the active band's interval and no-ops
+    /// unless a fight tension band is currently set. Same recurring-callback pattern as
+    /// `interestPulse(now:)`.
+    func fightPulse(now: Date = Date()) {
+        guard let fightBand else { return }
+        let params = parameters(for: fightBand)
+        guard now.timeIntervalSince(lastFightPulse) >= params.interval else { return }
+
+        lastFightPulse = now
+        haptics.fightTick(intensity: params.intensity, sharpness: params.sharpness)
+    }
+
+    /// Call every motion sample; throttles itself to `biteAlertPulseInterval` and no-ops unless a
+    /// bite window is currently open (ADR-092). Same recurring-callback pattern as
+    /// `interestPulse(now:)`/`fightPulse(now:)`, just faster — a bite window is a short, urgent
+    /// moment, not ambient background texture.
+    func biteAlertPulse(now: Date = Date()) {
+        guard isBiteAlertActive else { return }
+        guard now.timeIntervalSince(lastBiteAlertPulse) >= biteAlertPulseInterval else { return }
+
+        lastBiteAlertPulse = now
+        haptics.biteAlert()
+    }
+
     /// Call when `HookPhase` leaves `.hookInWater`, so a stale interest
     /// signal can't keep pulsing after the fish bit, escaped, or a new cast
     /// began.
     func stopInterest() {
         isFishInterested = false
+    }
+
+    /// Call when `HookPhase` leaves `.hookInWater`, so a stale bite-alert signal can't keep
+    /// pulsing after the fish bit, escaped, or a new cast began — belt-and-suspenders alongside
+    /// `.fishBite`/`.fishGaveUp` above, which also clear it.
+    func stopBiteAlert() {
+        isBiteAlertActive = false
+    }
+
+    /// Call when `HookPhase` leaves the fight phases (`.fishOnHook`/`.reeling`), so a stale
+    /// tension band can't keep buzzing after the fight ended — belt-and-suspenders alongside the
+    /// fight-ending events above, which also clear it.
+    func stopFight() {
+        fightBand = nil
     }
 }

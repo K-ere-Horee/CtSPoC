@@ -15,9 +15,6 @@ public struct RodMotionInput: Sendable, Equatable {
     public let yaw: Double
     public let accelerationZ: Double
     public let rotationRateMagnitude: Double
-    public let rotationRateX: Double
-    public let rotationRateY: Double
-    public let rotationRateZ: Double
 
     public init(
         timestamp: TimeInterval,
@@ -25,10 +22,7 @@ public struct RodMotionInput: Sendable, Equatable {
         roll: Double,
         yaw: Double,
         rotationRateMagnitude: Double,
-        accelerationZ: Double = 0,
-        rotationRateX: Double = 0,
-        rotationRateY: Double = 0,
-        rotationRateZ: Double = 0
+        accelerationZ: Double = 0
     ) {
         self.timestamp = timestamp
         self.pitch = pitch
@@ -36,9 +30,6 @@ public struct RodMotionInput: Sendable, Equatable {
         self.yaw = yaw
         self.accelerationZ = accelerationZ
         self.rotationRateMagnitude = rotationRateMagnitude
-        self.rotationRateX = rotationRateX
-        self.rotationRateY = rotationRateY
-        self.rotationRateZ = rotationRateZ
     }
 }
 
@@ -62,6 +53,9 @@ public struct RodMotionInterpretation: Sendable, Equatable {
     public let action: RodAction
     public let reelSpeed: Float
     public let castPower: Float
+    /// Live seconds held in the backswing/charging zone this attempt — transmitted so World can
+    /// show the actual charging timer, not just the normalized `castPower` bar (ADR-056).
+    public let castHoldDuration: TimeInterval
     public let debug: MotionDebugDecision
     public let castSnapshot: CastSnapshot?
 
@@ -73,6 +67,7 @@ public struct RodMotionInterpretation: Sendable, Equatable {
         action: RodAction,
         reelSpeed: Float,
         castPower: Float = 0,
+        castHoldDuration: TimeInterval = 0,
         debug: MotionDebugDecision
         , castSnapshot: CastSnapshot? = nil
     ) {
@@ -83,6 +78,7 @@ public struct RodMotionInterpretation: Sendable, Equatable {
         self.action = action
         self.reelSpeed = reelSpeed
         self.castPower = castPower
+        self.castHoldDuration = castHoldDuration
         self.debug = debug
         self.castSnapshot = castSnapshot
     }
@@ -97,6 +93,18 @@ public final class RodMotionInterpreter {
     private var hasIdleReference = false
     private var previousCastPhase: RodMotionPhase = .idle
     private var releasedCastPower: Float = 0
+    /// Timestamp the current cast gesture's backswing/charging hold began — `nil` whenever not
+    /// currently holding one. Reset (cleared) whenever a fresh cast gesture begins; feeds both the
+    /// live `castPower` meter and, via `CastSnapshot`, `CastResolver`'s final gameplay power.
+    private var castHoldStartTimestamp: TimeInterval?
+    /// Seconds for one full oscillation of the timing meter (ADR-057) — must match
+    /// `CastConfig.oscillationPeriod` so the live meter agrees with `CastResolver`'s authoritative
+    /// calculation of the same `backswingHoldDuration` value.
+    private let oscillationPeriod: TimeInterval = 3.5
+    /// The hold duration a cast actually released at — frozen and replayed during `followThrough`
+    /// (mirrors `releasedCastPower`) so the meter shows the final release timing, not a still-
+    /// oscillating one.
+    private var releasedHoldDuration: TimeInterval = 0
 
     private enum Classification: String {
         case idle
@@ -114,6 +122,7 @@ public final class RodMotionInterpreter {
         castEndsAt = 0
         previousCastPhase = .idle
         releasedCastPower = 0
+        castHoldStartTimestamp = nil
         hasIdleReference = profile.isComplete
     }
 
@@ -127,12 +136,20 @@ public final class RodMotionInterpreter {
         castEndsAt = 0
         previousCastPhase = .idle
         releasedCastPower = 0
+        castHoldStartTimestamp = nil
     }
 
-    public func interpret(_ input: RodMotionInput) -> RodMotionInterpretation {
+    /// - Parameter isCastingArmed: Gates whether a pose classified closest to `castPose` is
+    ///   actually treated as a cast attempt. When `false`, any such pose is treated exactly like
+    ///   `.idle` — no backswing tracking, no charging phase, no cast meter — so ordinary phone
+    ///   movement can never accidentally start a charge. The caller (Rod's "Start Casting" button)
+    ///   sets this only for the duration of one attempt; it's automatically consumed (the caller
+    ///   should disarm) once `RodMotionInterpretation.castSnapshot` comes back non-`nil`, meaning a
+    ///   real cast just fired.
+    public func interpret(_ input: RodMotionInput, isCastingArmed: Bool) -> RodMotionInterpretation {
         let current = MotionPose(pitch: input.pitch, roll: input.roll, yaw: input.yaw)
         let currentOrientation = RodOrientation.from(pitch: input.pitch, roll: input.roll, yaw: input.yaw)
-        
+
         guard hasIdleReference else {
             return result(pose: current, orientation: currentOrientation, phase: .invalid, action: .idle, reelSpeed: 0, castPower: 0, debug: emptyDebug)
         }
@@ -158,28 +175,86 @@ public final class RodMotionInterpreter {
             selectedPose: classification.rawValue
         )
 
-        if input.timestamp < castEndsAt {
-            return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .followThrough, action: .casting, reelSpeed: 0, castPower: releasedCastPower, debug: debug)
+        // Cleared whenever not armed, regardless of which classification branch runs below — the
+        // single reset point for a fresh cast attempt. Deliberately *not* tied to
+        // "classification just changed to .cast" (see `case .cast:` below): a single noisy frame
+        // where the pose momentarily reads fractionally closer to idle than cast — real sensor
+        // jitter while the player is holding deliberately still to charge — used to flip
+        // `previousClassification` to `.idle` for that one frame, so the very next frame's
+        // re-entry into `.cast` looked exactly like a fresh attempt and reset the hold timer back
+        // to zero. That silently discarded however long the player had already been charging,
+        // reading as "the cast never charges no matter how long I hold it."
+        if !isCastingArmed {
+            castHoldStartTimestamp = nil
+        } else {
+            // A fresh "Start Casting" press always wins over a still-ticking `followThrough`
+            // cooldown from the *previous* attempt. Without this, pressing the button again
+            // shortly after a release (well within `profile.castDuration`, since Rod's own
+            // cooldown timer is a purely local gesture-recognition detail, independent of the
+            // World round-trip that flips `HookPhase` away from `.idle`) would hit the guard below
+            // and keep replaying `releasedCastPower`/`releasedHoldDuration` — the *previous* cast's
+            // frozen values, which the oscillating meter (ADR-057) can easily have released at or
+            // near its peak. That read as "the instant I press Start Casting, power is already
+            // maxed," when it was really just the last cast's leftover freeze-frame.
+            castEndsAt = input.timestamp
         }
 
-        switch classification {
-        case .cast:
-            let castPower = Float(min(1, max(0, input.rotationRateMagnitude / 5)))
+        if input.timestamp < castEndsAt {
+            return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .followThrough, action: .casting, reelSpeed: 0, castPower: releasedCastPower, castHoldDuration: releasedHoldDuration, debug: debug)
+        }
+
+        // Once armed, the timing meter runs immediately regardless of the raw pose classification
+        // above (ADR-061) — the player shouldn't have to first swing the phone into
+        // backswing/cast-pose territory before the meter starts; pressing "Start Casting" alone
+        // starts it, and only the flick (forward acceleration, below) matters from then on. Before
+        // this, arming while holding the phone in its idle position left `classification == .idle`
+        // and the meter pinned at 0 until the player moved the phone closer to `castPose` first,
+        // which read as a delay between pressing the button and the meter actually appearing.
+        if isCastingArmed {
+            let isFreshCastEntry = previousClassification != .cast
+            // Only starts the timer if it isn't already running — a momentary classification
+            // flicker back to `.idle`/`.reel` and straight back to `.cast` (jitter, not a genuine
+            // release-then-recast) must not restart it. It's cleared only by the unarmed-guard
+            // above or by `updateProfile(_:)`/`setIdlePose(_:)`'s full resets.
+            if castHoldStartTimestamp == nil {
+                castHoldStartTimestamp = input.timestamp
+            }
+            let holdDuration = input.timestamp - castHoldStartTimestamp!
+
+            // Timing-meter curve (ADR-057), matching `CastResolver.resolve(_:)` exactly so the live
+            // meter agrees with what a release will actually produce: power oscillates
+            // continuously between 0 and 1 for as long as the backswing is held — "meteran naik
+            // turun perlahan" — rather than ramping up and capping. The flick (`forwardMotion`
+            // below) still triggers the release; it never scales the result (ADR-056), it just
+            // locks in whatever this formula reads at that instant.
+            let oscillationPhase = holdDuration * 2 * Double.pi / max(oscillationPeriod, 0.001)
+            let castPower = Float((1 - cos(oscillationPhase)) / 2)
+
             let forwardMotion = input.accelerationZ * profile.castAccelerationSign >= profile.castAcceleration
             let backswing = input.accelerationZ * profile.castAccelerationSign < -profile.castAcceleration
             let wasReleased = previousCastPhase == .release
             let phase: RodMotionPhase = backswing
                 ? .backswing
                 : forwardMotion ? .release : (castPower > 0.05 ? .charging : .forwardSwing)
-            let enteredCast = previousClassification != .cast
-            previousClassification = classification
+            previousClassification = .cast
             previousCastPhase = phase
-            if forwardMotion && (enteredCast || !wasReleased) {
+            if forwardMotion && (isFreshCastEntry || !wasReleased) {
                 castEndsAt = input.timestamp + profile.castDuration
                 releasedCastPower = castPower
-                return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .release, action: .casting, reelSpeed: 0, castPower: castPower, debug: debug, castSnapshot: snapshot(input: input, orientation: correctedOrientation(currentOrientation)))
+                releasedHoldDuration = holdDuration
+                return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .release, action: .casting, reelSpeed: 0, castPower: castPower, castHoldDuration: holdDuration, debug: debug, castSnapshot: snapshot(input: input, orientation: correctedOrientation(currentOrientation), holdDuration: holdDuration))
             }
-            return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: phase, action: .idle, reelSpeed: 0, castPower: castPower, debug: debug)
+            return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: phase, action: .idle, reelSpeed: 0, castPower: castPower, castHoldDuration: holdDuration, debug: debug)
+        }
+
+        switch classification {
+        case .cast:
+            // Pose reads closest to `castPose`, but no "Start Casting" press has armed a cast
+            // attempt — treat exactly like `.idle` rather than silently starting a hold timer the
+            // player never asked for. (`castHoldStartTimestamp` already cleared above.)
+            previousClassification = .idle
+            previousCastPhase = .idle
+            return result(pose: relativePose(from: current), orientation: correctedOrientation(currentOrientation), phase: .idle, action: .idle, reelSpeed: 0, castPower: 0, debug: debug)
         case .reel:
             previousClassification = classification
             guard input.rotationRateMagnitude >= profile.reelRotationRate else { break }
@@ -258,17 +333,18 @@ public final class RodMotionInterpreter {
         action: RodAction,
         reelSpeed: Float,
         castPower: Float = 0,
+        castHoldDuration: TimeInterval = 0,
         debug: MotionDebugDecision
         , castSnapshot: CastSnapshot? = nil
     ) -> RodMotionInterpretation {
-        RodMotionInterpretation(pose: pose, orientation: orientation, isPoseValid: profile.isComplete, phase: phase, action: action, reelSpeed: reelSpeed, castPower: castPower, debug: debug, castSnapshot: castSnapshot)
+        RodMotionInterpretation(pose: pose, orientation: orientation, isPoseValid: profile.isComplete, phase: phase, action: action, reelSpeed: reelSpeed, castPower: castPower, castHoldDuration: castHoldDuration, debug: debug, castSnapshot: castSnapshot)
     }
 
-    private func snapshot(input: RodMotionInput, orientation: RodOrientation) -> CastSnapshot {
+    private func snapshot(input: RodMotionInput, orientation: RodOrientation, holdDuration: TimeInterval) -> CastSnapshot {
         CastSnapshot(
             orientation: orientation,
-            angularVelocity: CastVector3(x: Float(input.rotationRateX), y: Float(input.rotationRateY), z: Float(input.rotationRateZ)),
-            timestamp: input.timestamp
+            timestamp: input.timestamp,
+            backswingHoldDuration: holdDuration
         )
     }
 }
