@@ -122,7 +122,7 @@ struct MainMenuView: View {
         ZStack {
             bundleImage("main_menu_bg")
                 .resizable()
-                .scaledToFill()
+                
 
             LinearGradient(
                 colors: [.clear, .clear, .black.opacity(0.45)],
