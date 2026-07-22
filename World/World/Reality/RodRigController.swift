@@ -244,6 +244,16 @@ struct RodRigController {
         lineModel.jointTransforms = transforms
     }
 
+    /// Shows/hides the short skeletal `rod_line.usdz` droop (ADR-106). Hidden while
+    /// `WorldViewModel`'s procedural tip->hook line is active, so the two don't visibly fork apart
+    /// near the tip; shown for the reeled-in `.idle` resting look, where there's no hook out and the
+    /// procedural line is off. Toggling the skinned mesh's own `isEnabled` (not the container) is
+    /// enough to hide the visible line; `applyLineTension` may keep writing joint transforms to the
+    /// hidden mesh harmlessly.
+    func setSkeletalLineVisible(_ visible: Bool) {
+        lineModel?.isEnabled = visible
+    }
+
     /// Spins the placeholder reel entity while actively reeling, proportional to reel speed — a
     /// visible cue standing in for a real modeled reel/crank (see `reelEntity`'s own doc comment).
     /// `spinRate` is hand-picked, not measured against any real reel geometry (none exists yet).

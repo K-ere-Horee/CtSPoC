@@ -9374,3 +9374,189 @@ of the dark-card + white-border language established since ADR-098.
 - Not run: final in-context placement (corner spacing against the safe area, live fps/connection
   values), since that requires a paired Rod device. Open device-validation gap, same as ADR-096
   through ADR-104.
+
+## Feature: Procedural Tip-to-Hook Fishing Line (ADR-106)
+
+Date: 2026-07-22.
+
+Requested directly: "ketika hookInWater, line nya bisa ga dibuat physics nya biar nge 'snatch' ke
+hook, jadi kalopun geser kanan kiri rod nya, line nya ngikut arah hook nya?" The old skeletal
+`rod_line.usdz` is pinned to the rod tip (rotates with it) and its fixed short bones can't reach a
+hook cast meters out — so it dangled off the tip and swung with rod yaw instead of connecting to the
+hook.
+
+### World: WorldViewModel
+
+- Added `castLineEntity: ModelEntity?` — a unit-tall (+Y) thin box (`generateBox([0.015, 1,
+  0.015])`, `UnlitMaterial(.lightGray)`) created in `makeSceneEntity()`, added to the **scene root**
+  (world space, not the yaw-rotated rig root), initially disabled.
+- Added `updateCastLine()`, called each `tick` after the hook-moving switch: positions the line at
+  the tip/hook world-position midpoint, orients its +Y axis onto the normalized tip->hook direction
+  (with explicit (anti)parallel-pole handling where `simd_quatf(from:to:)` returns NaN — the hook
+  routinely sits nearly straight below the tip), and scales its Y to the live tip->hook distance.
+- Active only while `hookEntity.isEnabled && !isShowingCatchCutscene` and `hookPhase ∈ {.flying,
+  .hookInWater, .fishOnHook, .reeling}`. Neither endpoint comes from the rod's rotation, so yawing
+  the rod no longer swings the line off the hook — it stays locked on the hook's world position.
+
+### World: RodRigController
+
+- Added `setSkeletalLineVisible(_:)` (toggles the skinned `rod_line` mesh's `isEnabled`) — the
+  procedural line hides the skeletal droop while active so they don't fork near the tip; restored
+  for the reeled-in `.idle` resting look.
+
+### Scope note
+
+- Straight taut connector (the requested "always points at the hook, independent of rod yaw"), not
+  a full rope/catenary/spring simulation — sag/lag dynamics can be layered later if a ropier feel is
+  wanted; left out to keep the change scoped.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-106.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no errors.
+- Built the actual `World` target end to end (`xcodebuild -workspace CtSPoC.xcworkspace -scheme
+  World`, unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps`, then quit — no crash.
+- `git diff --check` clean.
+- Not run: the actual in-scene line, since it only appears once a hook is cast in live gameplay,
+  requiring a paired Rod device — in-scene look (thickness/color against water, behavior through a
+  real cast/fight, antiparallel-pole handling with a hook directly below the tip) unconfirmed. Open
+  device-validation gap, same as ADR-096 onward.
+
+## Fix: Cast-Line Orientation — Robust Look-Rotation (ADR-107)
+
+Date: 2026-07-22.
+
+Reported directly after ADR-106 shipped: "unknown att error? jadinya sekarang line gabisa di cast,
+dan fishing line rasanya masih stuck ke rod (alias gaada motion physics nya)."
+
+### Diagnosis
+
+ADR-106's `updateCastLine()` oriented the line with `simd_quatf(from: [0,1,0], to: direction)`,
+which is numerically unstable in a *band* around antiparallel — not just exactly at the pole my
+`±0.9999` guard covered. The tip->hook direction is routinely in that band (the hook floats steeply
+*below* the tip → direction ≈ straight down ≈ antiparallel to the +Y base axis), so the product
+yielded a near-invalid quaternion → RealityKit rejected the transform (the "unknown attribute" render
+error) → the line didn't render toward the hook, leaving only the old skeletal droop visible ("stuck
+to the rod"). Could not be reproduced headless (the line needs a live cast to activate), so the fix
+was root-caused by inspection and validated by a standalone `simd` math check.
+
+### World: WorldViewModel
+
+- Replaced the `simd_quatf(from:to:)` + pole-handling with an explicit orthonormal look-rotation
+  basis: reference axis (`[0,1,0]`, or `[1,0,0]` when `direction` is near-vertical), `xAxis =
+  normalize(reference × direction)`, `zAxis = xAxis × direction`, `orientation =
+  simd_quatf(float3x3(columns: (xAxis, direction, zAxis)))`. No singularity in any direction.
+- `updateCastLine()` now flips `isEnabled` (procedural line + skeletal droop) only on an active/
+  inactive transition, via a new `castLineActive` flag, instead of every frame.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-107.
+
+### Verification
+
+- Standalone `simd` script: confirmed the new basis produces finite quaternions correctly mapping
+  +Y -> direction for the exact steep-down/straight-down/straight-up/diagonal/near-horizontal cases
+  that broke the old path (`mapsY->dir: true` for all).
+- `xcrun swiftc -typecheck` against the full `World/World` file list — exit code 0, no errors.
+- Built the actual `World` target (`xcodebuild -workspace CtSPoC.xcworkspace -scheme World`,
+  unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps`, then quit — no crash.
+- `git diff --check` clean.
+- Not run: on-device confirmation that the "att error" is gone and the line now tracks the hook —
+  requires a paired Rod and a live cast. Deferred to the user's device. Open device-validation gap.
+
+## Feature: Fishing Line Becomes a Verlet Rope — Idle Sway + Cast-to-Hook Physics (ADR-108)
+
+Date: 2026-07-22.
+
+Reported directly after ADR-107: "line nya ilang waktu udah casted (harusnya ngikut arah hook
+relatif ke rod). terus kalo belom ngelempar hook, harusnya line nya ngikut physics kalo gue geser
+rod ke kiri atau kanan dong." Two things the rigid single-box line couldn't do: it vanished after
+casting (0.015-thick box ~sub-pixel at cast distance), and the user wants actual *physics* — sway
+when idle, follow-the-hook when cast.
+
+### World: FishingLineRope (new file, Reality/)
+
+- Verlet-integrated rope: `segmentCount + 1` points (12 segments, ~2.2 m rest length), one thin
+  `UnlitMaterial(.lightGray)` box per segment (0.03 thick). Per frame: verlet integrate
+  (inertia + gravity), pin point 0 to the rod tip and (when a hook is out) the last point to the
+  hook, relax segment-length constraints, then orient/scale each segment box (singularity-free
+  look-rotation from ADR-107).
+- Idle (far end free): hangs under gravity, sways as the tip moves. Cast (far end pinned to hook):
+  taut with a faint catenary, lags/settles as hook/rod move. One mechanism, both behaviors.
+- Tunables (`gravity`, `damping`, `iterations`, `segmentCount`, `totalRestLength`, `thickness`) are
+  constants at the top for easy adjustment once seen on hardware.
+
+### World: WorldViewModel
+
+- Replaced `castLineEntity`/`castLineActive` (ADR-106/107) and `updateCastLine()` with a
+  `fishingRope: FishingLineRope?` and `updateFishingRope(deltaTime:)`, called each tick after the
+  hook-moving switch. Feeds the rope the tip's and (when a hook is out) the hook's world positions.
+- `makeSceneEntity()`: creates the rope, adds `rope.root` to the scene root, and hides the skeletal
+  `rod_line.usdz` droop once via `RodRigController.setSkeletalLineVisible(false)` — the rope owns the
+  line's whole visual role now, idle included.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-108.
+
+### Verification
+
+- Standalone `simd` simulation of the exact integrator/constraint code: idle hangs ~2.2 m straight
+  below the tip; a swinging tip makes the free end trail; a far cast pins taut to the hook with a
+  slight mid sag; a bobbing hook stays stable — no NaN in any point in any scenario.
+- `xcrun swiftc -typecheck` against the full `World/World` file list — exit code 0, no errors.
+- Built the actual `World` target (`xcodebuild -workspace CtSPoC.xcworkspace -scheme World`,
+  unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check` clean.
+- Not run: the on-device look/feel (visibility at 0.03 thickness, idle-sway and cast-follow feel,
+  gravity/damping tuning) — the rope only renders in a live `.playing` session behind a paired Rod.
+  Deferred to the user's device. Open device-validation gap.
+
+## Feature: Line Shown Only In-Water; Hook Becomes a Leaning Bobber (ADR-109)
+
+Date: 2026-07-22.
+
+Reported directly after ADR-108: "line nya gausah dibuat ngikutin ketika lempar hook. cukup tampilin
+ketika udah hookInWater aja. terus, hooknya sekarang masih horizontal di plane air. sehrusnya, nempel
+dan floating kaya seakan 'ketarik' dari rod."
+
+### World: FishingLineRope
+
+- Added `setHidden(_:)` (disables the rope root; clears `initialized` so the next show re-seeds
+  straight tip->bobber).
+
+### World: WorldViewModel
+
+- `updateFishingRope()`: shows the rope only while `hookPhase ∈ {.hookInWater, .fishOnHook,
+  .reeling}` — not during `.flying` or idle (per "cukup tampilin ketika udah hookInWater aja"). Hides
+  it otherwise. Supersedes ADR-108's idle-hang visibility (the sway physics remains in the rope but
+  is no longer reached).
+- Hook is now a bobber: `hookEntity` is an empty container with a yellow float sphere + a thin red
+  vertical antenna (0.16 tall, +0.11 up) as children. `leanHookTowardRod(tip:hook:)` tilts the
+  container ~20° toward the rod each in-water frame (antenna makes the tilt visible; a sphere shows
+  none). `bobberFloatHeight` (0.04) lifts the rest position so it rides on the surface. `launchHook`
+  resets orientation to upright so it flies straight and only leans once in water.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-109.
+
+### Verification
+
+- Standalone `simd` check: hook lean is a consistent ~19.8° tilt toward the rod in every horizontal
+  direction, valid finite quaternion.
+- `xcrun swiftc -typecheck` against the full `World/World` file list — exit code 0, no errors.
+- Built the actual `World` target (`xcodebuild -workspace CtSPoC.xcworkspace -scheme World`,
+  unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check` clean.
+- Not run: on-device look (antenna reading as a bobber, lean/float feel, line appearing only at
+  splashdown) — only renders in a live in-water session behind a paired Rod. Deferred to the user's
+  device. Open device-validation gap.
