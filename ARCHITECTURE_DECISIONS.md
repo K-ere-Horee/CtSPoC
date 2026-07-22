@@ -11,6 +11,137 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-088 --- Bite Window: Flick to Set the Hook, Three Attempts Before the Fish Gives Up
+
+## Decision
+
+**Fish no longer hook themselves automatically.** `FishFightController.updateSearching(deltaTime:)`
+no longer rolls a species and sets `hasFishOnHook = true` the instant `biteTimer` elapses. Instead,
+elapsing `biteTimer` opens a **bite window**: `isBiteWindowActive = true`,
+`biteWindowProgress` ticks `1.0 -> 0.0` over `FishFightConfig.biteWindowDuration` seconds, and
+World emits `FishingEvent.biteAlert` (World -> Rod) — a strong, unmistakable haptic
+(`HapticManager.biteAlert()`, five sharp full-sharpness pulses) telling the player a fish is
+testing the bait *right now*.
+
+The player must flick the rod forward — the identical gesture as a cast release/the QTE flick,
+per the standing "reuse the cast gesture, don't invent a new one" precedent — before the window
+expires. `RodViewModel.detectFlickGesture()` (renamed from `detectFightFlick()`, since it now
+covers two different moments) is extended to also fire during `HookPhase.hookInWater`, sending a
+new `FishingEvent.hookSet` (Rod -> World) instead of `.qteFlick` in that phase. World's
+`FishFightController.handleHookSetFlick()` — mirroring `handleQTEFlick()`'s own shape exactly —
+does the actual species roll/hook-set that `updateSearching` used to do inline, but only while a
+bite window is genuinely open; a stray/late flick outside one is a no-op, same as an off-window
+QTE flick already was.
+
+**Three missed attempts and the fish gives up.** If `biteWindowTimer` reaches 0 with no flick,
+`biteAttemptsUsed` increments. Below `FishFightConfig.maxBiteAttempts` (default 3), a new attempt
+starts after a short random delay (`biteRetryMinInterval...biteRetryMaxInterval`) — same
+"randomizer" spirit as the original interest/bite timers, giving the next alert a natural,
+unpredictable beat rather than firing on a fixed metronome. At the limit, the fish swims off
+entirely: `FishingEvent.fishGaveUp` (World -> Rod, a soft/deflating haptic distinct from
+`fishEscaped()`), `isFishInterested` clears, and normal searching resumes from scratch as if this
+fish never bit — no `HookPhase` change, no new cast needed.
+
+A new `BiteAlertView` (World HUD) mirrors `LineTensionView`'s existing QTE banner treatment — a
+"FISH ON! FLICK TO HOOK!" label over a shrinking orange progress capsule — shown whenever
+`isBiteWindowActive`, giving the alert a visual complement to the haptic (Rod owns no gameplay
+HUD, so this is the only place it can be shown).
+
+## Rationale
+
+Requested directly: "sekarang fish insta-bite the hook setelah beberapa detik. gimana kalo, 1.
+haptics nya gedein, jadi user tau kalo hook nya lagi digigit ikan 2. tambahin action untuk 'flick'
+(samain aja kaya cast) untuk actually start the reeling game 3. kalo setelah 3x haptics gede, ga
+nge 'cast', otomatis hook nya hening lagi. jadi literally kaya mancing beneran" (right now the fish
+insta-bites after a few seconds — what if: 1. bigger haptics so the player knows a fish is biting,
+2. add a "flick" action, same as cast, to actually start the reeling game, 3. after 3 big haptics
+with no flick, the hook goes quiet again — literally like real fishing).
+
+Reusing the QTE flick's exact gesture/detector/no-op-outside-window pattern (rather than inventing
+new mechanics) was the direct, lowest-risk way to satisfy request #2 — the game already has a
+fully working "flick to react to a timed prompt" system (ADR-078); this just adds a second
+context that gesture is meaningful in, gated by `HookPhase` the same way the first one already is.
+
+## Status
+
+Accepted, pending live confirmation — verified via `swiftc -typecheck` against `Shared` (both
+`arm64-apple-ios17.0-simulator` and `arm64-apple-macosx26.0`), the full `Rod`/`World` file lists
+against each, and real `xcodebuild` builds (both targets, unsigned) plus a launch test on `World`
+— all clean, no crash. Not yet played: whether `biteWindowDuration` (1.5s) gives a fair reaction
+time given real BLE round-trip latency between World's alert and Rod's flick detection (the same
+open question ADR-078's QTE window already carried, now doubled up), whether 3 attempts feels
+right rather than too generous/stingy, and whether the new `biteAlert()` haptic actually reads as
+meaningfully "bigger" than `fishBite()` on physical hardware (both use `intensity: 1.0`, so the
+felt difference is sharpness/pulse-count only — untested on a real device in this environment).
+
+------------------------------------------------------------------------
+
+# ADR-087 --- Credits and Tutorial Ported From feat/ui-slice Onto Main's Navigation Model
+
+## Decision
+
+Merging PR #7 (`feat/ui-slice`) into `main` found it had independently built a full competing Main
+Menu/loading/navigation system (`RootView.swift`'s own screen router, pill-shaped buttons, a
+Fredoka-font `Theme.swift`) that collided with this session's own ADR-081/082 Main Menu/loading
+redesign and `WorldViewModel.Screen`-driven overlay model. Confirmed with the user rather than
+picking a side: keep main's Main Menu/loading/navigation entirely; port `feat/ui-slice`'s
+genuinely new, non-overlapping features (`CreditsView.swift`, `TutorialView.swift`) onto main's
+kept navigation model instead of discarding them outright.
+
+`CreditsView.swift` is unchanged (self-contained, only needs `Theme.swift`) — reachable via a new
+"Credits" button on `MainMenuView` (`StackedMenuButtonStyle(isProminent: false)`, matching "How to
+Play"), owned by local `@State private var isShowingCredits` rather than a new
+`WorldViewModel.Screen` case, since Credits has no bearing on session/gameplay state.
+
+`TutorialView.swift` is unchanged aside from one doc-comment correction. It's now shown via
+`ContentView`'s own overlay `ZStack` — the same "overlay atop the live game scene" composition
+`RootView` originally used, just reached through this screen's overlay stack instead of a separate
+router. `WorldViewModel` gained `isShowingTutorial: Bool` (set `true` alongside `screen = .playing`
+in `handleState(_:)`) and `dismissTutorial()`; reset alongside the other overlay flags in
+`returnToMenu()`. Shown unconditionally on every "Start Fishing," not gated to a player's first
+session — an inherited simplification, not new: persisted first-session-only gating was explicitly
+flagged as future work on the original branch and remains unimplemented here too.
+
+`Support/Theme.swift` is trimmed on port to only the tokens `CreditsView`/`TutorialView` actually
+reference (`buttonFill`/`buttonLabel`/`buttonLabelShadow`/`Color(hex:)`/`Font.fredoka`/
+`fredokaBold`/`ShadowedLabel`) — the `overlay`/`menuButtonFace`/`menuButtonEdge`/`menuButtonText`
+tokens existed solely for the dropped pill-button `MainMenuView` and were dropped as dead weight.
+`Fonts/Fredoka-{Bold,Regular}.ttf` and `Info.plist`'s `ATSApplicationFontsPath`/`UIAppFonts` keys
+are ported as `Theme.swift`'s own dependencies. `Assets.xcassets/Image/{FrameIcon,HandTutor}
+.imageset` are ported as `TutorialView`'s illustration assets.
+
+`RootView.swift`, `LoadingView.swift`, and their Main-Menu/Loading-specific asset catalog entries
+(`LoadingScreen`/`landingImage`/`logo` imagesets) are dropped entirely — fully superseded, no
+longer referenced by anything once `MainMenuView.swift`/`WorldApp.swift` were resolved to main's
+side.
+
+Two silent-wrong auto-merges were caught and fixed while resolving this (both textual merges git
+reported as clean, i.e. no conflict markers, but whose result was actually wrong): `WorldApp.swift`
+had reverted to `feat/ui-slice`'s `RootView()` instead of main's `ContentView()` (each side's diff
+landed in non-overlapping line ranges, so git had nothing to flag); `Assets.xcassets/AppIcon
+.appiconset/Contents.json` had reverted to a single incomplete iOS-only icon entry, silently
+dropping the working macOS multi-size icon set (the actual `CTS-Logo_*.png` files were all still
+present in the tree — a manifest regression, not a missing-asset situation). Both restored to
+main's versions explicitly, not left to the auto-merge.
+
+## Rationale
+
+See `CHECKPOINT.md`'s "Merge PR #7 (feat/ui-slice) into main" entry for the full investigation
+(what was found, read, and decided file-by-file) and the exact request that prompted the
+keep-mine/port-theirs split.
+
+## Status
+
+Accepted — verified via `swiftc -typecheck` (`World`/`Rod` against manually-built `Shared` modules,
+both platforms) and a full unsigned `xcodebuild` build + launch, all clean, no crash. Confirmed via
+`git write-tree`/`git ls-tree` diff against `origin/main` that the final merged result is *exactly*
+`main` plus the deliberate additions above — nothing else differs. Not yet played live: Credits/
+Tutorial are newly rewired onto a navigation model neither was originally built against, and
+`TutorialView` in particular was never visually confirmed live even on its origin branch (no
+Accessibility/UI-scripting permission there either, per that branch's own CHECKPOINT history).
+
+------------------------------------------------------------------------
+
 # ADR-086 --- World Launches Directly Into Fullscreen
 
 ## Decision

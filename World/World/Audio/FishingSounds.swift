@@ -63,6 +63,16 @@ final class FishingSounds {
             // existing sound here since none fit without risking confusion with what it's already
             // used for elsewhere (e.g. `fishBite`'s own pattern playing at the start of a fight).
             break
+        case .biteAlert, .hookSet:
+            // No dedicated asset (ADR-088), same reasoning as the QTE prompt/response above — the
+            // new HUD banner and Rod's own big haptic already cover the cue. `fishBite`'s own
+            // sound is reserved for the moment the fish is actually hooked (still fired from the
+            // `.fishBite` event, now only once `handleHookSetFlick()` succeeds), not every attempt.
+            break
+        case .fishGaveUp:
+            // No dedicated asset (ADR-088) — stops the interest bubble loop so it doesn't keep
+            // looping for a fish that's no longer there; Rod's own soft haptic covers the cue.
+            sounds.stopLoop(.fishInterestedLoop)
         }
     }
 

@@ -83,6 +83,34 @@ final class HapticManager {
         ])
     }
 
+    /// The single most insistent pattern Rod has (ADR-088, "haptics nya gedein, jadi user tau
+    /// kalo hook nya lagi digigit ikan") — a fish is testing the bait *right now* and the player
+    /// has a short window to flick the rod forward before this attempt is lost. Five sharp,
+    /// tightly-spaced pulses at maximum sharpness, deliberately bigger/faster than both
+    /// `fishBite()` (a softer, slower 4-pulse *confirmation* once the hook is actually set) and
+    /// `qtePrompt()` (a quick double-tap for a routine mid-fight reaction) — this one needs to be
+    /// impossible to miss.
+    func biteAlert() {
+        playPattern([
+            (1.0, 1.0, 0),
+            (1.0, 1.0, 0.09),
+            (1.0, 1.0, 0.18),
+            (1.0, 1.0, 0.27),
+            (1.0, 1.0, 0.36)
+        ])
+    }
+
+    /// A soft, deflating pattern (ADR-088) for when a fish gives up after every bite-alert
+    /// attempt was missed — distinct from `fishEscaped()` (a bigger loss: a fish that *was*
+    /// hooked getting away mid-fight), and deliberately gentle/trailing-off rather than sharp, so
+    /// it doesn't read as another urgent alert to react to.
+    func fishGaveUp() {
+        playPattern([
+            (1.0, 0.3, 0),
+            (1.0, 0.15, 0.2)
+        ])
+    }
+
     /// One tap of the continuous fight rhythm (ADR-039); repeated externally by
     /// `FishingHaptics.fightPulse(now:)` at the active tension band's interval, with the band
     /// deciding intensity/sharpness — `HapticManager` stays band-agnostic.

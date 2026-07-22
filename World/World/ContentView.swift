@@ -153,6 +153,11 @@ struct ContentView: View {
                     qteProgress: fishFight.qteProgress
                 )
 
+                BiteAlertView(
+                    isActive: fishFight.isBiteWindowActive,
+                    progress: fishFight.biteWindowProgress
+                )
+
                 GroupBox {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {

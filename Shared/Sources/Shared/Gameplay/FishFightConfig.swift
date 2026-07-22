@@ -93,6 +93,21 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
     /// flick — same one-time-not-a-rate reasoning as `qteSuccessRelief`.
     public var qteFailurePenalty: Float
 
+    // MARK: Bite window (ADR-088 — flick to set the hook, replaces the old instant auto-bite)
+
+    /// Seconds the player has to flick the rod forward after a bite-alert haptic before this
+    /// attempt counts as missed — same calibrated forward-flick gesture as a cast release/QTE
+    /// flick, not a new one to learn.
+    public var biteWindowDuration: Float
+    /// How many missed bite-alert attempts the fish tolerates before giving up and swimming off
+    /// (searching resumes as if this fish never bit) — "kalo setelah 3x haptics gede, ga nge
+    /// cast, otomatis hook nya hening lagi."
+    public var maxBiteAttempts: Int
+    /// Seconds before the next bite-alert attempt starts after a miss — a random duration in this
+    /// range, same "randomizer" spirit as the initial interest/bite timers.
+    public var biteRetryMinInterval: Float
+    public var biteRetryMaxInterval: Float
+
     // MARK: Tension-scaled reel pull speed (risk/reward)
 
     /// `lineTension` at/below this counts as the "safe" zone for `FishFightController.
@@ -155,6 +170,10 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
         qteReactionWindow: Float = 1.5,
         qteSuccessRelief: Float = 0.15,
         qteFailurePenalty: Float = 0.15,
+        biteWindowDuration: Float = 1.5,
+        maxBiteAttempts: Int = 3,
+        biteRetryMinInterval: Float = 0.8,
+        biteRetryMaxInterval: Float = 1.6,
         reelSpeedSafeTension: Float = 0.7,
         reelSpeedDangerTension: Float = 0.85,
         reelPullSpeedSafe: Float = 2.0,
@@ -185,6 +204,10 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
         self.qteReactionWindow = qteReactionWindow
         self.qteSuccessRelief = qteSuccessRelief
         self.qteFailurePenalty = qteFailurePenalty
+        self.biteWindowDuration = biteWindowDuration
+        self.maxBiteAttempts = maxBiteAttempts
+        self.biteRetryMinInterval = biteRetryMinInterval
+        self.biteRetryMaxInterval = biteRetryMaxInterval
         self.reelSpeedSafeTension = reelSpeedSafeTension
         self.reelSpeedDangerTension = reelSpeedDangerTension
         self.reelPullSpeedSafe = reelPullSpeedSafe

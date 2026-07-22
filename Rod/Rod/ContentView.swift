@@ -89,10 +89,7 @@ struct ContentView: View {
         .onDisappear { viewModel.stop() }
     }
 
-    /// Standalone, non-debug pairing-recovery affordance (ADR-062) — deliberately separate from
-    /// the commented-out Developer Details `DisclosureGroup` below, which predates this and is
-    /// left alone per this project's standing precedent of not touching what looks like someone
-    /// else's in-progress work. `TransportClient.didSubscribeTo` silently ignores any central
+    /// Standalone, non-debug pairing-recovery affordance (ADR-062) — `TransportClient.didSubscribeTo` silently ignores any central
     /// whose identifier doesn't match `PairedCentralStore`'s saved one — the subscription still
     /// succeeds at the BLE protocol level (so World can read `.ready`/`.streaming` as if
     /// everything's fine), but Rod never actually sends it anything. Without this row, a stale

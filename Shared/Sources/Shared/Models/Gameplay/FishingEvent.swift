@@ -35,4 +35,19 @@ public enum FishingEvent: String, Codable, Sendable, Equatable {
     /// directly from the calibrated cast-release gesture; `FishFightController.handleQTEFlick()`
     /// only reacts to it while a QTE prompt is actually active, so a stray/late flick is a no-op.
     case qteFlick
+    /// A bite-alert window just opened during `.hookInWater` (ADR-088, replacing the old instant
+    /// auto-bite) — World -> Rod, a strong haptic telling the player a fish is testing the bait
+    /// *right now* and to flick the rod forward (same gesture as a cast release/QTE flick) within
+    /// `FishFightConfig.biteWindowDuration` to actually set the hook.
+    case biteAlert
+    /// The player flicked the rod forward during an active bite window (Rod -> World, alongside
+    /// `qteFlick` the only other case Rod itself constructs and sends). Reused from the same
+    /// calibrated forward-flick gesture; `FishFightController.handleHookSetFlick()` only reacts to
+    /// it while a bite window is actually open, so a stray/late flick is a no-op.
+    case hookSet
+    /// The fish lost interest after `FishFightConfig.maxBiteAttempts` missed bite windows and swam
+    /// off without ever being hooked (ADR-088) — World -> Rod, a soft/deflating cue distinct from
+    /// `fishEscaped` (which means a fish *was* hooked and got away mid-fight; this one never got
+    /// that far). Searching resumes as if this fish never bit.
+    case fishGaveUp
 }

@@ -67,9 +67,10 @@ final class RodViewModel: ObservableObject {
     private var orientation = RodOrientation.identity
     private var spatial = SpatialState()
     private var hasStarted = false
-    /// Edge-detection state for `detectFightFlick()` (ADR-078) — `true` while the last-seen sample
-    /// was past the forward-flick threshold, so a sustained flick reports once, not every frame.
-    private var wasFightFlicking = false
+    /// Edge-detection state for `detectFlickGesture()` (ADR-078/088) — `true` while the last-seen
+    /// sample was past the forward-flick threshold, so a sustained flick reports once, not every
+    /// frame.
+    private var wasFlicking = false
     private var calibrationSamples: [RodMotionInput] = []
     /// Guards against unbounded concurrent sends: `publishState()` fires on every motion sample
     /// (up to the CoreMotion update rate), and each one used to spawn its own unstructured `Task`
@@ -390,28 +391,33 @@ final class RodViewModel: ObservableObject {
         }
         fishingHaptics.interestPulse()
         fishingHaptics.fightPulse()
-        detectFightFlick()
+        detectFlickGesture()
     }
 
-    /// Reports a forward flick to World during a fish fight (ADR-078's QTE mechanic) — reuses the
-    /// exact same calibrated threshold as a cast release (`profile.castAcceleration`/
-    /// `castAccelerationSign`), per the request that the QTE gesture be "flick device aja ke
-    /// depan (atau sesuai arah cast)," not a new gesture to learn. Independent of
-    /// `RodMotionInterpreter`/`isCastingArmed` entirely — casting can never be armed during a
-    /// fight anyway (`HookPhase.allowsCasting` is only `.idle`), so the two detectors can't
-    /// double-fire for the same physical flick. Edge-detected (`wasFightFlicking`) so a single
-    /// flick reports once, not once per frame the acceleration stays past threshold.
-    private func detectFightFlick() {
-        guard hookPhase == .fishOnHook || hookPhase == .reeling else {
-            wasFightFlicking = false
+    /// Reports a forward flick to World during a fish fight (ADR-078's QTE mechanic) or an active
+    /// bite window (ADR-088's "flick to set the hook") — reuses the exact same calibrated
+    /// threshold as a cast release (`profile.castAcceleration`/`profile.castAccelerationSign`),
+    /// per the request that both gestures be "flick device aja ke depan (atau sesuai arah cast),"
+    /// not a new gesture to learn each time. Independent of `RodMotionInterpreter`/
+    /// `isCastingArmed` entirely — casting can never be armed during `.hookInWater`/a fight anyway
+    /// (`HookPhase.allowsCasting` is only `.idle`), so the two detectors can't double-fire for the
+    /// same physical flick. Which event fires depends only on `hookPhase`; World's own
+    /// `FishFightController` decides whether either is actually acted on (a stray/late flick
+    /// outside an active QTE prompt or bite window is a no-op on that side, not gated here).
+    /// Edge-detected (`wasFlicking`) so a single flick reports once, not once per frame the
+    /// acceleration stays past threshold.
+    private func detectFlickGesture() {
+        guard hookPhase == .fishOnHook || hookPhase == .reeling || hookPhase == .hookInWater else {
+            wasFlicking = false
             return
         }
         let profile = motionInterpreter.profile
         let isFlicking = motion.accelerationZ * profile.castAccelerationSign >= profile.castAcceleration
-        if isFlicking, !wasFightFlicking {
-            Task { await send(.fishingEvent(.qteFlick)) }
+        if isFlicking, !wasFlicking {
+            let event: FishingEvent = hookPhase == .hookInWater ? .hookSet : .qteFlick
+            Task { await send(.fishingEvent(event)) }
         }
-        wasFightFlicking = isFlicking
+        wasFlicking = isFlicking
     }
 
     private var motionInput: RodMotionInput {

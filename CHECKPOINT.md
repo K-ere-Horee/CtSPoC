@@ -8459,7 +8459,7 @@ ordinary gameplay (casting, waiting for a bite) completely silent — which read
   one live playtest already, so — same as that entry's own Status — unverified live until played
   again.
 
-## Merge PR #7 (feat/ui-slice) into main
+## Merge PR #7 (feat/ui-slice) into main (ADR-087)
 
 Date: 2026-07-21.
 
@@ -8569,3 +8569,85 @@ the tree, so this was a manifest regression, not a missing-asset situation).
   even on its origin branch (no Accessibility/UI-scripting permission there either, per that
   branch's own CHECKPOINT history above) — worth an explicit playtest of both before considering
   this fully settled.
+
+## Feature: Bite Window — Flick to Set the Hook, 3 Attempts Before the Fish Gives Up (ADR-088)
+
+Date: 2026-07-22.
+
+Requested directly: "sekarang fish insta-bite the hook setelah beberapa detik. gimana kalo, 1.
+haptics nya gedein, jadi user tau kalo hook nya lagi digigit ikan 2. tambahin action untuk 'flick'
+(samain aja kaya cast) untuk actually start the reeling game 3. kalo setelah 3x haptics gede, ga
+nge 'cast', otomatis hook nya hening lagi. jadi literally kaya mancing beneran."
+
+### Shared: FishingEvent, FishFightConfig
+
+- `FishingEvent.swift`: added `biteAlert` (World -> Rod, a bite window just opened), `hookSet`
+  (Rod -> World, the player flicked during one), `fishGaveUp` (World -> Rod, every attempt missed).
+- `FishFightConfig.swift`: added `biteWindowDuration` (1.5s), `maxBiteAttempts` (3),
+  `biteRetryMinInterval`/`biteRetryMaxInterval` (0.8...1.6s, the delay before a retry after a miss).
+
+### World: FishFightController
+
+- `SearchEvent`: `.bite` replaced with `.biteAlert` (a window opened, fish still not hooked) and
+  `.gaveUp` (every attempt missed, fish swims off).
+- Added `isBiteWindowActive: Bool`, `biteWindowProgress: Float` (normalized `1.0 -> 0.0`), private
+  `biteWindowTimer`/`biteAttemptsUsed`.
+- `updateSearching(deltaTime:)`: the old "roll a species and hook instantly" block moved out into
+  a new `handleHookSetFlick() -> Bool`, called only on an actual flick, not automatically when
+  `biteTimer` elapses. Elapsing `biteTimer` now opens a bite window instead. A window timing out
+  either starts a new attempt (below `maxBiteAttempts`) or ends the search entirely (`isFishInterested`
+  cleared, fresh `interestTimer` seeded) once the limit is hit.
+- `resetForNewCast(castDistance:)`: resets the new bite-window state alongside the existing fields.
+
+### Rod: RodViewModel
+
+- `detectFightFlick()` renamed to `detectFlickGesture()` (`wasFightFlicking` -> `wasFlicking`) —
+  the same acceleration-threshold check now also gates on `hookPhase == .hookInWater`, sending
+  `.hookSet` in that phase instead of `.qteFlick`. No new gesture, no new calibration — identical
+  detector, one more `HookPhase` it's meaningful in.
+
+### World: WorldViewModel
+
+- `tick()`'s `.hookInWater` case: `updateSearching`'s switch updated for the new `SearchEvent`
+  cases — `.biteAlert` emits `.biteAlert`, `.gaveUp` emits `.fishGaveUp`. Hooking itself moved to a
+  new `case .fishingEvent(.hookSet):` arm in `handle(_:)`, calling `fishFight.handleHookSetFlick()`
+  and only then `setHookPhase(.fishOnHook)`/`ensureFightDistance()`/`emit(.fishBite)` — mirrors the
+  existing `.qteFlick` arm exactly.
+
+### World: FishingSounds, HUD
+
+- `FishingSounds.handle(_:)`: `.biteAlert`/`.hookSet` — no dedicated asset (same reasoning as the
+  QTE prompt/response), the new HUD banner and Rod's haptic already cover it. `.fishGaveUp` stops
+  the interest bubble loop (no `HookPhase` change happens for World to catch this otherwise).
+- Added `World/World/Views/BiteAlertView.swift` (new file): mirrors `LineTensionView`'s QTE banner
+  — a "FISH ON! FLICK TO HOOK!" label over a shrinking orange progress capsule — shown in
+  `ContentView`'s HUD `Group` whenever `fishFight.isBiteWindowActive`.
+
+### Rod: FishingHaptics, HapticManager
+
+- `FishingHaptics.handle(_:)`: `.biteAlert` -> `haptics.biteAlert()`, clears `isFishInterested`.
+  `.fishGaveUp` -> `haptics.fishGaveUp()`. `.hookSet` is Rod -> World only (break, exhaustiveness).
+- `HapticManager`: added `biteAlert()` — five sharp, tightly-spaced full-sharpness pulses,
+  deliberately the single most insistent pattern Rod has, bigger/faster than both `fishBite()`
+  (now a softer *confirmation* once the hook is actually set, not the bite moment itself) and
+  `qtePrompt()` (a quick double-tap for a routine mid-fight reaction) — directly answers "haptics
+  nya gedein." Added `fishGaveUp()` — a soft, two-pulse, trailing-off pattern, distinct from
+  `fishEscaped()`.
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-ios17.0-simulator` and `arm64-apple-macosx26.0` — exit
+  code 0, no errors on either.
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` and `World/World` Swift file lists — exit
+  code 0, no errors on either.
+- Built both actual targets end to end (`xcodebuild`, unsigned): `World` — `** BUILD SUCCEEDED **`,
+  launched and confirmed via `ps` it ran without crashing; `Rod` (iphonesimulator SDK) — `**
+  BUILD SUCCEEDED **`.
+- Repo-wide `grep` confirmed zero remaining references to the old `SearchEvent.bite` case.
+- `git diff --check` clean.
+- Not run: any live session on physical hardware — the whole point of this change is a haptic/
+  timing feel change, which can't be evaluated from static analysis or a simulator build. In
+  particular unverified: whether `biteWindowDuration` (1.5s) is fair given real BLE latency,
+  whether 3 attempts feels right, and whether `biteAlert()` actually reads as "bigger" than
+  `fishBite()` on a real device (both are `intensity: 1.0` already — ADR-060 maxed that everywhere
+  — so the felt difference is sharpness/pulse-count only).
