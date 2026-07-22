@@ -37,6 +37,13 @@ struct CastMeterView: View {
     /// Live seconds held in the backswing/charging zone this attempt (ADR-056) — shown as a raw
     /// timer alongside the normalized power bar, since power is now purely a function of this.
     let holdDuration: TimeInterval
+    /// ADR-116: power fractions (0...1) where the fill crosses from green->yellow and yellow->red —
+    /// `WorldViewModel.castZoneBoundaryPowers`, thirds of `minCastDistance...maxCastDistance`
+    /// converted into power space. Replaces an implicit even 3-way gradient split, which assumed
+    /// distance splits evenly across power — it doesn't, the projectile range formula is nonlinear
+    /// in power, so an even-power split didn't actually match `FishFightController.CastZone`'s
+    /// real distance thirds.
+    let zoneBoundaryPowers: (green: Float, yellow: Float)
 
     private var isVisible: Bool {
         phase == .backswing || phase == .charging || phase == .forwardSwing
@@ -73,7 +80,12 @@ struct CastMeterView: View {
                             Capsule()
                                 .fill(
                                     LinearGradient(
-                                        colors: [.green, .yellow, .red],
+                                        stops: [
+                                            .init(color: .green, location: 0),
+                                            .init(color: .yellow, location: CGFloat(zoneBoundaryPowers.green)),
+                                            .init(color: .yellow, location: CGFloat(zoneBoundaryPowers.yellow)),
+                                            .init(color: .red, location: 1)
+                                        ],
                                         startPoint: .leading,
                                         endPoint: .trailing
                                     )

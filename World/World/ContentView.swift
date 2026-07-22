@@ -177,7 +177,8 @@ struct ContentView: View {
                             castSolution: viewModel.rodState.castSolution,
                             power: viewModel.rodState.castPower,
                             phase: viewModel.rodState.motionPhase,
-                            holdDuration: viewModel.rodState.castHoldDuration
+                            holdDuration: viewModel.rodState.castHoldDuration,
+                            zoneBoundaryPowers: viewModel.castZoneBoundaryPowers
                         )
                         .frame(width: geometry.size.width * 0.4)
                         .padding(.top, 24)

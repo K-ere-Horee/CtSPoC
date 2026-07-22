@@ -72,9 +72,83 @@ final class WorldViewModel: ObservableObject {
     /// rather than at world origin (which is now the middle of an 80x60 m lake).
     private let waterHeight: Float = 0
     private let gravity: Float = 4.0
-    /// Raised 3.6 -> 5.0 (ADR-039, "rod casting nya kurang jauh"): max-power ballistic range goes
-    /// from ~13 m to ~24 m. `FishFightController.maxExpectedCastDistance` was retuned to match.
-    private let castSpeed: Float = 5.0
+
+    /// ADR-115/116: the two knobs for cast distance (meters) — change these directly, no trig
+    /// required. Everything else (the launch speed curve, the cast-meter's zone-color boundaries)
+    /// is derived from them below. Replaces a fixed `castSpeed = 5.0` (max range ~24 m) whose min/
+    /// max distances only had meaning via the projectile range formula, requiring that trig to be
+    /// hand-solved every time someone wanted to change the cast distance range.
+    private let minCastDistance: Float = 3.0
+    private let maxCastDistance: Float = 18.0
+
+    /// Angles (radians) `Rod`'s `CastResolver` uses at power=0/power=1 (its `minimumLaunchAngle`/
+    /// `maximumLaunchAngle` defaults, `Shared/Gameplay/CastResolver.swift`) — World has no direct
+    /// reference to Rod's resolver config, only the resulting `solution.launchAngle` it streams
+    /// over per cast, so these mirror those defaults' *values* for the derivations below. If Rod's
+    /// `CastResolver` config ever changes from its defaults, these need updating to match.
+    private let minPowerLaunchAngle: Float = 0.15
+    private let maxPowerLaunchAngle: Float = 0.65
+
+    /// Launch speed (m/s) at power=0/power=1, each derived by solving the flat-ground projectile
+    /// range formula `range = speed^2 * sin(2 * angle) / gravity` for `speed` so that end of the
+    /// power range lands exactly `minCastDistance`/`maxCastDistance` away. `launchHook(solution:)`
+    /// linearly interpolates between these by power (see `castLaunchSpeed(forPower:)`).
+    private var minPowerSpeed: Float {
+        sqrt(minCastDistance * gravity / sin(2 * minPowerLaunchAngle))
+    }
+    private var maxPowerSpeed: Float {
+        sqrt(maxCastDistance * gravity / sin(2 * maxPowerLaunchAngle))
+    }
+
+    /// Shared by `launchHook(solution:)` (the real cast) and `castZoneBoundaryPowers` (the cast
+    /// meter's zone-color math) so both always agree on the exact same speed-vs-power curve.
+    private func castLaunchSpeed(forPower power: Float) -> Float {
+        minPowerSpeed + power * (maxPowerSpeed - minPowerSpeed)
+    }
+
+    /// World's own estimate of Rod's `CastResolver.launchAngle` — linear between
+    /// `minPowerLaunchAngle`/`maxPowerLaunchAngle` by power, matching `CastResolver`'s own formula
+    /// (`config.minimumLaunchAngle + (config.maximumLaunchAngle - config.minimumLaunchAngle) *
+    /// normalizedPower`). Only used for the offline zone-boundary estimate below — an actual cast
+    /// always uses the real `solution.launchAngle` Rod computed and streamed over.
+    private func castLaunchAngle(forPower power: Float) -> Float {
+        minPowerLaunchAngle + power * (maxPowerLaunchAngle - minPowerLaunchAngle)
+    }
+
+    private func castDistance(forPower power: Float) -> Float {
+        let speed = castLaunchSpeed(forPower: power)
+        return speed * speed * sin(2 * castLaunchAngle(forPower: power)) / gravity
+    }
+
+    /// Inverts `castDistance(forPower:)` via bisection (monotonic increasing in power, so this
+    /// always converges) — used to find which power produces a given target distance.
+    private func castPower(forDistance target: Float) -> Float {
+        var low: Float = 0
+        var high: Float = 1
+        for _ in 0..<24 {
+            let mid = (low + high) / 2
+            if castDistance(forPower: mid) < target {
+                low = mid
+            } else {
+                high = mid
+            }
+        }
+        return (low + high) / 2
+    }
+
+    /// Power fractions (0...1) at which a cast crosses from green->yellow and yellow->red —
+    /// thirds of the `minCastDistance...maxCastDistance` range, matching `FishFightController.
+    /// CastZone`'s own equal-thirds split, just expressed in POWER space (not distance space)
+    /// since that's the axis `CastMeterView`'s gradient is actually drawn across. Computed once
+    /// from constants via `castPower(forDistance:)`, not per-frame — exposed so the cast meter's
+    /// color zones calculate themselves from `minCastDistance`/`maxCastDistance` instead of
+    /// assuming distance splits evenly across power (it doesn't — the range formula is nonlinear).
+    lazy var castZoneBoundaryPowers: (green: Float, yellow: Float) = {
+        let range = maxCastDistance - minCastDistance
+        let greenEnd = minCastDistance + range / 3
+        let yellowEnd = minCastDistance + range * 2 / 3
+        return (castPower(forDistance: greenEnd), castPower(forDistance: yellowEnd))
+    }()
     /// m/s-per-unit-`reelSpeed` multiplier converting Rod's normalized `0...1` reel input into the
     /// actual hook-closing speed used by `reelHook(deltaTime:)`'s **empty-retrieve** case only (no
     /// fish on hook — retrieving a bare line, where there's no tension to manage). Raised 3.0 ->
@@ -803,14 +877,16 @@ final class WorldViewModel: ObservableObject {
     }
 
     /// Steps the verlet fishing-line rope (ADR-108) each frame while the hook is in the water — point
-    /// 0 pinned to the rod tip's live world position, the far end pinned to the hook. ADR-109: the
-    /// rope is shown *only* once the hook has splashed down (`.hookInWater` and the fight phases), not
-    /// during the cast arc (`.flying`) — the line whipping around to chase a fast projectile read
-    /// badly, and the request was to only display it once in the water. Hidden otherwise (idle,
-    /// flying, cutscene, result). While shown, the hook is also leaned toward the rod so it reads as
-    /// floating under line tension rather than lying flat on the water.
+    /// 0 pinned to the rod's true tip end (`RodRigController.tipEndPosition`, ADR-110 — not
+    /// `tipEntity`'s own position, which sits 0.25 m short at the Tip bone's head and reads as
+    /// anchored partway down the rod toward the handle/camera side rather than at its actual end),
+    /// the far end pinned to the hook. ADR-109: the rope is shown *only* once the hook has splashed
+    /// down (`.hookInWater` and the fight phases), not during the cast arc (`.flying`) — the line
+    /// whipping around to chase a fast projectile read badly, and the request was to only display it
+    /// once in the water. Hidden otherwise (idle, flying, cutscene, result). While shown, the hook is
+    /// also leaned toward the rod so it reads as floating under line tension rather than lying flat.
     private func updateFishingRope(deltaTime: Float) {
-        guard let fishingRope, let tipEntity = rodRig?.tipEntity, let hookEntity else { return }
+        guard let fishingRope, let tip = rodRig?.tipEndPosition, let hookEntity else { return }
 
         let inWater = hookEntity.isEnabled && !isShowingCatchCutscene
             && (hookPhase == .hookInWater || hookPhase == .fishOnHook || hookPhase == .reeling)
@@ -820,12 +896,29 @@ final class WorldViewModel: ObservableObject {
             return
         }
 
-        let tip = tipEntity.position(relativeTo: nil)
         let hook = hookEntity.position(relativeTo: nil)
         fishingRope.setHidden(false)
         fishingRope.update(tip: tip, hook: hook, deltaTime: deltaTime)
         leanHookTowardRod(tip: tip, hook: hook)
+
+        #if DEBUG
+        // ADR-112/113 investigation: throttled (~1x/sec) live print of exactly what the rope
+        // receives each frame while in the water, PLUS what the rope's own internal state holds
+        // right after `update()` — if `ropeFirst`/`ropeLast` disagree with `tipEndPosition`/`hook`,
+        // the bug is inside `FishingLineRope` itself; if they agree but the rendered rope still
+        // looks wrong on screen, the bug is downstream (per-segment entity transforms or rendering).
+        debugRopeLogTimer += deltaTime
+        if debugRopeLogTimer >= 1.0 {
+            debugRopeLogTimer = 0
+            let rawTip = rodRig?.tipEntity?.position(relativeTo: nil) ?? .zero
+            print("[ADR-113] tipEndPosition=\(tip) rawTipEntity=\(rawTip) hook=\(hook) controllerPos=\(controllerEntity?.position(relativeTo: nil) ?? .zero) ropeFirst=\(fishingRope.debugFirstPoint) ropeLast=\(fishingRope.debugLastPoint)")
+        }
+        #endif
     }
+
+    #if DEBUG
+    private var debugRopeLogTimer: Float = 0
+    #endif
 
     /// Tilts the bobber (ADR-109) so its up-axis leans toward the rod tip, reading as a float being
     /// pulled by line tension rather than sitting flat on the water. The lean is a fixed modest angle
@@ -1063,18 +1156,14 @@ final class WorldViewModel: ObservableObject {
         debugRawAimDegrees = rawYawAngle * 180 / .pi
         debugCorrectedAimDegrees = clampedYawAngle * 180 / .pi
 
-        // Speed-vs-power floor raised 0.5 -> 1.4 (ADR-066), the multiplier shrunk 1.5 -> 0.6 to
-        // compensate, keeping the power=1 ceiling exactly unchanged (castSpeed * 2.0 either way —
-        // "merah tetap," the longest casts travel exactly as far as before). Reported directly:
-        // a short (green-zone) cast could land inside the dock's own footprint (measured Z extent
-        // out to -4.5, ADR-043) instead of clearing it into open water — "nembus pier kebawah."
-        // At `minimumLaunchAngle` (0.15 rad) the old floor produced under half a meter of range;
-        // the new floor produces roughly 3.6 m, safely past the dock edge. Raising the floor while
-        // holding the ceiling fixed compresses the whole curve, which is also what pushes what
-        // used to be yellow's distance range down into green's, and red's down-shifted lower
-        // bound leaves room for a new yellow in between — "kuning sekarang distancenya hijau...
-        // kuning yang baru itu between hijau dan merah."
-        let speed = castSpeed * (1.4 + (solution.power * 0.6))
+        // ADR-116: speed at this power is linearly interpolated between `minPowerSpeed`/
+        // `maxPowerSpeed`, which are themselves derived from `minCastDistance`/`maxCastDistance`
+        // (ADR-115) — so the whole floor-to-ceiling curve now falls directly out of those two
+        // distances rather than a hand-tuned multiplier pair. Historical note: the shape this
+        // curve replaced (a `1.4...2.0` multiplier range, ADR-066) was chosen so a short/green
+        // cast couldn't land inside the dock's own footprint (measured Z extent to -4.5, ADR-043)
+        // — "nembus pier kebawah" — `minCastDistance = 3.0` preserves that same safety margin.
+        let speed = castLaunchSpeed(forPower: solution.power)
         hookVelocity = horizontal * (cos(angle) * speed)
             + SIMD3<Float>(0, sin(angle) * speed, 0)
 

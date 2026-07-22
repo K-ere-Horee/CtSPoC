@@ -9560,3 +9560,337 @@ dan floating kaya seakan 'ketarik' dari rod."
 - Not run: on-device look (antenna reading as a bobber, lean/float feel, line appearing only at
   splashdown) — only renders in a live in-water session behind a paired Rod. Deferred to the user's
   device. Open device-validation gap.
+
+## Fix: Line Anchor Fixed to the Rod's True Tip End (ADR-110)
+
+Date: 2026-07-22.
+
+Reported directly: "line nya masih sedikit aneh. instead of horizontal, harusnya nge stick ke ujung
+rod akhir rod (bukan yang nempel ke camera)."
+
+### Diagnosis
+
+`RodRigController.tipEntity` is pinned to the Tip bone's **head** (zero local offset) — but the
+rod's actual rendered end is `tipTailOffset` (0.25 m) further out along that bone, which is exactly
+where `rod_line.usdz` itself has always attached (a pre-existing, documented gotcha: "getting this
+backwards silently places the line 0.25 m short of the real rod tip"). The fishing rope
+(`updateFishingRope()`) was reading `tipEntity`'s raw head position, so it anchored 0.25 m short of
+the true tip — inside the last bone segment, closer to the handle/camera side than the rod's actual
+end.
+
+### World: RodRigController
+
+- Added `tipEndPosition: SIMD3<Float>?` — computes `tipEntity`'s head position + orientation, then
+  offsets by the tail vector rotated into world space (the same transform `rod_line.usdz`'s own pin
+  already applies). `tipEntity` itself and its use in `launchHook` (cast origin/distance, tuned
+  through many prior ADRs) are left untouched.
+
+### World: WorldViewModel
+
+- `updateFishingRope()`: rod-side anchor changed from `tipEntity.position(relativeTo: nil)` to
+  `rodRig?.tipEndPosition`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-110.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` file list — exit code 0, no errors.
+- Built the actual `World` target (`xcodebuild -workspace CtSPoC.xcworkspace -scheme World`,
+  unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check` clean.
+- Not run: on-device confirmation the line no longer looks horizontal/short-anchored — requires a
+  paired Rod and a live in-water cast. Deferred to the user's device; if still off after this,
+  needs a screenshot to diagnose further. Open device-validation gap.
+
+## Investigation: Rope Anchor Bug Continues — Math Validated, Live-Data Logging Added (ADR-112)
+
+Date: 2026-07-22.
+
+Reported after ADR-111 shipped: "ok, now it's acting more weird. fix ADR-111, since when the hook is
+in the water, the line just dropped horizontally against the plane of water, into inside of the
+pier, which indicates that the end of the line still attached to the head / camera somehow." Note:
+`rod_line.usdz` (ADR-111's actual fix target) is permanently hidden — whatever's being seen is the
+procedural `FishingLineRope` (ADR-108/110), which ADR-111 never touched.
+
+### Ruled out with hard evidence (not assumption)
+
+- **Rope constraint solver under overstretch**: a standalone simulation of the exact verlet code
+  with tip/hook 7.3 m apart (over 3x the rope's 2.2 m rest length, realistic for actual cast
+  distances per this project's own cast-tuning docs) showed intermediate points tracking the
+  straight line between the fixed endpoints correctly — no collapse.
+- **`tipEndPosition`'s formula (ADR-110)**: bounded to at most 0.25 m of displacement from
+  `tipEntity`'s own position by construction — cannot itself cause a "near the pier" scale of error.
+
+### Real remaining gap
+
+Whether `tipEntity.position(relativeTo: nil)` is correct once the rig is under **live bend** (real
+device motion) was never actually verified — every prior measurement (ADR-110/111's debug prints,
+the user's own marker screenshots) was taken at scene load or rest, before any real `applyBend()`
+call with live data.
+
+### World: WorldViewModel
+
+- Added throttled (~1x/second) `#if DEBUG` logging in `updateFishingRope()`: prints
+  `tipEndPosition`, the raw `tipEntity` position, the hook's position, and the rig root's position,
+  active only while the rope is shown. Mirrors the exact methodology that found ADR-111's bug.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-112 (marked in-progress, not yet resolved).
+
+### Verification
+
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean.
+- Built the actual `World` target (`xcodebuild -workspace CtSPoC.xcworkspace -scheme World`,
+  unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check`: same pre-existing trailing whitespace from the user's own earlier debug-marker
+  edits, unrelated to this change.
+- **Blocked on live data**: needs either (a) confirmation of whether the existing green
+  `tipEndPosition` debug marker also misbehaves during an actual live cast, or (b) the printed
+  `[ADR-112]` console output from an actual in-water session, before a real fix can be identified.
+  Explicitly not guessing a fourth time without this.
+
+## Fix: Green Debug Marker's Own Double-Transform Bug; Rope Endpoints Now Exposed (ADR-113)
+
+Date: 2026-07-22.
+
+Reported directly: "engga, green nya stay dan rope nya misbehaves" (confirming tip-resolution under
+live bend is fine — ADR-112's one open gap) — "also, next time gausah verify by doing auto build
+lagi, just do the code dan let me build manually" (don't auto-build/launch to verify — just write
+the code, I'll build it myself).
+
+### Found: a real bug in the debug marker itself
+
+`debugEnd` (green marker) was parented to `rig.root` (`RodRigController.load()`'s local `root`
+variable — has a live, non-identity transform: position=dockAnchorPosition, rotation=yaw*restTilt,
+set every tick). `applyBend()` then wrote `debugEnd?.position = tipEndPosition` — an already
+world-space value — as if it were *local* to that rotated parent. Double-transform: true world
+position was `dockAnchorPosition + rig.root's rotation applied to tipEndPosition`, not
+`tipEndPosition` itself.
+
+### World: RodRigController
+
+- Fixed by attaching `debugEnd` to a dedicated `DebugEndPin` (same `tipTailOffset` as
+  `LineAttachPin`), matching how `debugHead`/`debugTail` already work correctly — self-updates via
+  the pin every frame, no manual per-tick position write needed. Removed the manual
+  `debugEnd?.position = tipEndPosition` line from `applyBend()` entirely.
+
+### World: FishingLineRope
+
+- Added `debugFirstPoint`/`debugLastPoint` (`#if DEBUG`) exposing the rope's own internal
+  `points[0]`/`points[segmentCount]`, for direct comparison against what was fed into `update()`.
+
+### World: WorldViewModel
+
+- Extended the ADR-112 throttled `[ADR-112]` log (now `[ADR-113]`) to also print
+  `fishingRope.debugFirstPoint`/`debugLastPoint` alongside `tipEndPosition`/`hook` — if these
+  disagree, the bug is inside `FishingLineRope`'s own seed/constraint logic; if they agree but the
+  rendered rope still looks wrong, the bug is downstream in per-segment entity transforms or
+  RealityKit's rendering of them.
+
+### Status
+
+Still in progress — no further static-analysis avenue remains unchecked without new live data.
+Rope constraint solver (ADR-112), tip-anchor formula (ADR-110), per-segment transform math
+(re-verified by hand), and now the debug marker itself have all been examined and found correct in
+isolation. Needs the next live test's `[ADR-113]` console output (specifically whether `ropeFirst`/
+`ropeLast` match `tipEndPosition`/`hook`) before a real fix to the rope can be identified.
+
+### Verification
+
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean (fast
+  syntax-only check, no `.app` produced).
+- `git diff --check` — only pre-existing, unrelated trailing whitespace from the user's own earlier
+  debug-marker edits.
+- **Per explicit instruction, no `xcodebuild`/app-launch verification was performed for this
+  change** — the user will build and test manually.
+
+## Fix: `tipEntity` Was Never Added to the Scene Hierarchy — Root Cause Found (ADR-114)
+
+Date: 2026-07-23.
+
+Reported with the actual `[ADR-113]` console output from a live in-water cast:
+`tipEndPosition=(0.0, 0.25, 0.0) rawTipEntity=(0.0, 0.0, 0.0) hook=(-1.67, 0.041, -22.56)
+controllerPos=(0.22, 1.95, -2.1) ropeFirst=(0.0, 0.25, 0.0) ropeLast=(-1.67, 0.041, -22.56)`.
+
+### Diagnosis
+
+`rawTipEntity` reads exactly `(0,0,0)` — the scene's absolute origin, completely disconnected from
+`controllerPos` (the rig root's real position). `tipEndPosition` reading exactly `(0, 0.25, 0)`
+confirms `tipEntity`'s orientation also read as identity — nothing from the rig (position, rotation,
+bend) was being composed at all. `ropeFirst`/`ropeLast` matching their fed-in values exactly
+confirms `FishingLineRope` itself has zero bugs (per ADR-113's design) — it was faithfully rendering
+garbage inputs.
+
+Root cause: `tipEntity` (`RodRigController.load()`'s `marker`) was `.attach(to: tipMarkerPin)`'d but
+**never added to the scene hierarchy** — no `root.addChild(marker)`. Its sibling debug markers
+(`debugHead`/`debugTail`/`debugEnd`) all additionally call `root.addChild(...)` and all render/
+resolve correctly — direct precedent that `attach(to:)` alone doesn't establish real scene-graph
+parentage; without `addChild`, there's no parent chain for `position(relativeTo: nil)` to walk up,
+so it silently falls back to reading as an isolated entity at the world origin. Since `tipEntity`
+has no mesh, this never produced a visible symptom until its value was actually logged.
+
+### World: RodRigController
+
+- Added `root.addChild(marker)` immediately after `marker.attach(to: tipMarkerPin)`, matching the
+  working sibling markers' pattern.
+
+### Wider implication (flagged, not acted on)
+
+`tipEntity.position(relativeTo: nil)` is also read by `launchHook()` (cast launch origin) and
+`hookDistanceFromRod()` — established, previously-tuned systems predating the rope work. If this
+bug pre-dates the rope entirely, those may have been computing from the same broken origin. Not
+touched by this fix — no cast tuning was adjusted, only the `addChild` omission — but flagged since
+fixing this could change cast behavior as a side effect. Worth specific attention on the next test.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-114.
+
+### Verification
+
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean (syntax-only,
+  no `.app` produced).
+- `git diff --check` — only pre-existing, unrelated whitespace.
+- **Per explicit instruction, no `xcodebuild`/app-launch verification was performed** — the user
+  will build and test manually, watching both the rope and general cast behavior.
+
+## Feature: Max Cast Distance Becomes a Direct, No-Trig Config Number (ADR-115)
+
+Date: 2026-07-23.
+
+Requested directly: "kurangi distance max nya sekitar 3 meter biar ga melebihi size pool", refined
+to "kurangin max range nya jadi 20 meter aja coba. atau, bikinin di config sebuah num yang tinggal
+ku ubah aja tanpa harus melalui perhitungan macem macem" — chose the second, explicitly-preferred
+option.
+
+### World: WorldViewModel
+
+- Replaced fixed `castSpeed: Float = 5.0` (max range ~24 m) with `maxCastDistance: Float = 20.0`
+  (the actual, directly-meaningful number) plus a computed `castSpeed` derived from it by solving
+  the projectile range formula for the speed that lands a max-power cast exactly `maxCastDistance`
+  away. Added `maxPowerLaunchAngle: Float = 0.65`, mirroring Rod's `CastResolver.maximumLaunchAngle`
+  default (World has no direct reference to Rod's resolver config).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-115.
+
+### Verification
+
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean.
+- `git diff --check` — only pre-existing, unrelated whitespace.
+- Derivation hand-verified arithmetically (20 m target in, 20.0 m out through the same formula
+  `launchHook` uses).
+- **Per standing instruction, no `xcodebuild`/app-launch verification performed** — the user will
+  build and confirm the new max range on device.
+
+## Feature: Min Cast Distance Added; Cast Meter's Zone Colors Now Calculate Themselves (ADR-116)
+
+Date: 2026-07-23.
+
+Requested directly: "tambahin aja setup right under maxCastDistance, yaitu minCastDistance, dan
+biarkan meteran hijau-kuning-merah di cast meter itu calculate themself according to the min dan
+max nya" — following up on "gimana kalo min cast nya?" (answered: ~3 m at the new derivation).
+
+### World: WorldViewModel
+
+- Added `minCastDistance: Float = 3.0` right under `maxCastDistance`. Replaced the single
+  `castSpeed` with `minPowerSpeed`/`maxPowerSpeed`, each derived from `minCastDistance`/
+  `maxCastDistance` at `minPowerLaunchAngle`/`maxPowerLaunchAngle` (new constants, `0.15`/`0.65`,
+  mirroring Rod's `CastResolver` defaults). Added `castLaunchSpeed(forPower:)` (linear
+  interpolation between the two speeds) — `launchHook(solution:)` now uses this instead of the old
+  `castSpeed * (1.4 + power * 0.6)` hand-tuned multiplier pair (ADR-066).
+- Added `castDistance(forPower:)` and its bisection-based inverse `castPower(forDistance:)`, and a
+  `castZoneBoundaryPowers: (green: Float, yellow: Float)` (`lazy var`, computed once) — the power
+  fractions where distance crosses 1/3 and 2/3 of `minCastDistance...maxCastDistance`, matching
+  `FishFightController.CastZone`'s own equal-thirds split via the same shared distance-formula
+  helpers, so the two can't silently disagree.
+
+### World: CastMeterView
+
+- Takes a new `zoneBoundaryPowers: (green: Float, yellow: Float)` parameter. Gradient rebuilt from
+  four explicit `Gradient.Stop`s (green@0, yellow@green-boundary, yellow@yellow-boundary, red@1)
+  instead of an implicit even three-color spacing — each zone now reads as a distinct color band.
+
+### World: ContentView
+
+- `CastMeterView(...)` call site passes `zoneBoundaryPowers: viewModel.castZoneBoundaryPowers`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-116.
+
+### Verification
+
+- Standalone script mirroring the exact distance/bisection code: `distance(0) = 3.0`,
+  `distance(1) = 18.0` (both exact), zone-boundary powers `~0.365`/`~0.679` (monotonic, in range,
+  and notably not the naive `0.333`/`0.667` a linear assumption would give — confirms the
+  nonlinearity correction was real).
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean.
+- `git diff --check` — only pre-existing, unrelated whitespace.
+- **Per standing instruction, no `xcodebuild`/app-launch verification performed** — the user will
+  build and confirm the meter's zone colors and new min cast distance on device.
+
+## Fix: `rod_line.usdz`'s Doubled Import-Correction Rotation, Root-Caused and Fixed (ADR-111)
+
+Date: 2026-07-22.
+
+Investigated per an unusually thorough structured brief from the user, explicitly demanding
+root-cause identification over trial-and-error offsets, after their own debug markers showed the
+visible `rod_line.usdz` mesh not beginning at the (visually-confirmed-correct) tip pin.
+
+### Investigation
+
+- Unpacked `rod_line.usdz`/`rod_main.usdz` (both zip archives) and converted the `.usdc` payload to
+  readable USDA via `/usr/bin/usdcat`. Full hierarchy has zero baked transforms anywhere — ruled out
+  translated root/skeleton/mesh directly, not by assumption. Both assets declare `upAxis = "Z"`.
+- Added temporary prints of `rod.transform`/`line.transform` *before* either touches `root` or a pin.
+  Both showed the identical quaternion — an exact 90-degree rotation about X, the signature of
+  RealityKit's USDZ importer correcting Blender's Z-up convention to its own Y-up convention, baked
+  into each loaded root entity's own local transform.
+
+### Root cause
+
+The rod's own pins already resolve this correction into a fully-correct world-space anchor (proven
+by freshly-created marker entities — no import baggage of their own — landing exactly on the tip).
+`rod_line`'s root carries its own independent copy of the identical rotation; `Entity.attach(to:)`
+preserves a child's existing local transform on reparent, so attaching `line` to the already-correct
+pin doubled the rotation, swinging the entire visible mesh off-direction even though its anchor
+point (unaffected by pure rotation) stayed correctly co-located with the pin.
+
+### World: RodRigController
+
+- Immediately after `line.attach(to: tipPin)`, reset `line.transform` to identity — removes the
+  redundant, already-resolved-by-the-pin rotation. Verified via a temporary post-fix print: `line.
+  transform` is now clean identity, not the stale 90-degree quaternion.
+- Removed the temporary investigation-only debug prints once the fix was confirmed; kept the user's
+  own red/blue/green debug marker spheres in place.
+
+### Practical note
+
+`rod_line.usdz`'s skinned mesh is currently always hidden (`setSkeletalLineVisible(false)` since
+ADR-108 — the procedural `FishingLineRope` owns the line's visual role). This fix doesn't change
+current player-visible behavior, but corrects a real, still-live bug (`applyLineTension` runs against
+this asset every tick) in code kept for a possible future re-enable.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-111.
+
+### Verification
+
+- Temporary post-fix print confirmed `line.transform` is identity (was the stale 90-degree
+  quaternion).
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list (matching the project's
+  real Debug config) — clean.
+- Built the actual `World` target (`xcodebuild -workspace CtSPoC.xcworkspace -scheme World`,
+  unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check`: flags pre-existing trailing whitespace from the user's own earlier debug-
+  marker edits (lines 130/191/219/228/262) — not introduced by this change, left as-is per earlier
+  precedent (a prior attempt to clean similar whitespace was declined).

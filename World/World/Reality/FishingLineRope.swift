@@ -64,6 +64,16 @@ final class FishingLineRope {
         self.root = root
     }
 
+    #if DEBUG
+    /// ADR-113 investigation: exposes the rope's own internal endpoint state, so a caller can log
+    /// what the rope *itself* holds after `update()` and directly compare it against the values it
+    /// was fed — if these disagree, the bug is inside this class (the seed/constraint logic); if
+    /// they agree but the rendered rope still looks wrong, the bug is downstream in the per-segment
+    /// entity transform assignment or RealityKit's own rendering of it.
+    var debugFirstPoint: SIMD3<Float> { points[0] }
+    var debugLastPoint: SIMD3<Float> { points[segmentCount] }
+    #endif
+
     /// Shows/hides the whole rope. Hiding also clears `initialized` so the next show re-seeds the
     /// rope straight from the tip to the hook rather than animating in from wherever it was left —
     /// used because the line is only shown once the hook is in the water (ADR-109), so each cast
