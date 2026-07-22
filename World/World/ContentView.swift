@@ -93,124 +93,142 @@ struct ContentView: View {
         }
     }
 
+    // ADR-096: the game scene now fills the entire window (no separate HUD bar below it); every
+    // HUD element floats as an overlay on top instead. `GeometryReader` supplies screen size so
+    // the cast meter can be sized relative to it (~40% width) rather than a fixed constant.
     private var content: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        GeometryReader { geometry in
+            ZStack {
+                RealityView { content in
+                    content.camera = .virtual
+                    let rod = await viewModel.makeSceneEntity()
+                    content.add(rod)
+                    viewModel.attachFrameLoop(to: content)
+                    await viewModel.sceneDidFinishLoading()
+                }
+                .ignoresSafeArea()
 
-            RealityView { content in
-                content.camera = .virtual
-                let rod = await viewModel.makeSceneEntity()
-                content.add(rod)
-                viewModel.attachFrameLoop(to: content)
-                await viewModel.sceneDidFinishLoading()
-            }
-            .frame(minHeight: 320)
-            .overlay(alignment: .topLeading) {
-                VStack {
+                VStack(alignment: .leading) {
                     fpsIndicator
-                    
+
                     Text(viewModel.connectionState.rawValue.capitalized)
                         .foregroundStyle(viewModel.connectionState == .streaming ? .green : .secondary)
+
+                    Spacer()
                 }
-            }
-            
-            // MARK: - Debug purpose only. Can ignore
-            /*
-            GroupBox("Controller State") {
-                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
-                    row("State", viewModel.connectionState.rawValue)
-                    row("Action", viewModel.rodState.action.rawValue)
-                    row("Hook", viewModel.hookPhase.rawValue)
-                    row("Reel Speed", format(viewModel.rodState.reelSpeed))
-                    row("Distance", format(viewModel.rodState.distance, suffix: " m"))
-                    row("Last Cast Distance", String(format: "%.2f m", fishFight.lastCastDistance))
-                    row("Direction", formatDirection(viewModel.rodState))
-                    row("Pitch", format(viewModel.rodState.pitch))
-                    row("Roll", format(viewModel.rodState.roll))
-                    row("Yaw", format(viewModel.rodState.yaw))
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+                .padding()
 
-            GroupBox("Cast Direction Debug") {
-                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
-                    row("Player Facing", formatXZ(viewModel.debugPlayerFacingCoordinate))
-                    row("Cast Landed", formatXZ(viewModel.debugCastLandingCoordinate))
-                    row("Raw Aim Angle", formatDegrees(viewModel.debugRawAimDegrees))
-                    row("Corrected Aim Angle", formatDegrees(viewModel.debugCorrectedAimDegrees))
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            */
-
-            // Hidden during the catch cutscene (ADR-048) so the routine gameplay HUD doesn't
-            // compete with the dramatic "CATCH!" moment — RealityView/its fps+connection overlay
-            // above stays visible, only this stat block fades.
-            Group {
-                LineTensionView(
-                    isFighting: fishFight.hasFishOnHook,
-                    tension: fishFight.lineTension
-                )
-
-                BiteAlertView(
-                    isActive: fishFight.isBiteWindowActive,
-                    progress: fishFight.biteWindowProgress
-                )
-
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("Caught")
-                            Spacer()
-                            Text("\(fishFight.caughtCount)")
-                                .bold()
-                        }
-
-                        HStack {
-                            Text("Level \(fishFight.currentLevel)")
-                            Spacer()
-                            if let progress = fishFight.progressTowardNextLevel {
-                                Text("\(progress.caught)/\(progress.needed) to next tier")
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text("All tiers unlocked")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .font(.caption)
-
-                        if let result = fishFight.lastCatchResult {
-                            HStack {
-                                Text(result.outcome.rawValue)
-                                    .foregroundStyle(result.outcome == .caught ? .green : .secondary)
-                                Spacer()
-                                Text(String(format: "%@ \u{2022} %.1f kg \u{2022} %.0f cm", result.speciesName, result.weight, result.length))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .font(.caption)
-                        } else {
-                            Text("No catch attempts yet")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                // MARK: - Debug purpose only. Can ignore
+                /*
+                GroupBox("Controller State") {
+                    Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
+                        row("State", viewModel.connectionState.rawValue)
+                        row("Action", viewModel.rodState.action.rawValue)
+                        row("Hook", viewModel.hookPhase.rawValue)
+                        row("Reel Speed", format(viewModel.rodState.reelSpeed))
+                        row("Distance", format(viewModel.rodState.distance, suffix: " m"))
+                        row("Last Cast Distance", String(format: "%.2f m", fishFight.lastCastDistance))
+                        row("Direction", formatDirection(viewModel.rodState))
+                        row("Pitch", format(viewModel.rodState.pitch))
+                        row("Roll", format(viewModel.rodState.roll))
+                        row("Yaw", format(viewModel.rodState.yaw))
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                CastMeterView(
-                    castSolution: viewModel.rodState.castSolution,
-                    power: viewModel.rodState.castPower,
-                    phase: viewModel.rodState.motionPhase,
-                    holdDuration: viewModel.rodState.castHoldDuration
-                )
-
-                if let lastError = viewModel.lastError {
-                    Text(lastError).foregroundStyle(.red)
+                GroupBox("Cast Direction Debug") {
+                    Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
+                        row("Player Facing", formatXZ(viewModel.debugPlayerFacingCoordinate))
+                        row("Cast Landed", formatXZ(viewModel.debugCastLandingCoordinate))
+                        row("Raw Aim Angle", formatDegrees(viewModel.debugRawAimDegrees))
+                        row("Corrected Aim Angle", formatDegrees(viewModel.debugCorrectedAimDegrees))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                */
+
+                // Hidden during the catch cutscene (ADR-048) so the routine gameplay HUD doesn't
+                // compete with the dramatic "CATCH!" moment — the RealityView/fps+connection
+                // overlay above stays visible, only this HUD fades.
+                Group {
+                    // Top-center, shrunk to ~40% screen width / 80% original height, with
+                    // padding off the top edge so it reads as floating rather than pinned.
+                    // ADR-097: `LineTensionView` shares this exact slot — the two are mutually
+                    // exclusive in time (charging vs. fighting), so stacking both here reads as
+                    // one continuous meter rather than two HUD elements.
+                    VStack {
+                        CastMeterView(
+                            castSolution: viewModel.rodState.castSolution,
+                            power: viewModel.rodState.castPower,
+                            phase: viewModel.rodState.motionPhase,
+                            holdDuration: viewModel.rodState.castHoldDuration
+                        )
+                        .frame(width: geometry.size.width * 0.4)
+                        .padding(.top, 24)
+
+                        LineTensionView(
+                            isFighting: fishFight.hasFishOnHook,
+                            tension: fishFight.lineTension
+                        )
+                        .frame(width: geometry.size.width * 0.4)
+                        .padding(.top, 24)
+
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity)
+
+                    // The rest of the HUD keeps roughly its old bottom-of-screen position, now
+                    // floating over the fullscreen scene instead of living below it.
+                    VStack {
+                        Spacer()
+
+                        HStack {
+                            VStack(alignment: .leading, spacing: 8) {
+                                FishCounterBadgeView(
+                                    progress: fishFight.progressTowardNextLevel,
+                                    caughtCount: fishFight.caughtCount
+                                )
+
+                                BiteAlertView(
+                                    isActive: fishFight.isBiteWindowActive,
+                                    progress: fishFight.biteWindowProgress
+                                )
+
+                                GroupBox {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        if let result = fishFight.lastCatchResult {
+                                            HStack {
+                                                Text(result.outcome.rawValue)
+                                                    .foregroundStyle(result.outcome == .caught ? .green : .secondary)
+                                                Spacer()
+                                                Text(String(format: "%@ \u{2022} %.1f kg \u{2022} %.0f cm", result.speciesName, result.weight, result.length))
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            .font(.caption)
+                                        } else {
+                                            Text("No catch attempts yet")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+
+                                if let lastError = viewModel.lastError {
+                                    Text(lastError).foregroundStyle(.red)
+                                }
+                            }
+                            .frame(width: geometry.size.width * 0.4)
+
+                            Spacer()
+                        }
+                    }
+                    .padding()
+                }
+                .opacity(viewModel.isShowingCatchCutscene ? 0 : 1)
+                .animation(.easeOut(duration: 0.2), value: viewModel.isShowingCatchCutscene)
             }
-            .opacity(viewModel.isShowingCatchCutscene ? 0 : 1)
-            .animation(.easeOut(duration: 0.2), value: viewModel.isShowingCatchCutscene)
         }
-        .padding(20)
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
     }

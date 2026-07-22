@@ -11,6 +11,213 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-098 --- Cast Meter Becomes a True Proportional Fill Over a Bordered Track
+
+## Decision
+
+`CastMeterView`'s bar changes from a static, always-fully-visible gradient (with a marker riding on
+top to indicate power) to a genuine progress-bar fill: a fixed-width dark brown/black track
+(`Self.darkEnd`, unchanged from ADR-097) with a white `Capsule().stroke()` border, and a green ->
+yellow -> red gradient fill that grows from the left proportional to `power`. The fill is
+implemented as a track-width gradient `Capsule` clipped down to `fillWidth` (`.frame(width:
+fillWidth, alignment: .leading).clipped()`) rather than a gradient stretched to fit the filled
+portion — so a given power value always renders the same color regardless of how much of the bar is
+currently filled, matching how a real gradient progress bar reads. `fish_sign.png` stays as a live
+marker riding the fill's leading edge (`markerOffset` now derived from `fillWidth` directly instead
+of a separate power-based offset calculation, though they were numerically equivalent already).
+
+## Rationale
+
+Requested directly, with a close-up reference of the intended at-rest look: "instead of ini ke fill
+semua, harusnya kaya gambar kedua. dimana ada rectangle coklat as the back layer, dan meterannya nge
+fill dari hijau-kuning-merah gradiently di dalem rectangle itu. also, kasih border white untuk
+rectanglenya" (instead of this filling the whole thing, it should be like the second image — where
+there's a brown rectangle as the back layer, and the meter fills green-yellow-red gradually inside
+that rectangle. Also give the rectangle a white border). ADR-097's dark-brown third gradient stop
+was a partial step toward this same reference but had been read as "change the gradient's end
+color," not "the dark color is an unfilled track, not part of the fill gradient" — this ADR
+corrects that.
+
+## Status
+
+Accepted — verified via `xcrun swiftc -typecheck` against the full `World/World` Swift file list
+(clean), a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` build (BUILD
+SUCCEEDED), and an actual launch/`ps`-confirmed-running/quit with no crash. As with ADR-096/097,
+the in-scene gameplay HUD itself could not be visually confirmed this pass — no Rod device was
+paired. Open device-validation gap.
+
+------------------------------------------------------------------------
+
+# ADR-097 --- Cast Meter and Line Tension Visuals Swapped Back to Their Correct Roles
+
+## Decision
+
+A second, more precise reference image showed what the cast meter is actually supposed to look
+like: the same gradient-capsule-plus-reel-cap structure as before, but ending in a dark brown/black
+third gradient stop instead of red. Comparing it against the current implementation revealed the
+gradient/reel/marker visual built in ADR-095/096 had been assigned to the wrong view — it reads as
+a tension gauge (red = danger), not a charge/power gauge, and the user confirmed exactly this: "yang
+sekarang di implement di cast meter itu malah line tension meter" (what's currently implemented as
+the cast meter is actually the line tension meter).
+
+`CastMeterView`'s gradient keeps its structure (green -> yellow -> third stop, `roll.png` reel cap,
+`fish_sign.png` power marker) but the third stop changes from `.red` to a new `Self.darkEnd`
+constant (`Color(red: 0.16, green: 0.12, blue: 0.09)`, matching `FishCounterBadgeView`'s existing
+dark pill color for palette consistency).
+
+`LineTensionView` is rewritten from its original plain solid-color proportional-fill capsule (color
+switching between green/yellow/red by danger zone, a light-green safe-zone highlight, "Slack"/
+"Snap" labels) to the gradient-capsule + `roll.png` + `fish_sign.png`-marker structure the cast
+meter had before this ADR — keeping `.red` as its third stop, since red-for-danger is the correct
+semantic here. The safe-zone highlight becomes a stroked (unfilled) capsule outline over the
+gradient rather than a filled overlay, since the gradient itself now occupies that visual space;
+the "LOSING FISH"/"SNAPPING" warning labels are kept.
+
+Per "taro line tension di posisi yang sama kaya cast meter" (put line tension in the same position
+as cast meter), `ContentView` moves `LineTensionView`'s call site out of the bottom-leading HUD
+stack and into the same top-center `VStack` as `CastMeterView` — same `geometry.size.width * 0.4`
+frame width and `.padding(.top, 24)`. The two are mutually exclusive in time (`CastMeterView` shows
+only during backswing/charging/release/followThrough; `LineTensionView` only while
+`fishFight.hasFishOnHook`), so stacking both in the same slot reads as one continuous meter that
+changes meaning by game phase, never two overlapping elements.
+
+## Rationale
+
+Requested directly, with a second reference image of the cast meter specifically: "cast meter itu
+harusnya ini. yang sekarang di implement di cast meter itu malah line tension meter. also, taro
+line tension di posisi yang sama kaya cast meter" (the cast meter should be this — what's currently
+implemented as the cast meter is actually the line tension meter — also, put line tension in the
+same position as the cast meter).
+
+## Status
+
+Accepted — verified via `xcrun swiftc -typecheck` against the full `World/World` Swift file list
+(clean; the `bundleImage`/`Shared`-module/"unable to type-check in reasonable time" diagnostics
+SourceKit flagged mid-edit were stale index noise and a genuinely too-complex single expression,
+respectively — the latter fixed by breaking `LineTensionView`'s offset math into named local
+`let`s rather than one inline expression), a real unsigned `xcodebuild -workspace
+CtSPoC.xcworkspace -scheme World` build (BUILD SUCCEEDED), and an actual launch/`ps`-confirmed-
+running/quit with no crash. As with ADR-096, the in-scene gameplay HUD itself (where both meters
+actually render) could not be visually confirmed this pass — no Rod device was paired. Open
+device-validation gap.
+
+------------------------------------------------------------------------
+
+# ADR-096 --- Gameplay Scene Goes Fullscreen; HUD Becomes a Floating Overlay
+
+## Decision
+
+`ContentView`'s `content` view is restructured from a `VStack` (RealityView on top at
+`minHeight: 320`, HUD stat block below it filling the rest of the window) to a `GeometryReader`
+wrapping a `ZStack`: the `RealityView` now has `.ignoresSafeArea()` and fills the entire window,
+with every HUD element — fps/connection indicator, `FishCounterBadgeView`, `LineTensionView`,
+`BiteAlertView`, the catch-result `GroupBox`, `CastMeterView`, and the error text — repositioned as
+overlays on top of it instead of occupying a separate region below it. There is no longer a
+distinct "bottom bar" region; the scene alone determines the window's visible area.
+
+`CastMeterView` specifically moves to a top-center overlay: wrapped in a `VStack { ...; Spacer() }`
+pinned to the top via `.frame(maxWidth: .infinity)`, constrained to `geometry.size.width * 0.4`
+(~40% of its previous full-bleed width), with `.padding(.top, 24)` so it reads as floating below
+the top edge rather than pinned to it. Inside `CastMeterView` itself, `reelSize` (56 -> 45) and
+`barHeight` (30 -> 24) both drop to 80% of their ADR-095 values, shrinking the bar's own height to
+match its new role as a small floating HUD element rather than a near-full-width bar.
+
+The power-position marker inside `CastMeterView` — a plain white `Capsule` since ADR-095 — is
+replaced with the `fish_sign.png` asset (already present in `Assets/Images`, loaded via the
+existing `bundleImage(_:)` helper), sized `18x(barHeight + 16)`, offset to keep it centered over
+its live power position on the gradient bar the same way the capsule was.
+
+The remaining HUD elements (badge, tension, bite alert, catch-result box, error text) keep
+roughly their prior bottom-of-screen position, now as a `VStack { Spacer(); HStack { ...; Spacer()
+} }` overlay anchored bottom-leading over the fullscreen scene, constrained to the same
+`geometry.size.width * 0.4` width as the cast meter for visual consistency — this part wasn't
+explicitly specified in the request but had to go somewhere once the separate bottom region was
+removed, so it was kept in its established relative position rather than redesigned further.
+
+## Rationale
+
+Requested directly: "rod meter seharusnya jadi overlay diatas screen utama, jadi sekarang screen
+game bisa full memakan semua bagian layar (ga perlu ada bagian paling bawa lagi). juga, kurangin
+panjang meteran jadi sekitar 40% original length, dan 80% original height, lalu taruh di top dan
+kasih padding dari atas (agar di tengah-atas, tapi ga nempel top). selain itu, penanda nya (yang
+sekarang kotak putih), ganti pake asset fish_sign.png" (the rod meter should become an overlay on
+top of the main screen, so the game screen can now fully fill the whole display — no more bottom
+section needed. Also, shrink the meter to about 40% of its original length and 80% of its original
+height, then place it at the top with padding from the top edge so it sits top-center without
+touching the top. Also, replace the marker — currently a white box — with the fish_sign.png asset).
+Continues the same reference-image-driven UI track as ADR-081, ADR-082, and ADR-095.
+
+## Status
+
+Accepted — verified via `swift build` for `Shared` (macOS), `swiftc -typecheck` against the full
+`World/World` file list (clean), a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme
+World` build (BUILD SUCCEEDED), and an actual launch (confirmed running via `ps`, screenshot taken
+at the Main Menu, then quit) with no crash. The Main Menu was the only screen reachable in this
+check — no Rod device was paired/connected, so the in-scene gameplay HUD (fullscreen RealityView,
+top-centered cast meter, bottom-leading badge/tension/bite/catch-result stack) could not be
+visually confirmed against the reference this pass; this remains an open device-validation gap,
+consistent with this project's usual caveat that live gameplay behavior needs a paired Rod.
+
+------------------------------------------------------------------------
+
+# ADR-095 --- Cast Meter Restyled and Fish Counter Badge Added, Both Reference-Image-Driven
+
+## Decision
+
+`World/World/Views/CastMeterView.swift` is rewritten to match a supplied reference screenshot: the
+three hard-edged `.green`/`.yellow`/`.red` blocks are replaced with a single smooth
+`LinearGradient` `Capsule` (green -> yellow -> red, leading to trailing), capped on the left by a
+new `roll.png` reel/spool image (loaded via the existing `bundleImage(_:)` helper, `BundleImage.
+swift`) sized by a new `reelSize: CGFloat = 56` constant that the bar's leading inset derives from.
+The live power-position marker is kept (the reference is a static example with none, but the bar
+is meaningless without one) as a slim white `Capsule` with a shadow. The existing holding-duration
+and resolved power/distance text is kept but demoted from headline rows woven into the bar to small
+`.caption2`/`.secondary` text below it, since the reference shows no text in the bar itself.
+
+A new `World/World/Views/FishCounterBadgeView.swift` reproduces the reference's round fish-icon
+"caught/needed" badge: a circular badge (new `fish.png` asset, via `bundleImage(_:)`) overlapping
+the leading edge of a dark pill showing `"\(caught)/\(needed)"`, falling back to a bare
+`"\(caughtCount)"` once `FishFightController.progressTowardNextLevel` is `nil` (all tiers
+unlocked). `World/World/ContentView.swift`'s HUD `Group` gains a `FishCounterBadgeView(progress:
+caughtCount:)` call site (fed by the same `fishFight` properties the old text already used), and
+the `GroupBox`'s now-redundant "Caught {count}" / "Level {level} ... {caught}/{needed} to next
+tier"/"All tiers unlocked" `HStack` rows are removed — the `GroupBox` now holds only the
+last-catch-result row it already had.
+
+Scope explicitly excluded: no persistent coin total exists anywhere in the codebase (`coins` is
+only ever computed per-catch inside `FishCatchResult`, never accumulated), so the reference's "100"
+coin display was not built — there is nothing to source it from without a new accumulator, which
+was not requested. The reference's top-left "X" close button was not implemented (not mentioned in
+the request). The overall HUD layout is unchanged — `FishCounterBadgeView` and the restyled
+`CastMeterView` stay in their existing position inside `ContentView`'s vertical `Group`, rather
+than being repositioned into a floating overlay matching the reference screenshot's exact framing.
+
+## Rationale
+
+Requested directly, with two reference images (a full gameplay screenshot and a cropped close-up of
+the cast meter): "aku udah nambahin asset 'fish.png' dan 'roll.png' ke dalam assets/images di
+World. aku mau kamu buatin beberapa hal seperti yang aku kirim ini. ini tampilan dimana kamu
+menyimpan posisi si 'cast_meter'. ini contoh cast meternya. warnanya nge blend dari hijau-merah,
+dan sesuaiin aja kaya di gambar" (I've added fish.png and roll.png to World's assets/images — build
+several things like what I sent; this is the cast-meter's position; this is what the cast meter
+should look like, colors blending green-to-red, match the picture). This is the third
+reference-image-driven UI pass this session, after the Main Menu (ADR-081) and Loading Screen
+(ADR-082) — same pattern of translating a supplied screenshot into SwiftUI as closely as scope
+allows without inventing unrequested backing state (coins) or elements (the close button).
+
+## Status
+
+Accepted — verified via `swift build` for `Shared` (macOS), `swiftc -typecheck` against the full
+`World/World` file list (clean; confirmed the `Cannot find 'bundleImage' in scope` and `No such
+module 'Shared'` diagnostics both were stale SourceKit index noise, not real errors, matching this
+session's established pattern for freshly-edited files), a real unsigned `xcodebuild -workspace
+CtSPoC.xcworkspace -scheme World` build (BUILD SUCCEEDED), and an actual launch (`open World.app`,
+confirmed running via `ps`, then quit) with no crash. Live visual comparison against the reference
+images on an actual run, and device/hardware validation of the rest of the gameplay loop, remain
+outstanding per this project's usual device-validation caveat.
+
+------------------------------------------------------------------------
+
 # ADR-094 --- Fight-Flick Detection Disabled Entirely; Only the Bite-Window Flick Remains
 
 ## Decision

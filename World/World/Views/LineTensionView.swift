@@ -7,10 +7,13 @@
 
 import SwiftUI
 
-/// Both ends of the bar are a failure: too low means the line went slack
-/// and the fish escaped, too high means it snapped from over-reeling. The
-/// safe zone in the middle is shaded so the player can see it, not just
-/// infer it from color.
+/// ADR-097: restyled to the gradient-capsule + `roll.png` reel cap + live marker structure
+/// originally built for `CastMeterView` — a tension gauge is just as well served by that visual
+/// language, and the two were getting visually confused for one another. Placed in the same
+/// top-center overlay slot `CastMeterView` uses (see `ContentView`), since the two are mutually
+/// exclusive in time (charging vs. fighting) and read to the player as one continuous HUD element.
+/// Both ends of the bar are still a failure (too low = slack line/lost fish, too high = snapped
+/// line from over-reeling); the safe zone in the middle is outlined rather than just inferred.
 struct LineTensionView: View {
     let isFighting: Bool
     let tension: Float
@@ -20,11 +23,8 @@ struct LineTensionView: View {
     private let safeLow: Float = 0.3
     private let safeHigh: Float = 0.7
 
-    private var color: Color {
-        if tension < dangerLow || tension > dangerHigh { return .red }
-        if tension < safeLow || tension > safeHigh { return .yellow }
-        return .green
-    }
+    private let reelSize: CGFloat = 45
+    private let barHeight: CGFloat = 24
 
     private var warningLabel: String? {
         if tension < dangerLow { return "LOSING FISH" }
@@ -34,47 +34,56 @@ struct LineTensionView: View {
 
     var body: some View {
         if isFighting {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Line Tension")
-                        .font(.headline)
-                    Spacer()
-                    if let warningLabel {
-                        Text(warningLabel)
-                            .font(.caption.bold())
-                            .foregroundStyle(.red)
-                    }
-                }
-
+            VStack(spacing: 6) {
                 GeometryReader { geometry in
+                    let trackWidth: CGFloat = geometry.size.width - reelSize * 0.5
+                    let clampedTension: CGFloat = CGFloat(min(1, max(0, tension)))
+                    let safeZoneWidth: CGFloat = CGFloat(safeHigh - safeLow) * trackWidth
+                    let safeZoneOffset: CGFloat = reelSize * 0.5 + CGFloat(safeLow) * trackWidth
+                    let markerOffset: CGFloat = reelSize * 0.5 + clampedTension * trackWidth - 9
+
                     ZStack(alignment: .leading) {
                         Capsule()
-                            .fill(.quaternary)
+                            .fill(
+                                LinearGradient(
+                                    colors: [.green, .yellow, .red],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .frame(height: barHeight)
+                            .padding(.leading, reelSize * 0.5)
 
+                        // Safe zone — the only stretch of the bar where the fish stays hooked
+                        // without drifting toward either failure edge.
                         Capsule()
-                            .fill(.green.opacity(0.25))
-                            .frame(width: CGFloat(safeHigh - safeLow) * geometry.size.width)
-                            .offset(x: CGFloat(safeLow) * geometry.size.width)
+                            .stroke(.white.opacity(0.7), lineWidth: 2)
+                            .frame(width: safeZoneWidth, height: barHeight)
+                            .offset(x: safeZoneOffset)
 
-                        Capsule()
-                            .fill(color)
-                            .frame(width: CGFloat(min(1, max(0, tension))) * geometry.size.width)
+                        // Live tension marker — same `fish_sign.png` used for the cast meter's
+                        // power marker, for visual consistency between the two mutually exclusive
+                        // meters sharing this HUD slot.
+                        bundleImage("fish_sign")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 18, height: barHeight + 16)
+                            .shadow(color: .black.opacity(0.4), radius: 2)
+                            .offset(x: markerOffset)
+
+                        bundleImage("roll")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: reelSize, height: reelSize)
                     }
                 }
-                .frame(height: 14)
+                .frame(height: max(barHeight, reelSize))
 
-                HStack {
-                    Text("Slack")
-                    Spacer()
-                    Text("Snap")
+                if let warningLabel {
+                    Text(warningLabel)
+                        .font(.caption2.bold())
+                        .foregroundStyle(.red)
                 }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-                // ADR-089: flicking the rod forward eases tension at any point during a fight —
-                // no prompt to wait for, so there's nothing to show a banner for here anymore
-                // (see `BiteAlertView` for the one remaining timed prompt, the pre-hook bite
-                // window).
             }
         }
     }
