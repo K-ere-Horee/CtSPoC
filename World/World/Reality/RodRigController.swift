@@ -127,10 +127,6 @@ struct RodRigController {
     private let reelEntity: Entity?
     private var smoothedBendPitch: Double = 0
     private var smoothedBendRoll: Double = 0
-    
-    #if DEBUG
-    private let debugEnd: Entity?
-    #endif
 
     static func load() async -> RodRigController {
         let root = Entity()
@@ -174,15 +170,6 @@ struct RodRigController {
                 // parent. Resetting `line`'s local transform to identity right after attaching
                 // makes it behave exactly like the (correctly-behaving) marker entities.
                 line.transform = Transform(scale: .one, rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), translation: .zero)
-
-                #if DEBUG
-                let debugTail = ModelEntity(
-                    mesh: .generateSphere(radius: 0.02),
-                    materials: [SimpleMaterial(color: .blue, isMetallic: false)]
-                )
-                debugTail.attach(to: tipPin)
-                root.addChild(debugTail)
-                #endif
             }
         }
 
@@ -207,15 +194,6 @@ struct RodRigController {
             // never visually apparent the way a missing `addChild` on a rendered marker would be.
             root.addChild(marker)
             tipEntity = marker
-
-            #if DEBUG
-            let debugHead = ModelEntity(
-                mesh: .generateSphere(radius: 0.02),
-                materials: [SimpleMaterial(color: .red, isMetallic: false)]
-            )
-            debugHead.attach(to: tipMarkerPin)
-            root.addChild(debugHead)
-            #endif
         }
 
         var reelEntity: Entity?
@@ -236,42 +214,12 @@ struct RodRigController {
             reelEntity = reel
         }
 
-        #if DEBUG
-        // ADR-113: this used to be `root.addChild(debugEnd)` (parented under `root` == `rig.root`,
-        // which has a live, non-identity transform — position=dockAnchorPosition, rotation=yaw*
-        // restTilt, set every tick by `updateRodPose()`) with `applyBend()` manually assigning it
-        // `debugEnd?.position = tipEndPosition` — an ALREADY world-space value written as if it were
-        // LOCAL to that rotated/translated parent. That's a double-transform: the marker's true
-        // world position was `dockAnchorPosition + rig.root's rotation applied to tipEndPosition`,
-        // not `tipEndPosition` itself. Fixed the same way `debugHead`/`debugTail` already work
-        // correctly: attach to a pin (which resolves to world space automatically) instead of a
-        // manual `.position =` write under a non-identity parent — using a dedicated pin at the same
-        // `tipTailOffset` used for `LineAttachPin`/`tipEndPosition`, so it self-updates every frame
-        // with no per-tick code needed at all.
-        var debugEnd: Entity?
-        if let rodModel {
-            let debugEndPin = rodModel.pins.set(
-                named: "DebugEndPin",
-                skeletalJointName: tipJointPath,
-                position: tipTailOffset
-            )
-            let marker = ModelEntity(
-                mesh: .generateSphere(radius: 0.02),
-                materials: [SimpleMaterial(color: .green, isMetallic: false)]
-            )
-            marker.attach(to: debugEndPin)
-            root.addChild(marker)
-            debugEnd = marker
-        }
-        #endif
-
         return RodRigController(
             root: root,
             tipEntity: tipEntity,
             rodModel: rodModel,
             lineModel: lineModel,
-            reelEntity: reelEntity,
-            debugEnd: debugEnd
+            reelEntity: reelEntity
         )
     }
 
