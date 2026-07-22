@@ -16,7 +16,6 @@ struct LoadingScreenView: View {
         ZStack {
             bundleImage("loading_screen")
                 .resizable()
-                .scaledToFill()
                 .ignoresSafeArea()
 
             // Requested directly as a flat color layer, not a gradient: "tambahin semacam
