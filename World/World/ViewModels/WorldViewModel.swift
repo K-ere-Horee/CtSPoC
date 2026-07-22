@@ -304,6 +304,12 @@ final class WorldViewModel: ObservableObject {
     private var rodRig: RodRigController?
     private var controllerEntity: Entity?
     private var hookEntity: ModelEntity?
+    /// Verlet-simulated fishing line (ADR-108) connecting the rod tip to the hook (when a hook is
+    /// out) or hanging free under gravity (idle). Lives in world/scene space (child of the scene
+    /// root, not the yaw-rotated rig root) so both pinned endpoints are real world positions.
+    /// Replaces `rod_line.usdz`'s short skeletal droop and the earlier rigid single-box line
+    /// (ADR-106/107), neither of which had any dynamics. Stepped each tick by `updateFishingRope()`.
+    private var fishingRope: FishingLineRope?
     /// The real animated fish shown during the catch cutscene (ADR-068) — currently always
     /// `mekong_catfish_caught.usdz` regardless of which `FishSpecies` tier was actually caught (see
     /// `beginCatchCutscene`'s doc comment for why). `nil` if the asset failed to load, in which case
@@ -528,13 +534,36 @@ final class WorldViewModel: ObservableObject {
         controllerEntity = rig.root
         rodRig = rig
 
-        let hook = ModelEntity(
+        // ADR-109: the hook is now a small bobber — a float sphere plus a thin vertical antenna —
+        // rather than a bare sphere, so that leaning it toward the rod (see `leanHookTowardRod`)
+        // actually reads visually (a sphere's tilt is invisible). `hookEntity` is the container that
+        // gameplay positions/orients; the visual parts are children, so `launchHook`'s scale reset
+        // and the catch cutscene's animation of the container don't distort the bobber's own shape.
+        let hook = ModelEntity()
+        hook.name = "Hook"
+        let float = ModelEntity(
             mesh: .generateSphere(radius: 0.07),
             materials: [SimpleMaterial(color: .yellow, isMetallic: false)]
         )
+        hook.addChild(float)
+        let antenna = ModelEntity(
+            mesh: .generateBox(size: [0.012, 0.16, 0.012]),
+            materials: [UnlitMaterial(color: .red)]
+        )
+        antenna.position = [0, 0.11, 0]
+        hook.addChild(antenna)
         hook.isEnabled = false
         hookEntity = hook
         root.addChild(hook)
+
+        // ADR-108: verlet fishing-line rope, added to the scene root (world space) and stepped each
+        // tick by `updateFishingRope()`. The short skeletal `rod_line.usdz` droop is hidden once and
+        // for all here — the rope now owns the line's whole visual role (ADR-109: shown only once the
+        // hook is in the water, connecting the tip to the bobber).
+        let rope = FishingLineRope()
+        fishingRope = rope
+        root.addChild(rope.root)
+        rig.setSkeletalLineVisible(false)
 
         // ADR-068: loaded once up front like every other scene entity, not lazily on first catch —
         // `Entity(named:)` is async and this avoids a load stall on the player's very first catch.
@@ -755,6 +784,8 @@ final class WorldViewModel: ObservableObject {
             }
         }
 
+        updateFishingRope(deltaTime: deltaTime)
+
         sounds.updateReelLoop(active: rodState.action == .reeling && hookPhase != .idle && hookPhase != .flying && hookPhase != .result)
         // ADR-084 (amended): exactly one base ambience is active at a time — `ambienceLake` during
         // gameplay, `idle` at the Main Menu/Onboarding — never both, never neither (outside
@@ -769,6 +800,48 @@ final class WorldViewModel: ObservableObject {
     private func hookDistanceFromRod() -> Float {
         guard let controllerEntity, let hookEntity else { return 0 }
         return simd_length(controllerEntity.position - hookEntity.position)
+    }
+
+    /// Steps the verlet fishing-line rope (ADR-108) each frame while the hook is in the water — point
+    /// 0 pinned to the rod tip's live world position, the far end pinned to the hook. ADR-109: the
+    /// rope is shown *only* once the hook has splashed down (`.hookInWater` and the fight phases), not
+    /// during the cast arc (`.flying`) — the line whipping around to chase a fast projectile read
+    /// badly, and the request was to only display it once in the water. Hidden otherwise (idle,
+    /// flying, cutscene, result). While shown, the hook is also leaned toward the rod so it reads as
+    /// floating under line tension rather than lying flat on the water.
+    private func updateFishingRope(deltaTime: Float) {
+        guard let fishingRope, let tipEntity = rodRig?.tipEntity, let hookEntity else { return }
+
+        let inWater = hookEntity.isEnabled && !isShowingCatchCutscene
+            && (hookPhase == .hookInWater || hookPhase == .fishOnHook || hookPhase == .reeling)
+
+        guard inWater else {
+            fishingRope.setHidden(true)
+            return
+        }
+
+        let tip = tipEntity.position(relativeTo: nil)
+        let hook = hookEntity.position(relativeTo: nil)
+        fishingRope.setHidden(false)
+        fishingRope.update(tip: tip, hook: hook, deltaTime: deltaTime)
+        leanHookTowardRod(tip: tip, hook: hook)
+    }
+
+    /// Tilts the bobber (ADR-109) so its up-axis leans toward the rod tip, reading as a float being
+    /// pulled by line tension rather than sitting flat on the water. The lean is a fixed modest angle
+    /// toward the rod's horizontal direction; the visible cue is the bobber's antenna (see the hook's
+    /// construction in `makeSceneEntity`), since a bare float sphere shows no tilt.
+    private func leanHookTowardRod(tip: SIMD3<Float>, hook: SIMD3<Float>) {
+        guard let hookEntity else { return }
+        let toTip = tip - hook
+        let horizontal = SIMD3<Float>(toTip.x, 0, toTip.z)
+        guard simd_length(horizontal) > 1e-4 else { return }
+
+        // `targetUp` leans ~20° (tan ≈ 0.36) from world-up toward the rod — always close to up, so
+        // `simd_quatf(from:to:)` is safe here (never near the antiparallel pole that ADR-107 avoids).
+        let leanDirection = simd_normalize(horizontal)
+        let targetUp = simd_normalize(SIMD3<Float>(0, 1, 0) + leanDirection * 0.36)
+        hookEntity.orientation = simd_quatf(from: [0, 1, 0], to: targetUp)
     }
 
     /// Sends a `FishingEvent` to Rod whenever the fight's tension band changes (ADR-039), so Rod
@@ -829,8 +902,14 @@ final class WorldViewModel: ObservableObject {
             ? -abs(sin(bobberBobPhase * interestDipFrequency * 2 * .pi)) * interestDipAmplitude
             : 0
 
-        hookEntity.position.y = waterHeight + idleBob + interestDip
+        // ADR-109: `bobberFloatHeight` lifts the float so it rides *on* the surface (antenna above
+        // the waterline) rather than sitting centred in the plane, half-submerged.
+        hookEntity.position.y = waterHeight + bobberFloatHeight + idleBob + interestDip
     }
+
+    /// How far above `waterHeight` the bobber's center floats at rest (ADR-109), so it sits on the
+    /// surface with its antenna clear of the water rather than half-sunk in the plane.
+    private let bobberFloatHeight: Float = 0.04
 
     private func ensureFightDistance() {
         guard let controllerEntity, let hookEntity else { return }
@@ -962,6 +1041,7 @@ final class WorldViewModel: ObservableObject {
         hookEntity.isEnabled = true
         hookEntity.position = tipPosition
         hookEntity.scale = SIMD3<Float>(repeating: 1)  // ADR-075: undo any catch-cutscene scaling
+        hookEntity.orientation = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)  // ADR-109: upright while flying; leans only once in water
         castLaunchPosition = tipPosition
         let angle = solution.launchAngle
 
