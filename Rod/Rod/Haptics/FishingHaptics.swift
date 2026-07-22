@@ -29,10 +29,20 @@ final class FishingHaptics {
     private var lastReelTick = Date.distantPast
     private var lastInterestPulse = Date.distantPast
     private var lastFightPulse = Date.distantPast
+    private var lastBiteAlertPulse = Date.distantPast
     private(set) var isFishInterested = false
     private(set) var fightBand: FightBand?
+    /// Whether a bite window is currently open (ADR-092) — drives `biteAlertPulse(now:)`'s
+    /// repeating alert while `true`. Set on `.biteAlert`, cleared the instant the window resolves
+    /// either way (`.fishBite`/`.fishGaveUp`), plus `stopBiteAlert()` as a belt-and-suspenders
+    /// safety net.
+    private(set) var isBiteAlertActive = false
 
     private let interestPulseInterval: TimeInterval = 1.1
+    /// Deliberately faster than `interestPulseInterval` (ADR-092, "bikin continuous aja waktu
+    /// ikan udah gigit gigit") — a bite window is a short, urgent "act now" moment, not a passive
+    /// ambient cue, so the repeating alert should feel closer to continuous than a slow pulse.
+    private let biteAlertPulseInterval: TimeInterval = 0.4
 
     init(haptics: HapticManager = HapticManager(), config: FishFightConfig = FishFightConfig()) {
         self.haptics = haptics
@@ -66,6 +76,7 @@ final class FishingHaptics {
             haptics.fishInterested()
         case .fishBite:
             isFishInterested = false
+            isBiteAlertActive = false
             haptics.fishBite()
         case .fishEscaped:
             isFishInterested = false
@@ -88,13 +99,7 @@ final class FishingHaptics {
         case .reelTensionHigh:
             isFishInterested = false
             fightBand = .high
-        case .qtePrompt:
-            // ADR-078: a sharp, distinct alert telling the player to flick now — deliberately not
-            // reusing `fishBite()`'s pattern (which already means something different: the start
-            // of a fight, not a mid-fight prompt) or the continuous `fightTick` rhythm (which
-            // keeps running underneath this regardless).
-            haptics.qtePrompt()
-        case .qteFlick:
+        case .fightFlick:
             // Rod -> World only; Rod itself never receives this case. Exhaustive switch requires
             // a branch anyway.
             break
@@ -102,10 +107,13 @@ final class FishingHaptics {
             // ADR-088: a fish is testing the bait *right now* — the player has
             // `FishFightConfig.biteWindowDuration` to flick the rod forward and actually set the
             // hook, or this attempt is lost. Deliberately the strongest/most insistent pattern
-            // Rod has (`haptics.biteAlert()`), distinct from both `fishBite()`'s softer 4-pulse
-            // confirmation (now only played once the hook is actually set) and `qtePrompt()`'s
-            // quick double-tap (a mid-fight reaction cue, not "the moment of truth").
+            // Rod has (`haptics.biteAlert()`), distinct from `fishBite()`'s softer 4-pulse
+            // confirmation (now only played once the hook is actually set). ADR-092: plays once
+            // immediately here, then repeats via `biteAlertPulse(now:)` for as long as the window
+            // stays open, instead of firing only once.
             isFishInterested = false
+            isBiteAlertActive = true
+            lastBiteAlertPulse = Date()
             haptics.biteAlert()
         case .hookSet:
             // Rod -> World only; Rod itself never receives this case. Exhaustive switch requires
@@ -116,6 +124,7 @@ final class FishingHaptics {
             // deflating cue — distinct from `fishEscaped()` (a hooked fish getting away mid-fight
             // is a bigger, different kind of loss) — so the player isn't left with no feedback at
             // all after the tension of `biteAlert()`.
+            isBiteAlertActive = false
             haptics.fishGaveUp()
         }
     }
@@ -152,11 +161,30 @@ final class FishingHaptics {
         haptics.fightTick(intensity: params.intensity, sharpness: params.sharpness)
     }
 
+    /// Call every motion sample; throttles itself to `biteAlertPulseInterval` and no-ops unless a
+    /// bite window is currently open (ADR-092). Same recurring-callback pattern as
+    /// `interestPulse(now:)`/`fightPulse(now:)`, just faster — a bite window is a short, urgent
+    /// moment, not ambient background texture.
+    func biteAlertPulse(now: Date = Date()) {
+        guard isBiteAlertActive else { return }
+        guard now.timeIntervalSince(lastBiteAlertPulse) >= biteAlertPulseInterval else { return }
+
+        lastBiteAlertPulse = now
+        haptics.biteAlert()
+    }
+
     /// Call when `HookPhase` leaves `.hookInWater`, so a stale interest
     /// signal can't keep pulsing after the fish bit, escaped, or a new cast
     /// began.
     func stopInterest() {
         isFishInterested = false
+    }
+
+    /// Call when `HookPhase` leaves `.hookInWater`, so a stale bite-alert signal can't keep
+    /// pulsing after the fish bit, escaped, or a new cast began — belt-and-suspenders alongside
+    /// `.fishBite`/`.fishGaveUp` above, which also clear it.
+    func stopBiteAlert() {
+        isBiteAlertActive = false
     }
 
     /// Call when `HookPhase` leaves the fight phases (`.fishOnHook`/`.reeling`), so a stale

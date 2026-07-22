@@ -26,22 +26,19 @@ public enum FishingEvent: String, Codable, Sendable, Equatable {
     case reelTensionLow
     case reelTensionMedium
     case reelTensionHigh
-    /// A flick-QTE prompt just spawned during a fight (ADR-078, replacing the ADR-053 lean-left/
-    /// right juking mechanic) — World -> Rod, alerting the player to flick the rod forward (the
-    /// same gesture as a cast release) within `FishFightConfig.qteReactionWindow`.
-    case qtePrompt
-    /// The player flicked the rod forward during a fight (Rod -> World, the only `FishingEvent`
-    /// case Rod itself ever constructs and sends — every other case flows World -> Rod). Reused
-    /// directly from the calibrated cast-release gesture; `FishFightController.handleQTEFlick()`
-    /// only reacts to it while a QTE prompt is actually active, so a stray/late flick is a no-op.
-    case qteFlick
+    /// The player flicked the rod forward while a fish is hooked (Rod -> World, ADR-089 —
+    /// replacing ADR-078's timed QTE prompt/reaction-window mechanic, which required waiting for
+    /// a spawned prompt and could be missed with no visible cause; every flick during a fight is
+    /// now always meaningful). Reused directly from the calibrated cast-release gesture;
+    /// `FishFightController.handleFightFlick()` is a no-op outside a fight entirely.
+    case fightFlick
     /// A bite-alert window just opened during `.hookInWater` (ADR-088, replacing the old instant
     /// auto-bite) — World -> Rod, a strong haptic telling the player a fish is testing the bait
-    /// *right now* and to flick the rod forward (same gesture as a cast release/QTE flick) within
-    /// `FishFightConfig.biteWindowDuration` to actually set the hook.
+    /// *right now* and to flick the rod forward (same gesture as a cast release/fight flick)
+    /// within `FishFightConfig.biteWindowDuration` to actually set the hook.
     case biteAlert
     /// The player flicked the rod forward during an active bite window (Rod -> World, alongside
-    /// `qteFlick` the only other case Rod itself constructs and sends). Reused from the same
+    /// `fightFlick` the only other case Rod itself constructs and sends). Reused from the same
     /// calibrated forward-flick gesture; `FishFightController.handleHookSetFlick()` only reacts to
     /// it while a bite window is actually open, so a stray/late flick is a no-op.
     case hookSet

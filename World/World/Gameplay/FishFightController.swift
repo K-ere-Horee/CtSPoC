@@ -48,16 +48,6 @@ final class FishFightController: ObservableObject {
     }
 
     @Published private(set) var hasFishOnHook = false
-    /// Whether a flick-QTE prompt is currently active (ADR-078, replacing the ADR-053 lean-left/
-    /// right juke) — the player has `qteReactionWindow` seconds to flick the rod forward before
-    /// it counts as a miss. World reads this to show a HUD prompt and to fire a one-shot Rod
-    /// haptic alert on the rising edge (Rod owns no gameplay HUD, so this can't be communicated
-    /// on the controller itself).
-    @Published private(set) var isQTEActive = false
-    /// `1.0` the instant a prompt spawns, ticking down to `0.0` as `qteReactionWindow` elapses —
-    /// normalized (not raw seconds) so `LineTensionView` doesn't need its own copy of
-    /// `config.qteReactionWindow` just to size a progress bar. Meaningless while `!isQTEActive`.
-    @Published private(set) var qteProgress: Float = 0
     /// A fish is nearby and interested but hasn't bitten. World may show a
     /// subtle cue; Rod plays a slow periodic haptic while this is `true`.
     @Published private(set) var isFishInterested = false
@@ -67,8 +57,7 @@ final class FishFightController: ObservableObject {
     /// `false` while this is `true`.
     @Published private(set) var isBiteWindowActive = false
     /// `1.0` the instant a bite window opens, ticking down to `0.0` as `biteWindowDuration`
-    /// elapses — same normalized-progress convention as `qteProgress`. Meaningless while
-    /// `!isBiteWindowActive`.
+    /// elapses. Meaningless while `!isBiteWindowActive`.
     @Published private(set) var biteWindowProgress: Float = 0
     /// 0 (slack, fish escapes) ... 1 (snaps). Starts at `initialTension`
     /// when a fish bites, so the player has a buffer in both directions.
@@ -110,6 +99,12 @@ final class FishFightController: ObservableObject {
     /// How many bite windows this fish has already missed (0...`maxBiteAttempts`). Resets to 0
     /// whenever a fish is newly hooked or gives up.
     private var biteAttemptsUsed = 0
+    /// Seconds left before `handleFightFlick()` will accept another flick (ADR-093) — set to
+    /// `config.fightFlickGraceDuration` the instant a fish is hooked, counts down in
+    /// `updateFight`. Suppresses the hook-set flick's own physical follow-through from
+    /// immediately registering as a separate fight-flick and shaving tension off a value that was
+    /// just set.
+    private var fightFlickGraceTimer: Float = 0
     private var currentSpecies: FishSpecies?
     private var currentWeight: Double = 0
     private var currentLength: Double = 0
@@ -117,14 +112,6 @@ final class FishFightController: ObservableObject {
     /// Hook-to-rod distance on the first `updateFight` tick of the current fight — the baseline
     /// `escapeDistanceAllowance` is measured against. `nil` outside a fight.
     private var fightStartDistance: Float?
-    /// Seconds until the next QTE prompt spawns — counts down in `updateFight` whenever
-    /// `!isQTEActive`. Re-seeded to a fresh random interval on bite and after every prompt
-    /// resolves (success or timeout), so prompts keep recurring for the rest of the fight.
-    private var qteSpawnTimer: Float = 0
-    /// Seconds left in the *current* active prompt's reaction window — counts down in
-    /// `updateFight` whenever `isQTEActive`. Reaching 0 resolves the prompt as a miss.
-    private var qteReactionTimer: Float = 0
-
     private let recordStore: FishRecordStore
     private let progressionStore: ProgressionStore
 
@@ -169,16 +156,13 @@ final class FishFightController: ObservableObject {
         biteWindowProgress = 0
         biteWindowTimer = 0
         biteAttemptsUsed = 0
+        fightFlickGraceTimer = 0
         currentSpecies = nil
         lineTension = 0
         interestTimer = Float.random(in: 0.8...2.0)
         currentCastDistance = castDistance
         lastCastDistance = castDistance
         fightStartDistance = nil
-        isQTEActive = false
-        qteProgress = 0
-        qteSpawnTimer = 0
-        qteReactionTimer = 0
     }
 
     /// Call every tick while searching (`.hookInWater`). Returns the search
@@ -230,7 +214,7 @@ final class FishFightController: ObservableObject {
     /// hooks the fish exactly as the old instant-auto-bite path used to, just gated behind the
     /// player's timed reaction instead of firing unconditionally. Returns whether it actually
     /// hooked a fish — `false` (a no-op) if no bite window is currently active, mirroring
-    /// `handleQTEFlick()`'s own "stray/late flick is a no-op" pattern.
+    /// `handleFightFlick()`'s own "stray/late flick is a no-op" pattern.
     @discardableResult
     func handleHookSetFlick() -> Bool {
         guard isBiteWindowActive else { return false }
@@ -247,13 +231,14 @@ final class FishFightController: ObservableObject {
         isFishInterested = false
         lineTension = config.initialTension
 
-        // Flick-QTE prompts start recurring the instant the fish is hooked (ADR-078) — the first
-        // one spawns after a random `qteSpawnMinInterval...qteSpawnMaxInterval` delay, not
-        // instantly, giving the player a moment to settle into the fight first.
-        isQTEActive = false
-        qteProgress = 0
-        qteSpawnTimer = Float.random(in: config.qteSpawnMinInterval...config.qteSpawnMaxInterval)
-        qteReactionTimer = 0
+        // ADR-093: the hook-set flick's own follow-through (the player's hand/arm naturally
+        // continuing to move for a beat right after the gesture that just fired) can register as
+        // one or more further, genuinely separate flicks — each one immediately shaving
+        // `fightFlickRelief` off a `lineTension` that was *just* set to `initialTension`, visibly
+        // stepping the tension bar down in hops right at the start of a fight. Suppress
+        // `handleFightFlick()` for a short grace window so the player's hand has time to settle
+        // before flicks start counting again.
+        fightFlickGraceTimer = config.fightFlickGraceDuration
 
         return true
     }
@@ -267,6 +252,10 @@ final class FishFightController: ObservableObject {
     func updateFight(deltaTime: Float, isReeling: Bool, reelSpeed: Float, hookDistance: Float) -> FightFailure? {
         guard hasFishOnHook else { return nil }
 
+        if fightFlickGraceTimer > 0 {
+            fightFlickGraceTimer = max(0, fightFlickGraceTimer - deltaTime)
+        }
+
         if fightStartDistance == nil {
             fightStartDistance = hookDistance
         }
@@ -277,12 +266,6 @@ final class FishFightController: ObservableObject {
 
         let reelPull = isReeling ? reelSpeed * config.baseReelTensionRate : 0
         lineTension = min(1, max(0, lineTension + (reelPull - effectiveFishPullRate) * deltaTime))
-        // Disabled for debugging (ADR-078's QTE mechanic) — commented out, not removed. This is
-        // the single call site that drives the whole lifecycle: with it out, `isQTEActive` never
-        // becomes true, so `qtePrompt`/the "FLICK ROD NOW!" banner never fire, and `handleQTEFlick()`
-        // stays a permanent no-op (its own `guard isQTEActive` never passes) even though Rod keeps
-        // detecting/sending flicks as normal. Uncomment this one line to re-enable.
-        // updateQTE(deltaTime: deltaTime)
 
         if lineTension <= 0 {
             resolve(outcome: .escaped)
@@ -295,51 +278,20 @@ final class FishFightController: ObservableObject {
         return nil
     }
 
-    /// Advances the flick-QTE spawn/reaction timers (ADR-078) and resolves a prompt's outcome as
-    /// an instant `lineTension` adjustment when one occurs — a miss (reaction window expiring) or
-    /// a hit via `handleQTEFlick()` below, called separately by `WorldViewModel` the instant Rod
-    /// reports a flick. Kept as a separate method purely for readability; still just more
-    /// `lineTension` bookkeeping, no entity/RealityKit/network knowledge crosses into this
-    /// controller.
-    private func updateQTE(deltaTime: Float) {
-        if isQTEActive {
-            qteReactionTimer -= deltaTime
-            qteProgress = max(0, qteReactionTimer / max(0.001, config.qteReactionWindow))
-            guard qteReactionTimer > 0 else {
-                // Missed it — the reaction window ran out with no flick. Same sign convention the
-                // ADR-053 mechanic used for "not countering": a miss reads as the fish's sudden
-                // pull going unanswered, spiking tension *up* (toward the snap edge), not down —
-                // matching how `effectiveFishPullRate` already drains tension toward 0 on its own
-                // every tick regardless, so a miss's risk is specifically snap risk, not escape.
-                isQTEActive = false
-                qteProgress = 0
-                lineTension = min(1, lineTension + config.qteFailurePenalty)
-                qteSpawnTimer = Float.random(in: config.qteSpawnMinInterval...config.qteSpawnMaxInterval)
-                return
-            }
-        } else {
-            qteSpawnTimer -= deltaTime
-            guard qteSpawnTimer <= 0 else { return }
-            isQTEActive = true
-            qteReactionTimer = config.qteReactionWindow
-            qteProgress = 1
-        }
-    }
-
-    /// Called by `WorldViewModel` the instant Rod reports a flick (`FishingEvent.qteFlick`) during
-    /// a fight. A no-op whenever no prompt is currently active — including a flick that arrives
-    /// just after a prompt already timed out, or outside a fight entirely (`isQTEActive` can only
-    /// be `true` while `hasFishOnHook`) — so a stray/late/unprompted flick never has any effect.
+    /// Called by `WorldViewModel` the instant Rod reports a flick (`FishingEvent.fightFlick`)
+    /// while a fish is hooked (ADR-089, replacing ADR-078's timed QTE-prompt mechanic — "pake aja
+    /// movement flick dari semua state yang sama jadi ga perlu bikin flick movement lagi": reuse
+    /// the exact same flick gesture/detector as the bite-window hook-set, and make every flick
+    /// during a fight always meaningful instead of gating it behind a spawn timer/reaction window
+    /// the player has to wait for and could otherwise miss with no visible cause). A no-op outside
+    /// a fight entirely, or during `fightFlickGraceTimer` right after hooking (ADR-093), so a
+    /// stray flick before/after a fight — or the hook-set flick's own follow-through — never has
+    /// an effect. Relief, not a reward that raises tension — same sign as the mechanic this
+    /// replaces: a flick relieves the fish's pull before it can spike tension toward the snap edge.
     @discardableResult
-    func handleQTEFlick() -> Bool {
-        guard isQTEActive else { return false }
-        isQTEActive = false
-        qteProgress = 0
-        // Relief, not a reward that raises tension — same sign as the ADR-053 mechanic's
-        // successful counter: a hit relieves the fish's sudden pull before it can spike tension
-        // toward the snap edge.
-        lineTension = max(0, lineTension - config.qteSuccessRelief)
-        qteSpawnTimer = Float.random(in: config.qteSpawnMinInterval...config.qteSpawnMaxInterval)
+    func handleFightFlick() -> Bool {
+        guard hasFishOnHook, fightFlickGraceTimer <= 0 else { return false }
+        lineTension = max(0, lineTension - config.fightFlickRelief)
         return true
     }
 
@@ -419,10 +371,7 @@ final class FishFightController: ObservableObject {
         lineTension = 0
         interestTimer = Float.random(in: 0.8...2.0)
         fightStartDistance = nil
-        isQTEActive = false
-        qteProgress = 0
-        qteSpawnTimer = 0
-        qteReactionTimer = 0
+        fightFlickGraceTimer = 0
     }
 
     /// 1...5, from how close the catch weight is to the species' max.

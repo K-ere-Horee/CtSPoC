@@ -73,30 +73,24 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
     /// never shrink it to an unfair sliver.
     public var minEscapeDistanceAllowance: Float
 
-    // MARK: Fight QTE (flick prompt, ADR-078 — replaces the ADR-053 lean-left/right juke)
+    // MARK: Fight flick (ADR-089 — replaces ADR-078's timed QTE prompt, itself replacing the
+    // ADR-053 lean-left/right juke)
 
-    /// Seconds between flick-QTE prompts during a fight — the timer starts the instant a fish
-    /// bites and re-starts after every prompt resolves (success or timeout), so prompts keep
-    /// recurring for however long the fight lasts, not just once. A random duration in this range
-    /// is picked each time, "rapid randomizer" style (same spirit as the mechanic this replaced).
-    public var qteSpawnMinInterval: Float
-    public var qteSpawnMaxInterval: Float
-    /// Seconds the player has to flick the rod forward after a prompt spawns before it counts as
-    /// a miss. Reuses the exact same calibrated forward-flick gesture as a cast release — "flick
-    /// device aja ke depan (atau sesuai arah cast)" — not a new gesture to learn.
-    public var qteReactionWindow: Float
-    /// Instant `lineTension` relief applied the moment the player flicks within the reaction
-    /// window — a one-time reward, not a per-second rate (unlike the base tug-of-war formula),
-    /// since a QTE is a discrete hit, not a held state.
-    public var qteSuccessRelief: Float
-    /// Instant `lineTension` penalty applied the moment a prompt's reaction window expires with no
-    /// flick — same one-time-not-a-rate reasoning as `qteSuccessRelief`.
-    public var qteFailurePenalty: Float
+    /// Instant `lineTension` relief applied every time the player flicks the rod forward while a
+    /// fish is hooked — a one-time reward, not a per-second rate (unlike the base tug-of-war
+    /// formula). Unlike the ADR-078 mechanic this replaces, every flick counts; there is no
+    /// spawn timer/reaction window to wait for or miss.
+    public var fightFlickRelief: Float
+    /// Seconds right after a fish is hooked during which `handleFightFlick()` is suppressed
+    /// (ADR-093) — the hook-set flick's own physical follow-through can otherwise register as one
+    /// or more separate flicks a beat later, each immediately shaving `fightFlickRelief` off a
+    /// `lineTension` that was just set to `initialTension`.
+    public var fightFlickGraceDuration: Float
 
     // MARK: Bite window (ADR-088 — flick to set the hook, replaces the old instant auto-bite)
 
     /// Seconds the player has to flick the rod forward after a bite-alert haptic before this
-    /// attempt counts as missed — same calibrated forward-flick gesture as a cast release/QTE
+    /// attempt counts as missed — same calibrated forward-flick gesture as a cast release/fight
     /// flick, not a new one to learn.
     public var biteWindowDuration: Float
     /// How many missed bite-alert attempts the fish tolerates before giving up and swimming off
@@ -165,11 +159,8 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
         escapeDistanceAllowance: Float = 6.0,
         escapeAllowanceResistancePenalty: Float = 3.5,
         minEscapeDistanceAllowance: Float = 2.0,
-        qteSpawnMinInterval: Float = 4.0,
-        qteSpawnMaxInterval: Float = 8.0,
-        qteReactionWindow: Float = 1.5,
-        qteSuccessRelief: Float = 0.15,
-        qteFailurePenalty: Float = 0.15,
+        fightFlickRelief: Float = 0.15,
+        fightFlickGraceDuration: Float = 1.0,
         biteWindowDuration: Float = 1.5,
         maxBiteAttempts: Int = 3,
         biteRetryMinInterval: Float = 0.8,
@@ -199,11 +190,8 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
         self.escapeDistanceAllowance = escapeDistanceAllowance
         self.escapeAllowanceResistancePenalty = escapeAllowanceResistancePenalty
         self.minEscapeDistanceAllowance = minEscapeDistanceAllowance
-        self.qteSpawnMinInterval = qteSpawnMinInterval
-        self.qteSpawnMaxInterval = qteSpawnMaxInterval
-        self.qteReactionWindow = qteReactionWindow
-        self.qteSuccessRelief = qteSuccessRelief
-        self.qteFailurePenalty = qteFailurePenalty
+        self.fightFlickRelief = fightFlickRelief
+        self.fightFlickGraceDuration = fightFlickGraceDuration
         self.biteWindowDuration = biteWindowDuration
         self.maxBiteAttempts = maxBiteAttempts
         self.biteRetryMinInterval = biteRetryMinInterval

@@ -319,8 +319,6 @@ final class WorldViewModel: ObservableObject {
     private var pendingCastSolution: CastSolution?
     /// Last tension band sent to Rod (ADR-039); `nil` outside a fight. See `syncTensionBand()`.
     private var lastSentTensionBand: FishFightController.TensionBand?
-    /// Last `fishFight.isQTEActive` value seen (ADR-078). See `syncQTE()`.
-    private var lastQTEActive = false
     private var hasStarted = false
 
     /// Drives the simulation from RealityKit's own per-frame scene update, with a real
@@ -766,7 +764,6 @@ final class WorldViewModel: ObservableObject {
         sounds.updateIdleLoop(active: screen == .mainMenu || screen == .onboarding)
         sounds.updateReelFightLoop(active: screen == .playing && (hookPhase == .fishOnHook || hookPhase == .reeling))
         syncTensionBand()
-        syncQTE()
     }
 
     private func hookDistanceFromRod() -> Float {
@@ -790,17 +787,6 @@ final class WorldViewModel: ObservableObject {
         case .high: .reelTensionHigh
         }
         emit(event)
-    }
-
-    /// Sends `FishingEvent.qtePrompt` to Rod on the rising edge of `fishFight.isQTEActive`
-    /// (ADR-078) — a one-shot haptic alert telling the player to flick the rod now. The falling
-    /// edge (prompt resolved, success or timeout) needs no message: Rod never tracked "a prompt is
-    /// active" state to begin with, it just reacts to its own flick locally.
-    private func syncQTE() {
-        guard fishFight.isQTEActive != lastQTEActive else { return }
-        lastQTEActive = fishFight.isQTEActive
-        guard lastQTEActive else { return }
-        emit(.qtePrompt)
     }
 
     /// Both failures now reset the hook to `.idle` (a fresh cast is required) instead of
@@ -1331,15 +1317,15 @@ final class WorldViewModel: ObservableObject {
         switch message {
         case let .state(state):
             handleState(state)
-        case .fishingEvent(.qteFlick):
-            // ADR-078: the only `FishingEvent` case Rod itself ever constructs and sends — every
-            // other case flows World -> Rod. A no-op whenever no QTE prompt is currently active,
-            // per `FishFightController.handleQTEFlick()`'s own guard.
-            fishFight.handleQTEFlick()
+        case .fishingEvent(.fightFlick):
+            // ADR-089: Rod reports this on every forward flick while a fish is hooked — no spawn
+            // timer/reaction window to gate it anymore. A no-op outside a fight, per
+            // `FishFightController.handleFightFlick()`'s own guard.
+            fishFight.handleFightFlick()
         case .fishingEvent(.hookSet):
             // ADR-088: Rod reported a forward flick during an active bite window. A no-op if no
             // window is currently open, per `handleHookSetFlick()`'s own guard — mirrors the
-            // `.qteFlick` handling above exactly.
+            // `.fightFlick` handling above exactly.
             if fishFight.handleHookSetFlick() {
                 setHookPhase(.fishOnHook)
                 ensureFightDistance()

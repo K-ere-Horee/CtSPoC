@@ -8651,3 +8651,276 @@ nge 'cast', otomatis hook nya hening lagi. jadi literally kaya mancing beneran."
   whether 3 attempts feels right, and whether `biteAlert()` actually reads as "bigger" than
   `fishBite()` on a real device (both are `intensity: 1.0` already — ADR-060 maxed that everywhere
   — so the felt difference is sharpness/pulse-count only).
+
+## Fix: Mid-Fight QTE Prompt Removed — Every Flick Now Eases Tension Unconditionally (ADR-089)
+
+Date: 2026-07-22.
+
+Reported directly: "when fish on, gagal nge flick? pake aja movement flick dari semua state yang
+sama jadi ga perlu bikin flick movement lagi."
+
+### Diagnosis
+
+Traced the actual cause before changing anything: `FishFightController.updateFight(...)`'s single
+call to `updateQTE(deltaTime:)` had been commented out earlier this same session for debugging
+("untuk debug ini, disable dong QTE nya — cukup comment aja") and never re-enabled. With it
+disabled, `isQTEActive` could never become `true`, so `handleQTEFlick()`'s own `guard isQTEActive`
+never passed — Rod was detecting and sending every flick exactly as designed, but World silently
+dropped every one as a no-op, with no prompt ever shown explaining why. Reads exactly as "flicking
+fails."
+
+### Decision: remove the mechanic, don't just re-enable it
+
+The request's second half ("pake aja movement flick dari semua state yang sama, ga perlu bikin
+flick movement lagi") asks for something more specific than a one-line fix: don't reintroduce a
+mechanic gated behind a separate timed prompt at all — make the flick gesture Rod already detects
+reliably elsewhere (the bite window, ADR-088) equally unconditional here.
+
+### Shared: FishingEvent, FishFightConfig
+
+- `FishingEvent.swift`: removed `qtePrompt` (never sent by anything else now) and `qteFlick`;
+  added `fightFlick` (Rod -> World, sent on every flick while a fish is on, no gating).
+- `FishFightConfig.swift`: removed `qteSpawnMinInterval`/`qteSpawnMaxInterval`/`qteReactionWindow`/
+  `qteFailurePenalty`. Renamed `qteSuccessRelief` -> `fightFlickRelief` (same default, `0.15`, now
+  applied on every flick instead of only a successful timed reaction).
+
+### World: FishFightController
+
+- Removed `isQTEActive`, `qteProgress`, private `qteSpawnTimer`/`qteReactionTimer`,
+  `updateQTE(deltaTime:)`, `handleQTEFlick()` entirely — not commented out, deleted.
+- Added `handleFightFlick() -> Bool`: applies `config.fightFlickRelief` to `lineTension`, gated
+  only on `hasFishOnHook`. No-op outside a fight; no prompt to wait for or miss.
+- `resetForNewCast(castDistance:)` and `resolve(outcome:)`: dropped their now-removed QTE-state
+  resets.
+
+### Rod: RodViewModel
+
+- `detectFlickGesture()`'s event selection: `.qteFlick` -> `.fightFlick` for `.fishOnHook`/
+  `.reeling`; `.hookSet` for `.hookInWater` unchanged.
+
+### World: WorldViewModel
+
+- Removed `lastQTEActive`, `syncQTE()`, and the `case .fishingEvent(.qteFlick):` arm.
+- Added `case .fishingEvent(.fightFlick):` calling `fishFight.handleFightFlick()`.
+- `tick()`: dropped the `syncQTE()` call (nothing left to sync — Rod never needed a rising-edge
+  alert message for this mechanic in the first place, since it now has no "prompt started" moment).
+
+### World: FishingSounds, LineTensionView, ContentView
+
+- `FishingSounds.handle(_:)`: `.qtePrompt, .qteFlick` case replaced with `.fightFlick` (still no
+  dedicated asset, same reasoning).
+- `LineTensionView.swift`: removed the `isQTEActive`/`qteProgress` parameters and the "FLICK ROD
+  NOW!" banner entirely — no prompt event left for a banner to represent.
+- `ContentView.swift`: updated the `LineTensionView(...)` call site to match.
+
+### Rod: FishingHaptics, HapticManager
+
+- `FishingHaptics.handle(_:)`: `.qtePrompt`/`.qteFlick` cases replaced with a single `.fightFlick`
+  (Rod -> World only, break).
+- `HapticManager.qtePrompt()` removed entirely — nothing calls it anymore.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-089.
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-ios17.0-simulator` and `arm64-apple-macosx26.0` — exit
+  code 0, no errors on either.
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` and `World/World` Swift file lists — exit
+  code 0, no errors on either.
+- Built both actual targets end to end (`xcodebuild`, unsigned): `World` — `** BUILD SUCCEEDED **`,
+  launched and confirmed via `ps` it ran without crashing; `Rod` (iphonesimulator SDK) — `**
+  BUILD SUCCEEDED **`.
+- Repo-wide `grep` confirmed zero remaining references to any removed QTE symbol
+  (`isQTEActive`/`qteProgress`/`qteSpawnTimer`/`qteReactionTimer`/`handleQTEFlick`/`qtePrompt`/
+  `qteFlick`/`qteSuccessRelief`/`qteFailurePenalty`/`qteSpawnMinInterval`/`qteSpawnMaxInterval`/
+  `qteReactionWindow`).
+- `git diff --check` clean.
+- Not run: any live session on physical hardware. Unverified in particular: whether removing the
+  timed prompt/alert makes mid-fight tension management feel too passive now that there's no
+  specific moment demanding attention — this trades that for pure player-initiated simplicity per
+  the direct request, not evaluated live yet.
+
+## Fix: Reeling Motion Was Misfiring as Fight-Flick Relief, Draining Tension (ADR-090)
+
+Date: 2026-07-22.
+
+Reported directly, immediately after ADR-089 shipped: "ada bug di line tension. ketika udah
+berhasil masuk ke reel, kok line tensiun malah turun turun turun sampai losing fish."
+
+### Diagnosis
+
+Traced directly to ADR-089's own change: `FishFightController.handleFightFlick()` subtracts
+`fightFlickRelief` from `lineTension` on every reported flick, gated only on a fish being hooked —
+no timed window or attempt limit like the bite window has. The physical motion of actually
+cranking a reel can itself cross the same forward-acceleration threshold used to detect a
+deliberate flick (both are forward-ish hand/wrist accelerations), so active reeling was
+intermittently misread as repeated flicks — each one draining tension in the relief direction
+while `updateFight(...)`'s reel-tension-gain formula was simultaneously trying to raise it. Enough
+false flicks during real reeling could overwhelm the gain entirely, reading exactly as "tension
+only ever goes down while reeling."
+
+### Rod: RodViewModel
+
+- `detectFlickGesture()`'s guard narrowed from `hookPhase == .fishOnHook || hookPhase == .reeling
+  || hookPhase == .hookInWater` to `hookPhase == .fishOnHook || hookPhase == .hookInWater` —
+  dropping `.reeling`. No other change: same threshold, same detector, same two events.
+  "Flick to relieve tension" and "reel to gain tension" are now two distinct physical actions
+  (paused vs. actively cranking) that can't misfire into each other.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-090.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` Swift file list — exit code 0, no errors.
+- Built the actual `Rod.xcodeproj` target end to end (`xcodebuild -target Rod`, iphonesimulator
+  SDK, code signing disabled) — `** BUILD SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: any live session on physical hardware. Unverified in particular: whether excluding
+  `.reeling` still leaves enough opportunity to use the relief mechanic in practice — a player
+  fighting a strong fish may rarely pause reeling long enough to deliberately flick.
+
+## Fix: Flick Follow-Through Double-Counting, Continuous Bite-Alert Haptic (ADR-091/092)
+
+Date: 2026-07-22.
+
+Two requests together: "once aku 'flick' untuk mulai reel, tiba tiba line tension berkurang
+sedikit di awal sebelum kembali normal rate. tambahin juga haptic intensity, bikin continuous aja
+waktu ikan udah gigit gigit."
+
+### Diagnosis (tension dip)
+
+The hook-set flick that opens a fight is detected, `hookPhase` moves from `.hookInWater` to
+`.fishOnHook` the same instant — and if that same physical flick's natural follow-through (hand/rod
+decelerating, dipping under threshold, wobbling back over it while settling) crosses the threshold
+a second time, the edge-detector (`wasFlicking`) sees it as a genuinely new flick, now read as a
+`.fightFlick` in the new phase. That immediately subtracts `fightFlickRelief` from a freshly-set
+`lineTension` — the reported dip right at the start of a fight.
+
+### Rod: RodViewModel
+
+- Added `lastFlickSentAt: Date` and `Self.flickCooldown: TimeInterval = 0.4`.
+- `detectFlickGesture()`'s send condition gains a third term: at least `flickCooldown` seconds must
+  have passed since the last sent flick, regardless of `hookPhase` or which event either one was.
+  General fix, not scoped to only the hookSet-then-fightFlick transition — the same
+  follow-through double-count risk exists for any two flicks sent close together.
+
+### Rod: FishingHaptics, RodViewModel (continuous bite alert)
+
+- `FishingHaptics`: added `isBiteAlertActive: Bool`, `biteAlertPulse(now:)` — same recurring-
+  callback pattern as `interestPulse`/`fightPulse`, throttled to a new `biteAlertPulseInterval`
+  (0.4s, faster than `interestPulseInterval`'s 1.1s — a bite window is urgent, not ambient).
+  `.biteAlert` sets `isBiteAlertActive = true` (unchanged: still plays `haptics.biteAlert()`
+  immediately); `.fishBite`/`.fishGaveUp` clear it. Added `stopBiteAlert()`, mirroring
+  `stopInterest()`'s belt-and-suspenders pattern for when `HookPhase` leaves `.hookInWater`.
+- `RodViewModel.updateAction()`: added `fishingHaptics.biteAlertPulse()` alongside the existing
+  `interestPulse()`/`fightPulse()` calls. `handle(_ message:)`'s hookPhase-change branch: added
+  `fishingHaptics.stopBiteAlert()` alongside `stopInterest()`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-091 (flick cooldown), ADR-092 (continuous bite alert).
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` Swift file list — exit code 0, no errors.
+- Built the actual `Rod.xcodeproj` target end to end (`xcodebuild -target Rod`, iphonesimulator
+  SDK, code signing disabled) — `** BUILD SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: any live session on physical hardware. Unverified in particular: whether 0.4s is long
+  enough to absorb a real flick's follow-through without also blocking a genuinely deliberate
+  second flick performed in quick succession, and whether the now-continuous bite-alert pulse
+  feels appropriately urgent rather than overwhelming.
+
+## Fix: Fight-Flick Relief Suppressed for a Grace Window Right After Hooking (ADR-093)
+
+Date: 2026-07-22.
+
+Reported directly, continuing the same thread as the previous fix: "masih aga nge bug dikit, ketika
+nge 'flick' buat grab ikannya, meter line tension kadang suka loncat loncat turun sedikit."
+
+### Diagnosis
+
+ADR-091's cooldown prevents one flick's own follow-through from double-counting as a second, but
+does nothing about the player's hand naturally continuing to move — sometimes crossing the flick
+threshold again as a genuinely separate edge more than `flickCooldown` (0.4s) after the first,
+while still settling from the gesture that just set the hook. Each such edge is legitimate from the
+detector's point of view, so `handleFightFlick()` had no reason to distrust it — each shaved
+another `fightFlickRelief` off a `lineTension` that had just been set to `initialTension`,
+visibly stepping the bar down in hops.
+
+### Shared: FishFightConfig
+
+- Added `fightFlickGraceDuration: Float` (default `1.0`s).
+
+### World: FishFightController
+
+- Added private `fightFlickGraceTimer: Float`.
+- `handleHookSetFlick()`: sets `fightFlickGraceTimer = config.fightFlickGraceDuration` the instant
+  a fish is hooked.
+- `updateFight(...)`: counts `fightFlickGraceTimer` down every tick.
+- `handleFightFlick()`: gains a second guard, `fightFlickGraceTimer <= 0`, alongside the existing
+  `hasFishOnHook` check — a World-side gate on time-since-hooked (not time-since-last-flick, which
+  ADR-091 already covers), directly addressing "several loosely-spaced follow-through motions"
+  rather than just back-to-back double-fires.
+- `resetForNewCast(castDistance:)`/`resolve(outcome:)`: reset the timer to `0` alongside every
+  other per-fight field they already clear.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-093.
+
+### Verification
+
+- Rebuilt `Shared` for both `arm64-apple-ios17.0-simulator` and `arm64-apple-macosx26.0` — exit
+  code 0, no errors on either.
+- `xcrun swiftc -typecheck` against the full `World/World` Swift file list — exit code 0, no
+  errors.
+- Built both actual targets end to end (`xcodebuild`, unsigned): `World` — `** BUILD SUCCEEDED **`,
+  launched and confirmed via `ps` it ran without crashing; `Rod` (iphonesimulator SDK) — `**
+  BUILD SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: any live session on physical hardware. Unverified in particular: whether 1.0s is long
+  enough to absorb the settling motion without also silently eating a genuinely fast, deliberate
+  first flick the player intends as an immediate tension-management move right after hooking.
+
+## Fix: Fight-Flick Detection Disabled Entirely — Third Report Against the Same Mechanic (ADR-094)
+
+Date: 2026-07-22.
+
+Requested directly: "flick movement ketika reel (hook: fish in hook) masih ke register, harusnya
+disable aja." Third report against ADR-089's "flick while `.fishOnHook` eases tension" mechanic,
+after ADR-091 (flick cooldown) and ADR-093 (post-hook grace window) each fixed a real, distinct
+failure mode without fully resolving it. Rather than attempt a fourth patch, disabled per the
+direct instruction.
+
+### Rod: RodViewModel
+
+- `detectFlickGesture()`'s guard narrowed from `hookPhase == .fishOnHook || hookPhase ==
+  .hookInWater` to `hookPhase == .hookInWater` only — no flick ever detected/sent while a fish is
+  hooked, in any state. The now-unreachable `.fightFlick` branch of the event-selection ternary
+  removed (dead code); Rod always sends `.hookSet` inside the guard.
+- Left `FishFightController.handleFightFlick()`, `FishFightConfig.fightFlickRelief`/
+  `fightFlickGraceDuration`, and `FishingEvent.fightFlick` all in place, unreachable rather than
+  deleted — matches this project's precedent for disabling a not-yet-working mechanic without
+  discarding it (the QTE prompt system was disabled the same way, ADR-078, before ADR-089 replaced
+  it outright). Re-enabling is a one-line change if a more reliable trigger is found later.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-094.
+
+### Verification
+
+- Rebuilt `Shared` for `arm64-apple-ios17.0-simulator` (directory had been cleaned since the last
+  Rod build) — exit code 0, no errors.
+- `xcrun swiftc -typecheck` against the full `Rod/Rod` Swift file list — exit code 0, no errors.
+- Built the actual `Rod.xcodeproj` target end to end (`xcodebuild -target Rod`, iphonesimulator
+  SDK, code signing disabled) — `** BUILD SUCCEEDED **`.
+- Repo-wide `grep` confirmed `.fightFlick` only remains in World-side code (kept intentionally
+  unreachable) — no stray Rod-side references.
+- `git diff --check` clean.
+- Not run: any live session on physical hardware.

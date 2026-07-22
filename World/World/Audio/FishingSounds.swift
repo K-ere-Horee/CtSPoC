@@ -57,17 +57,15 @@ final class FishingSounds {
             sounds.play(.fishCatched)
         case .reelTensionLow, .reelTensionMedium, .reelTensionHigh:
             break
-        case .qtePrompt, .qteFlick:
-            // No dedicated asset (ADR-078) — the QTE prompt/response are already covered by
-            // `LineTensionView`'s visual banner and Rod's own haptic alert; not reusing an
-            // existing sound here since none fit without risking confusion with what it's already
-            // used for elsewhere (e.g. `fishBite`'s own pattern playing at the start of a fight).
+        case .fightFlick:
+            // Rod -> World only; no dedicated asset needed (ADR-089) — a flick easing tension
+            // mid-fight doesn't need its own confirmation sound.
             break
         case .biteAlert, .hookSet:
-            // No dedicated asset (ADR-088), same reasoning as the QTE prompt/response above — the
-            // new HUD banner and Rod's own big haptic already cover the cue. `fishBite`'s own
-            // sound is reserved for the moment the fish is actually hooked (still fired from the
-            // `.fishBite` event, now only once `handleHookSetFlick()` succeeds), not every attempt.
+            // No dedicated asset (ADR-088) — the HUD banner (`BiteAlertView`) and Rod's own big
+            // haptic already cover the cue. `fishBite`'s own sound is reserved for the moment the
+            // fish is actually hooked (still fired from the `.fishBite` event, now only once
+            // `handleHookSetFlick()` succeeds), not every attempt.
             break
         case .fishGaveUp:
             // No dedicated asset (ADR-088) — stops the interest bubble loop so it doesn't keep

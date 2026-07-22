@@ -71,6 +71,13 @@ final class RodViewModel: ObservableObject {
     /// sample was past the forward-flick threshold, so a sustained flick reports once, not every
     /// frame.
     private var wasFlicking = false
+    /// When the last flick event was sent (ADR-091) — a single physical flick's follow-through
+    /// (the hand/rod decelerating and settling afterward) can dip below the threshold and cross
+    /// back above it again, reading as a *second*, distinct flick to the edge-detector above even
+    /// though it's really the same motion. `detectFlickGesture()` enforces `flickCooldown` after
+    /// any sent flick so a hook-set's own follow-through can't immediately also register as a
+    /// fight-flick (reported directly as line tension dipping right at the start of a fight).
+    private var lastFlickSentAt = Date.distantPast
     private var calibrationSamples: [RodMotionInput] = []
     /// Guards against unbounded concurrent sends: `publishState()` fires on every motion sample
     /// (up to the CoreMotion update rate), and each one used to spawn its own unstructured `Task`
@@ -80,6 +87,10 @@ final class RodViewModel: ObservableObject {
     private var isSendingState = false
 
     private static let motionProfileKey = "rod.motionProfile"
+    /// Minimum seconds between two sent flick events (ADR-091) — long enough to cover one flick's
+    /// own physical follow-through (the hand/rod decelerating and settling), short enough that a
+    /// second, genuinely deliberate flick right after still gets through.
+    private static let flickCooldown: TimeInterval = 0.4
 
     let debugRecorder = MotionDebugRecorder()
 
@@ -278,6 +289,7 @@ final class RodViewModel: ObservableObject {
             }
             if phase != .hookInWater {
                 fishingHaptics.stopInterest()
+                fishingHaptics.stopBiteAlert()
             }
             if phase != .fishOnHook, phase != .reeling {
                 fishingHaptics.stopFight()
@@ -391,31 +403,43 @@ final class RodViewModel: ObservableObject {
         }
         fishingHaptics.interestPulse()
         fishingHaptics.fightPulse()
+        fishingHaptics.biteAlertPulse()
         detectFlickGesture()
     }
 
-    /// Reports a forward flick to World during a fish fight (ADR-078's QTE mechanic) or an active
-    /// bite window (ADR-088's "flick to set the hook") — reuses the exact same calibrated
-    /// threshold as a cast release (`profile.castAcceleration`/`profile.castAccelerationSign`),
-    /// per the request that both gestures be "flick device aja ke depan (atau sesuai arah cast),"
-    /// not a new gesture to learn each time. Independent of `RodMotionInterpreter`/
-    /// `isCastingArmed` entirely — casting can never be armed during `.hookInWater`/a fight anyway
-    /// (`HookPhase.allowsCasting` is only `.idle`), so the two detectors can't double-fire for the
-    /// same physical flick. Which event fires depends only on `hookPhase`; World's own
-    /// `FishFightController` decides whether either is actually acted on (a stray/late flick
-    /// outside an active QTE prompt or bite window is a no-op on that side, not gated here).
+    /// Reports a forward flick to World for an active bite window (ADR-088's "flick to set the
+    /// hook") — reuses the exact same calibrated threshold as a cast release
+    /// (`profile.castAcceleration`/`profile.castAccelerationSign`), per the request that every
+    /// flick gesture be "flick device aja ke depan (atau sesuai arah cast)," not a new gesture to
+    /// learn each time. Independent of `RodMotionInterpreter`/`isCastingArmed` entirely — casting
+    /// can never be armed during `.hookInWater` anyway (`HookPhase.allowsCasting` is only `.idle`),
+    /// so the two detectors can't double-fire for the same physical flick.
+    ///
+    /// **Disabled entirely during a fight (ADR-094), not just `.reeling` (ADR-090).** ADR-089's
+    /// "flick to ease tension while `.fishOnHook`" mechanic kept misfiring even after two rounds of
+    /// fixes (ADR-091's flick cooldown, ADR-093's post-hook grace window) — reported directly as
+    /// still registering when it shouldn't ("flick movement ketika reel (hook: fish in hook) masih
+    /// ke register, harusnya disable aja"). Rather than attempt a fourth patch, `.fishOnHook` is
+    /// dropped from the guard entirely: no flick is ever detected/sent while a fish is hooked, only
+    /// during the pre-hook bite window. `FishFightController.handleFightFlick()` is left in place,
+    /// unreachable from Rod now rather than deleted, so re-enabling this is a one-line change if a
+    /// more reliable trigger condition is found later — matching this project's own precedent for
+    /// disabling a not-yet-working mechanic without discarding it (the QTE prompt system, ADR-078,
+    /// was disabled the same way before being replaced outright in ADR-089).
+    ///
     /// Edge-detected (`wasFlicking`) so a single flick reports once, not once per frame the
-    /// acceleration stays past threshold.
+    /// acceleration stays past threshold — `flickCooldown` (ADR-091) still applies for whatever
+    /// residual double-fire risk exists within the bite window itself.
     private func detectFlickGesture() {
-        guard hookPhase == .fishOnHook || hookPhase == .reeling || hookPhase == .hookInWater else {
+        guard hookPhase == .hookInWater else {
             wasFlicking = false
             return
         }
         let profile = motionInterpreter.profile
         let isFlicking = motion.accelerationZ * profile.castAccelerationSign >= profile.castAcceleration
-        if isFlicking, !wasFlicking {
-            let event: FishingEvent = hookPhase == .hookInWater ? .hookSet : .qteFlick
-            Task { await send(.fishingEvent(event)) }
+        if isFlicking, !wasFlicking, Date().timeIntervalSince(lastFlickSentAt) >= Self.flickCooldown {
+            lastFlickSentAt = Date()
+            Task { await send(.fishingEvent(.hookSet)) }
         }
         wasFlicking = isFlicking
     }
