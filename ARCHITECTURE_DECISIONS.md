@@ -11,6 +11,92 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-122 --- Catch Cutscene Ducks All Other Audio; Catch-Splash Quieted Further
+
+## Decision
+
+**All looping SFX are hard-muted for the duration of the catch cutscene**, not just the frame the
+catch resolves on. `FishingSounds` gains `isDuckedForCatchCutscene`, `catchCutsceneBegan()`, and
+`catchCutsceneEnded()`. `catchCutsceneBegan()` (called from `WorldViewModel.beginCatchCutscene(from:)`,
+the same call that flips `isShowingCatchCutscene = true`) stops every currently playing loop
+(`ambienceLake`, `reelFight`, `reelLoop`, `fishInterestedLoop`) instantly via `SoundManager
+.stopAllLoops()` and sets the tracked `isXActive` flags to `false`. While ducked, every `update*Loop
+(active:)` in `FishingSounds` is a no-op even though `WorldViewModel.tick()` keeps calling them every
+frame with `active: true` (ambience is still "supposed to" be on during `.playing`) — otherwise the
+very next frame would silently restart what was just muted. `catchCutsceneEnded()` (called from
+`updateCatchCutscene`'s existing `isShowingCatchCutscene = false` branch) clears the flag and doesn't
+restart anything itself; the next frame's `update*Loop(active:)` call sees the still-`false` tracked
+state and restarts naturally (matches every other loop's existing lifecycle, no new restart path
+introduced).
+
+**`catchSplash` is quieted further for this moment specifically**, down to 20% of its *original*
+(pre-ADR-120) 0.85 baseline — `0.17` — not 20% of the already-halved `0.425` `defaultVolume`.
+`SoundManager.play(_:volumeOverride:)` gains an optional override that replaces the normal
+`effectiveVolume(for:)` computation outright for one playback, used only here
+(`FishingSounds.handle(.catchFish)`). `fishCatched` is unchanged — its own `defaultVolume` (0.85) is
+already the "100%" the request asked for.
+
+## Rationale
+
+Requested directly: "ketika catch cutscene, matiin semua volume, kecilin suara catch_splash jadi
+cuma 20% aslinya, dan play fish_catched di 100% biar suaranya ga nabrak" (during the catch cutscene,
+mute all [other] volume, shrink `catch_splash` to just 20% of its original, and play `fish_catched`
+at 100% so the sounds don't collide). Previously `.catchFish` only stopped `reelLoop` and played both
+one-shots at their normal volumes — `ambienceLake` and any still-fading `reelFight` kept playing
+underneath, and `catchSplash`/`fishCatched` (both near-full volume) were competing for attention in
+the same instant.
+
+## Status
+
+Accepted — verified via a fresh `Shared` build (macOS), a real unsigned `xcodebuild -workspace
+CtSPoC.xcworkspace -scheme World` build (BUILD SUCCEEDED), and `git diff --check` clean. **Not
+verified**: the actual mix on a live device/session (does the 0.17 `catchSplash` level and the
+mute/restore timing feel right against the real `fishCatched` asset and the cutscene's own length) —
+needs a real play session.
+
+------------------------------------------------------------------------
+
+# ADR-121 --- Rod Touch-Locked During a Fight; Tension Gauge Becomes a Symmetric Gradient
+
+## Decision
+
+**1. Rod's screen locks out touch during an active fight.** New `ContentView.isReelFightActive`
+(`hookPhase == .fishOnHook || .reeling`), applied via `.allowsHitTesting(!isReelFightActive)` on
+the main content `VStack`. The only *unconditionally* tappable control during a fight was "End
+Fishing" (`fishingButton`) — "Start Casting" and "Calibrate" already self-gate to `hookPhase ==
+.idle`/`.result`, so they were never the actual risk. Motion-based gameplay (reeling, fight-flicks)
+is untouched, since it's sensor-driven, not touch-driven — this only blocks taps.
+
+**2. Line tension gauge becomes a symmetric red-yellow-green-yellow-red gradient**, replacing the
+plain green-to-red ramp. `LineTensionView`'s `LinearGradient` colors: `[.red, .yellow, .green,
+.yellow, .red]`. Tension danger is bidirectional (too low = slack line, losing the fish; too high =
+snapping) — the old green(0)->red(1) ramp only visually matched *one* of those two failure
+directions; the safe zone now correctly sits in the visual middle of the bar with danger at both
+ends, matching how the mechanic has always actually worked (`dangerLow`/`dangerHigh` were already
+two-sided; only the gradient wasn't).
+
+## Rationale
+
+Requested directly, two short notes: "Layar disable touch ketika lagi reel fight" (lock the screen
+against touch during an active reel fight); "meteran line tension kan sekarang hijau-kuning-merah,
+ganti ke merah-kuning-hijau-kuning-merah" (the line tension gauge is currently green-yellow-red,
+change it to red-yellow-green-yellow-red).
+
+## Status
+
+Accepted — verified via a fresh `Shared` build for both macOS and `arm64-apple-ios17.0-simulator`,
+`xcrun swiftc -typecheck` against the full `Rod/Rod` file list and `-typecheck -DDEBUG` against the
+full `World/World` file list (both clean, one pre-existing unrelated warning in World), the new
+gradient visually confirmed via an offscreen `NSHostingView` render (symmetric red-yellow-green-
+yellow-red, as intended), real unsigned `xcodebuild` builds for both `World` and `Rod -sdk
+iphonesimulator` (both BUILD SUCCEEDED), a World launch/`ps`-confirmed-running/quit with no crash,
+and `git diff --check` clean. **Not verified**: the actual touch-lock's felt behavior on a live
+device during a real fight (does it re-enable promptly the instant the fight ends, does it feel
+intrusive or correct), or the new gradient's legibility against the live 3D scene rather than in
+isolation — both need an actual play session.
+
+------------------------------------------------------------------------
+
 # ADR-120 --- Three Notes: 1.5x Run Speed, Bluefin Orientation Fix, Catch-Splash Volume
 
 ## Decision

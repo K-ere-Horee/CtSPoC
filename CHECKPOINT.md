@@ -10101,6 +10101,92 @@ kebalik orientasinya waktu fish catch"; "kurangi volume catch_splash by 50%".
   guess at the likely cause, not confirmed against a screenshot), or catch-splash's volume in
   context — all three need a live playtest.
 
+## Fix: Rod Touch-Locked During a Fight; Tension Gauge Becomes Symmetric (ADR-121)
+
+Date: 2026-07-23.
+
+Requested directly, two short notes: "Layar disable touch ketika lagi reel fight"; "meteran line
+tension kan sekarang hijau-kuning-merah, ganti ke merah-kuning-hijau-kuning-merah."
+
+### Rod: ContentView
+
+- Added `isReelFightActive` (`hookPhase == .fishOnHook || .reeling`), applied via
+  `.allowsHitTesting(!isReelFightActive)` on the main content `VStack` — blocks the one
+  unconditionally-tappable control during a fight ("End Fishing"); "Start Casting"/"Calibrate"
+  already self-gate to `hookPhase == .idle`/`.result`. Motion-based gameplay unaffected.
+
+### World: LineTensionView
+
+- Gradient colors: `[.green, .yellow, .red]` -> `[.red, .yellow, .green, .yellow, .red]` — tension
+  danger is bidirectional, so the safe zone now sits visually in the middle with danger at both
+  ends, matching how `dangerLow`/`dangerHigh` already worked.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-121.
+
+### Verification
+
+- Fresh `Shared` build for macOS and `arm64-apple-ios17.0-simulator`.
+- `xcrun swiftc -typecheck` (Rod) and `-typecheck -DDEBUG` (World) against their full file lists —
+  both clean (one pre-existing unrelated warning in World).
+- New gradient visually confirmed via offscreen `NSHostingView` render — correct symmetric
+  red-yellow-green-yellow-red.
+- Real unsigned `xcodebuild` builds for both `World` and `Rod -sdk iphonesimulator` — both
+  `** BUILD SUCCEEDED **`.
+- Launched the built World app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check` clean.
+- Not run: live-device feel of the touch-lock (does it release promptly when the fight ends), or
+  the gradient's legibility over the real 3D scene. Open device-validation gap.
+
+## Fix: Catch Cutscene Ducks All Other Audio; Catch-Splash Quieted Further (ADR-122)
+
+Date: 2026-07-23.
+
+Requested directly: "ketika catch cutscene, matiin semua volume, kecilin suara catch_splash jadi
+cuma 20% aslinya, dan play fish_catched di 100% biar suaranya ga nabrak."
+
+### World: SoundManager
+
+- `play(_:volumeOverride:)` — optional override that replaces the normal `effectiveVolume(for:)`
+  computation for a single playback, without adding a persistent per-sound volume knob.
+
+### World: FishingSounds
+
+- New `isDuckedForCatchCutscene` flag, `catchCutsceneBegan()`, `catchCutsceneEnded()`.
+  `catchCutsceneBegan()` stops every currently playing loop (`ambienceLake`, `reelFight`,
+  `reelLoop`, `fishInterestedLoop`) via `SoundManager.stopAllLoops()` and resets the tracked
+  `isXActive` flags. Every `update*Loop(active:)` becomes a no-op while ducked, so
+  `WorldViewModel.tick()`'s continued per-frame calls (still passing `active: true` for ambience)
+  can't resurrect a muted loop mid-cutscene. `catchCutsceneEnded()` just clears the flag — the next
+  frame's `update*Loop(active:)` call restarts ambience on its own, same as every other loop
+  lifecycle already in this class.
+- `.catchFish` in `handle(_:)` now plays `catchSplash` via `volumeOverride:
+  Self.catchSplashCutsceneVolume` (`0.17` — 20% of the *original* pre-ADR-120 0.85 baseline, not
+  20% of the already-halved `0.425` `defaultVolume`) and `fishCatched` unchanged (its own
+  `defaultVolume` of 0.85 already reads as "100%"). The `stopLoop(.reelLoop)` this case used to do
+  itself moved into `catchCutsceneBegan()`'s blanket stop.
+
+### World: WorldViewModel
+
+- `beginCatchCutscene(from:)` calls `sounds.catchCutsceneBegan()` right after setting
+  `isShowingCatchCutscene = true`.
+- `updateCatchCutscene(deltaTime:)` calls `sounds.catchCutsceneEnded()` right after setting
+  `isShowingCatchCutscene = false`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-122.
+
+### Verification
+
+- Fresh `Shared` build (macOS) — clean.
+- Real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` build — `** BUILD
+  SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: live-device/session feel of the mix (the 0.17 `catchSplash` level, mute/restore timing
+  against the real cutscene length and `fishCatched` asset) — needs a real play session.
+
 ## Fix: `rod_line.usdz`'s Doubled Import-Correction Rotation, Root-Caused and Fixed (ADR-111)
 
 Date: 2026-07-22.

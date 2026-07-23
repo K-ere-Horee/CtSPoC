@@ -21,11 +21,27 @@ final class FishingSounds {
     /// instantly, matching every other safety stop in this class).
     private static let reelFightFadeDuration: TimeInterval = 1.5
 
+    /// ADR-122: "kecilin suara catch_splash jadi cuma 20% aslinya" — 20% of the sound's original,
+    /// pre-ADR-120 baseline (the shared 0.85 default every other effect still uses), not 20% of the
+    /// already-halved 0.425 `Sound.catchSplash.defaultVolume`. Applied only for the catch-cutscene
+    /// playback below via `volumeOverride`; `defaultVolume` itself is untouched since nothing else
+    /// plays this sound.
+    private static let catchSplashCutsceneVolume: Float = 0.17
+
     private let sounds: SoundManager
     private var isReelLoopActive = false
     private var isAmbienceLoopActive = false
     private var isIdleLoopActive = false
     private var isReelFightLoopActive = false
+    /// True for the duration of `WorldViewModel.isShowingCatchCutscene` (ADR-122) — "matiin semua
+    /// volume" (mute every other sound) while the cutscene plays, so `catchSplash`/`fishCatched`
+    /// aren't fighting `ambienceLake`/`reelFight` for the player's attention. While true, every
+    /// `update*Loop(active:)` call below is a no-op even if the caller still passes `active: true`
+    /// (`WorldViewModel.tick()` keeps calling them every frame regardless of the cutscene), so a
+    /// ducked loop can't be resurrected mid-cutscene. `catchCutsceneEnded()` doesn't need to restart
+    /// anything itself — the very next frame's `update*Loop(active:)` call sees the still-`false`
+    /// `isXActive` flag and restarts naturally.
+    private var isDuckedForCatchCutscene = false
 
     init(sounds: SoundManager) {
         self.sounds = sounds
@@ -52,8 +68,12 @@ final class FishingSounds {
             sounds.stopLoop(.reelLoop)
             sounds.play(.hookSplash)
         case .catchFish:
-            sounds.stopLoop(.reelLoop)
-            sounds.play(.catchSplash)
+            // Loop ducking now happens for the whole cutscene window via `catchCutsceneBegan()`
+            // (called alongside `WorldViewModel.beginCatchCutscene(from:)`, not just this one-frame
+            // event), so this case only needs its own two one-shots: `catchSplash` ducked to 20% of
+            // its original volume, `fishCatched` at its own `defaultVolume` (already "100%" — no
+            // override needed) so it reads clearly instead of the two colliding (ADR-122).
+            sounds.play(.catchSplash, volumeOverride: Self.catchSplashCutsceneVolume)
             sounds.play(.fishCatched)
         case .reelTensionLow, .reelTensionMedium, .reelTensionHigh:
             break
@@ -88,6 +108,7 @@ final class FishingSounds {
     /// Frame-driven rather than event-driven so empty-line retrieves during `.hookInWater` (no
     /// fish on hook yet) also get the reel sound, not just the fight-reeling case.
     func updateReelLoop(active: Bool) {
+        guard !isDuckedForCatchCutscene else { return }
         guard active != isReelLoopActive else { return }
         isReelLoopActive = active
         if active {
@@ -103,6 +124,7 @@ final class FishingSounds {
     /// never overlap and one of them is always active whenever the other isn't. Frame-driven, same
     /// pattern as `updateReelLoop(active:)`.
     func updateAmbienceLoop(active: Bool) {
+        guard !isDuckedForCatchCutscene else { return }
         guard active != isAmbienceLoopActive else { return }
         isAmbienceLoopActive = active
         if active {
@@ -118,6 +140,7 @@ final class FishingSounds {
     /// pattern as `updateReelLoop(active:)`; `WorldViewModel.tick()` computes the active condition
     /// since this class doesn't track `screen` itself.
     func updateIdleLoop(active: Bool) {
+        guard !isDuckedForCatchCutscene else { return }
         guard active != isIdleLoopActive else { return }
         isIdleLoopActive = active
         if active {
@@ -133,6 +156,7 @@ final class FishingSounds {
     /// `updateReelLoop(active:)`/`updateIdleLoop(active:)`; `WorldViewModel.tick()` computes the
     /// active condition.
     func updateReelFightLoop(active: Bool) {
+        guard !isDuckedForCatchCutscene else { return }
         guard active != isReelFightLoopActive else { return }
         isReelFightLoopActive = active
         if active {
@@ -171,5 +195,27 @@ final class FishingSounds {
         isAmbienceLoopActive = false
         isIdleLoopActive = false
         isReelFightLoopActive = false
+        isDuckedForCatchCutscene = false
+    }
+
+    /// ADR-122: called alongside `WorldViewModel.beginCatchCutscene(from:)`, i.e. the same frame
+    /// `isShowingCatchCutscene` flips true — cuts every currently playing loop instantly (no fade;
+    /// this is a hard mute for the cutscene moment, not `reelFight`'s own graceful end-of-fight fade)
+    /// and blocks `update*Loop(active:)` from restarting any of them until `catchCutsceneEnded()`.
+    func catchCutsceneBegan() {
+        isDuckedForCatchCutscene = true
+        sounds.stopAllLoops()
+        isReelLoopActive = false
+        isAmbienceLoopActive = false
+        isIdleLoopActive = false
+        isReelFightLoopActive = false
+    }
+
+    /// Called alongside `WorldViewModel.updateCatchCutscene`'s own `isShowingCatchCutscene = false`.
+    /// Doesn't restart anything directly — the next `WorldViewModel.tick()` calls `update*Loop
+    /// (active:)` again regardless, and with `isDuckedForCatchCutscene` now false and the tracked
+    /// `isXActive` flags still `false` from `catchCutsceneBegan()`, `ambienceLake` resumes on its own.
+    func catchCutsceneEnded() {
+        isDuckedForCatchCutscene = false
     }
 }

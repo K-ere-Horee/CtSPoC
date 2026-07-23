@@ -19,6 +19,17 @@ struct ContentView: View {
 
     @State private var showDeveloperDetails = false
 
+    /// ADR-121: "layar disable touch ketika lagi reel fight" — during an active fight the player
+    /// is physically waving/reeling the phone, and the only *unconditionally* tappable control on
+    /// screen is "End Fishing" (`fishingButton`) — "Start Casting"/"Calibrate" are already gated to
+    /// `hookPhase == .idle`/`.result` on their own, so they're not the actual risk. A stray touch
+    /// mid-fight (e.g. the phone brushing a hand) ending the whole session is the failure this
+    /// guards against; motion-based gameplay (reeling, flicking) is untouched since it's sensor-
+    /// driven, not touch-driven.
+    private var isReelFightActive: Bool {
+        viewModel.hookPhase == .fishOnHook || viewModel.hookPhase == .reeling
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 28) {
@@ -66,7 +77,7 @@ struct ContentView: View {
                 }
 
                 Spacer()
-                
+
                 /*
                 DisclosureGroup("Developer Details", isExpanded: $showDeveloperDetails) {
                     developerDetails
@@ -75,6 +86,7 @@ struct ContentView: View {
                 .padding(.bottom, 12)
                  */
             }
+            .allowsHitTesting(!isReelFightActive)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

@@ -44,10 +44,16 @@ struct LineTensionView: View {
                     let markerOffset: CGFloat = reelSize * 0.5 + clampedTension * trackWidth - 9
 
                     ZStack(alignment: .leading) {
+                        // ADR-121: symmetric red-yellow-green-yellow-red, not a plain green->red
+                        // ramp — tension danger is bidirectional (too low = slack/losing the fish,
+                        // too high = snapping), so the safe zone belongs in the *middle* of the
+                        // bar with danger at both ends, not just one. Requested directly: "meteran
+                        // line tension kan sekarang hijau-kuning-merah, ganti ke
+                        // merah-kuning-hijau-kuning-merah."
                         Capsule()
                             .fill(
                                 LinearGradient(
-                                    colors: [.green, .yellow, .red],
+                                    colors: [.red, .yellow, .green, .yellow, .red],
                                     startPoint: .leading,
                                     endPoint: .trailing
                                 )
