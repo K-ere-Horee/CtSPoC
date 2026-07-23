@@ -107,10 +107,15 @@ final class SoundManager {
     /// Plays a one-shot from the start, retriggering it if it's already mid-playback — sufficient
     /// here since no one-shot in the gameplay mapping needs true overlapping instances (see
     /// ADR-040).
-    func play(_ sound: Sound) {
+    ///
+    /// `volumeOverride`, when set, replaces the normal `effectiveVolume(for:)` computation outright
+    /// (category multiplier included) for this one playback — used by the catch cutscene (ADR-122)
+    /// to duck `catchSplash` below its own `defaultVolume` without adding a second persistent
+    /// per-sound volume knob.
+    func play(_ sound: Sound, volumeOverride: Float? = nil) {
         guard let player = players[sound] else { return }
         player.numberOfLoops = 0
-        player.volume = effectiveVolume(for: sound)
+        player.volume = volumeOverride ?? effectiveVolume(for: sound)
         player.currentTime = 0
         player.play()
     }

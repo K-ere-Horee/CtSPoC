@@ -1398,6 +1398,9 @@ final class WorldViewModel: ObservableObject {
 
         catchCutscene = CatchCutscene(origin: position)
         isShowingCatchCutscene = true
+        // ADR-122: mutes ambience/reel-fight for the whole cutscene window, not just this one
+        // frame — `emit(.catchFish)` right after this call only plays the two catch one-shots.
+        sounds.catchCutsceneBegan()
     }
 
     /// Height above `cutscene.origin` at `elapsed` seconds into the catch cutscene (ADR-045/047) —
@@ -1573,6 +1576,7 @@ final class WorldViewModel: ObservableObject {
         caughtFishEntity?.isEnabled = false
         caughtFishAnimationController = nil
         isShowingCatchCutscene = false
+        sounds.catchCutsceneEnded()
     }
 
     private func handle(_ message: NetworkMessage) {
