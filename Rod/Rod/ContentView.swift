@@ -33,6 +33,11 @@ struct ContentView: View {
                         .foregroundStyle(viewModel.connectionState == .streaming ? .green : .secondary)
                 }
 
+                if viewModel.isTutorialActive {
+                    tutorialControls
+                        .padding(.horizontal, 32)
+                }
+
                 fishingButton
                     .padding(.horizontal, 32)
 
@@ -150,6 +155,34 @@ struct ContentView: View {
             .controlSize(.large)
             .disabled(viewModel.calibrationStep != .complete)
         }
+    }
+
+    /// ADR-117: dedicated tutorial controls, shown only while World reports the tutorial overlay
+    /// active (`isTutorialActive`, mirrored from `NetworkMessage.tutorialState`). Replaces the old
+    /// tap-anywhere-on-World-to-advance interaction — "cuma click click doang" — with real,
+    /// labeled buttons living on the device the player is actually holding and using to follow the
+    /// tutorial's own instructions.
+    private var tutorialControls: some View {
+        VStack(spacing: 10) {
+            Text("Tutorial \u{2022} Step \(viewModel.tutorialStepIndex + 1) of \(viewModel.tutorialStepCount)")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                Button("Skip Tutorial", role: .destructive) {
+                    viewModel.skipTutorial()
+                }
+                .buttonStyle(.bordered)
+
+                Button("Next") {
+                    viewModel.advanceTutorial()
+                }
+                .buttonStyle(.borderedProminent)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(12)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
     /// Arms one cast attempt (see `RodViewModel.startCasting()`/`RodMotionInterpreter`'s own doc

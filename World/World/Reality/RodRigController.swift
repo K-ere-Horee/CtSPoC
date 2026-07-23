@@ -102,6 +102,18 @@ struct RodRigController {
     /// tail-offset attach point) — used by gameplay to launch the hook from the rod's actual tip
     /// rather than duplicating the skeletal-pin math at the call site.
     let tipEntity: Entity?
+
+    /// True world-space position of the rod's rendered end (the Tip bone's TAIL, `tipTailOffset`
+    /// further out than `tipEntity` itself) — the same point `rod_line.usdz` attaches to (ADR-110).
+    /// `tipEntity` is left at the head and untouched (`launchHook`'s cast origin/distance tuning
+    /// already accounts for it through many prior ADRs); this is a second, distinct read for
+    /// anything that needs the *actual* visual rod end, like the fishing-line rope's anchor.
+    var tipEndPosition: SIMD3<Float>? {
+        guard let tipEntity else { return nil }
+        let head = tipEntity.position(relativeTo: nil)
+        let rotation = tipEntity.orientation(relativeTo: nil)
+        return head + rotation.act(Self.tipTailOffset)
+    }
     private let rodModel: ModelEntity?
     private let lineModel: ModelEntity?
     /// Placeholder reel visual — `rod_main.usdz` has exactly one mesh (the rod blank itself,
@@ -141,6 +153,23 @@ struct RodRigController {
                     position: tipTailOffset
                 )
                 line.attach(to: tipPin)
+
+                // ADR-111: `line` (rod_line.usdz's own root `Entity(named:)` returns) carries a
+                // ~90-degree rotation baked into its OWN local transform, independent of anything
+                // this code does — confirmed by printing it before this entity ever touches `root`
+                // or a pin. `rod_main.usdz`'s equivalent root entity carries the *identical*
+                // quaternion (both are Blender exports with `upAxis = "Z"`; RealityKit's importer
+                // bakes the Z-up -> Y-up correction into each loaded root's own local transform
+                // rather than into the underlying geometry/skeleton data). The rod's own pins
+                // already resolve this correctly in world space — proven by `tipEntity`/the debug
+                // markers, which are freshly-created identity-transform entities with no import
+                // baggage of their own, landing exactly on the visual tip once attached. `line`,
+                // attached to that same already-correct pin, was carrying its OWN copy of the same
+                // correction as `attach(to:)`'s standard reparent semantics preserve a child's
+                // existing local transform — doubling the rotation on top of an already-resolved
+                // parent. Resetting `line`'s local transform to identity right after attaching
+                // makes it behave exactly like the (correctly-behaving) marker entities.
+                line.transform = Transform(scale: .one, rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), translation: .zero)
             }
         }
 
@@ -154,6 +183,16 @@ struct RodRigController {
                 position: .zero
             )
             marker.attach(to: tipMarkerPin)
+            // ADR-114: `attach(to: pin)` alone does not add this entity to the scene hierarchy —
+            // confirmed by a live `[ADR-113]` log showing `tipEntity.position(relativeTo: nil)`
+            // reading exactly (0,0,0), completely disconnected from the rig root's real position,
+            // while the sibling `debugHead`/`debugTail`/`debugEnd` markers (which additionally call
+            // `root.addChild(...)`) render and resolve correctly. Without this, `tipEntity` has no
+            // parent chain for `position`/`orientation(relativeTo: nil)` to walk up, so it silently
+            // falls back to reading as if it sat at the scene's absolute origin with identity
+            // rotation — exactly what the log showed. `tipEntity` itself has no mesh, so this was
+            // never visually apparent the way a missing `addChild` on a rendered marker would be.
+            root.addChild(marker)
             tipEntity = marker
         }
 
@@ -175,7 +214,13 @@ struct RodRigController {
             reelEntity = reel
         }
 
-        return RodRigController(root: root, tipEntity: tipEntity, rodModel: rodModel, lineModel: lineModel, reelEntity: reelEntity)
+        return RodRigController(
+            root: root,
+            tipEntity: tipEntity,
+            rodModel: rodModel,
+            lineModel: lineModel,
+            reelEntity: reelEntity
+        )
     }
 
     /// Bends Rod_01...Tip with amplitude increasing toward the tip, driven by how far the

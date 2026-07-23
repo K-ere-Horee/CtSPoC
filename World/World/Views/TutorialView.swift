@@ -2,75 +2,71 @@
 //  TutorialView.swift
 //  World
 //
-//  First-time onboarding overlay shown over the game scene: a sequence of
-//  tap-to-advance steps explaining the Rod <-> World casting flow.
+//  First-time onboarding overlay shown over the game scene, driven entirely by
+//  `WorldViewModel.tutorialStepIndex` — advanced/skipped from Rod's own "Next"/
+//  "Skip Tutorial" buttons (ADR-117), not by tapping this view.
 //
 
 import SwiftUI
 
-private struct TutorialStep {
+struct TutorialStep {
     let text: String
     let illustration: String?
 }
 
-private let tutorialSteps: [TutorialStep] = [
-    TutorialStep(
-        text: "To catch the fish, you must throw your rod. But first, you must connect the rod with your phone.",
-        illustration: nil
-    ),
-    TutorialStep(
-        text: "Press the “Calibrate” button on your phone!",
-        illustration: nil
-    ),
-    TutorialStep(
-        text: "Pull back your phone slightly, then flick forward!",
-        illustration: "HandTutor"
-    ),
-    TutorialStep(
-        text: "Wait for a fish to bite!",
-        illustration: nil
-    ),
-    TutorialStep(
-        text: "Gotchaa!!!",
-        illustration: "HandTutor"
-    ),
-    TutorialStep(
-        text: "Well done! Continue your journey to claim more fish and rewards.",
-        illustration: nil
-    ),
-]
-
-/// Tap-anywhere-to-advance tutorial overlay. Composed on top of the live game scene by
-/// `ContentView`'s own overlay `ZStack` (ADR-087 — ported from `feat/ui-slice`'s `RootView`,
-/// which originally composed it the same way, just via a different top-level router); renders no
-/// background of its own so the live game scene stays visible behind it.
+/// ADR-117: centered, pure-display overlay — no local `@State`, no tap gesture. Rod drives
+/// `stepIndex` via `NetworkMessage.tutorialState`/`WorldViewModel.tutorialStepIndex`, replacing the
+/// old tap-anywhere-on-World-to-advance interaction ("cuma click click doang") with real "Next"/
+/// "Skip Tutorial" buttons living on the device the player is actually holding. Also only shown
+/// once per progression cycle now (`WorldViewModel.handleState(_:)`'s `hasSeenTutorial` gate,
+/// reset by `resetProgression()`) instead of on every "Start Fishing."
 struct TutorialView: View {
-    let onFinished: () -> Void
+    /// Every step's copy, in order — the single source of truth for both this view's rendering and
+    /// `WorldViewModel`'s step-count/advance-vs-dismiss logic, so the two can never drift apart.
+    static let steps: [TutorialStep] = [
+        TutorialStep(
+            text: "To catch the fish, you must throw your rod. But first, you must connect the rod with your phone.",
+            illustration: nil
+        ),
+        TutorialStep(
+            text: "Press the “Calibrate” button on your phone!",
+            illustration: nil
+        ),
+        TutorialStep(
+            text: "Pull back your phone slightly, then flick forward!",
+            illustration: "HandTutor"
+        ),
+        TutorialStep(
+            text: "Wait for a fish to bite!",
+            illustration: nil
+        ),
+        TutorialStep(
+            text: "Gotchaa!!!",
+            illustration: "HandTutor"
+        ),
+        TutorialStep(
+            text: "Well done! Continue your journey to claim more fish and rewards.",
+            illustration: nil
+        ),
+    ]
 
-    @State private var stepIndex = 0
+    let stepIndex: Int
     private let labelWidth: CGFloat = 569
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            Color.clear
+        ZStack {
+            Color.black.opacity(0.25)
                 .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture(perform: advance)
-
-            bubble(for: tutorialSteps[stepIndex])
-                .padding(.leading, 24)
-                .padding(.top, 32)
                 .allowsHitTesting(false)
+
+            if steps.indices.contains(stepIndex) {
+                bubble(for: steps[stepIndex])
+                    .allowsHitTesting(false)
+            }
         }
     }
 
-    private func advance() {
-        if stepIndex < tutorialSteps.count - 1 {
-            stepIndex += 1
-        } else {
-            onFinished()
-        }
-    }
+    private var steps: [TutorialStep] { Self.steps }
 
     /// Fish-overlapping-label bubble, fixed to `labelWidth` with the text
     /// wrapping to fit inside it.
@@ -111,6 +107,6 @@ struct TutorialView: View {
 #Preview {
     ZStack {
         Color.blue.ignoresSafeArea()
-        TutorialView(onFinished: {})
+        TutorialView(stepIndex: 0)
     }
 }

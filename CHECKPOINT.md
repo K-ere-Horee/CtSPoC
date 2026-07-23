@@ -9561,7 +9561,606 @@ dan floating kaya seakan 'ketarik' dari rod."
   splashdown) — only renders in a live in-water session behind a paired Rod. Deferred to the user's
   device. Open device-validation gap.
 
-## Feature: AR Fish Preview Screen, Gated to Caught Species Only (ADR-110, ADR-111, ADR-112)
+## Fix: Line Anchor Fixed to the Rod's True Tip End (ADR-110)
+
+Date: 2026-07-22.
+
+Reported directly: "line nya masih sedikit aneh. instead of horizontal, harusnya nge stick ke ujung
+rod akhir rod (bukan yang nempel ke camera)."
+
+### Diagnosis
+
+`RodRigController.tipEntity` is pinned to the Tip bone's **head** (zero local offset) — but the
+rod's actual rendered end is `tipTailOffset` (0.25 m) further out along that bone, which is exactly
+where `rod_line.usdz` itself has always attached (a pre-existing, documented gotcha: "getting this
+backwards silently places the line 0.25 m short of the real rod tip"). The fishing rope
+(`updateFishingRope()`) was reading `tipEntity`'s raw head position, so it anchored 0.25 m short of
+the true tip — inside the last bone segment, closer to the handle/camera side than the rod's actual
+end.
+
+### World: RodRigController
+
+- Added `tipEndPosition: SIMD3<Float>?` — computes `tipEntity`'s head position + orientation, then
+  offsets by the tail vector rotated into world space (the same transform `rod_line.usdz`'s own pin
+  already applies). `tipEntity` itself and its use in `launchHook` (cast origin/distance, tuned
+  through many prior ADRs) are left untouched.
+
+### World: WorldViewModel
+
+- `updateFishingRope()`: rod-side anchor changed from `tipEntity.position(relativeTo: nil)` to
+  `rodRig?.tipEndPosition`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-110.
+
+### Verification
+
+- `xcrun swiftc -typecheck` against the full `World/World` file list — exit code 0, no errors.
+- Built the actual `World` target (`xcodebuild -workspace CtSPoC.xcworkspace -scheme World`,
+  unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check` clean.
+- Not run: on-device confirmation the line no longer looks horizontal/short-anchored — requires a
+  paired Rod and a live in-water cast. Deferred to the user's device; if still off after this,
+  needs a screenshot to diagnose further. Open device-validation gap.
+
+## Investigation: Rope Anchor Bug Continues — Math Validated, Live-Data Logging Added (ADR-112)
+
+Date: 2026-07-22.
+
+Reported after ADR-111 shipped: "ok, now it's acting more weird. fix ADR-111, since when the hook is
+in the water, the line just dropped horizontally against the plane of water, into inside of the
+pier, which indicates that the end of the line still attached to the head / camera somehow." Note:
+`rod_line.usdz` (ADR-111's actual fix target) is permanently hidden — whatever's being seen is the
+procedural `FishingLineRope` (ADR-108/110), which ADR-111 never touched.
+
+### Ruled out with hard evidence (not assumption)
+
+- **Rope constraint solver under overstretch**: a standalone simulation of the exact verlet code
+  with tip/hook 7.3 m apart (over 3x the rope's 2.2 m rest length, realistic for actual cast
+  distances per this project's own cast-tuning docs) showed intermediate points tracking the
+  straight line between the fixed endpoints correctly — no collapse.
+- **`tipEndPosition`'s formula (ADR-110)**: bounded to at most 0.25 m of displacement from
+  `tipEntity`'s own position by construction — cannot itself cause a "near the pier" scale of error.
+
+### Real remaining gap
+
+Whether `tipEntity.position(relativeTo: nil)` is correct once the rig is under **live bend** (real
+device motion) was never actually verified — every prior measurement (ADR-110/111's debug prints,
+the user's own marker screenshots) was taken at scene load or rest, before any real `applyBend()`
+call with live data.
+
+### World: WorldViewModel
+
+- Added throttled (~1x/second) `#if DEBUG` logging in `updateFishingRope()`: prints
+  `tipEndPosition`, the raw `tipEntity` position, the hook's position, and the rig root's position,
+  active only while the rope is shown. Mirrors the exact methodology that found ADR-111's bug.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-112 (marked in-progress, not yet resolved).
+
+### Verification
+
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean.
+- Built the actual `World` target (`xcodebuild -workspace CtSPoC.xcworkspace -scheme World`,
+  unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check`: same pre-existing trailing whitespace from the user's own earlier debug-marker
+  edits, unrelated to this change.
+- **Blocked on live data**: needs either (a) confirmation of whether the existing green
+  `tipEndPosition` debug marker also misbehaves during an actual live cast, or (b) the printed
+  `[ADR-112]` console output from an actual in-water session, before a real fix can be identified.
+  Explicitly not guessing a fourth time without this.
+
+## Fix: Green Debug Marker's Own Double-Transform Bug; Rope Endpoints Now Exposed (ADR-113)
+
+Date: 2026-07-22.
+
+Reported directly: "engga, green nya stay dan rope nya misbehaves" (confirming tip-resolution under
+live bend is fine — ADR-112's one open gap) — "also, next time gausah verify by doing auto build
+lagi, just do the code dan let me build manually" (don't auto-build/launch to verify — just write
+the code, I'll build it myself).
+
+### Found: a real bug in the debug marker itself
+
+`debugEnd` (green marker) was parented to `rig.root` (`RodRigController.load()`'s local `root`
+variable — has a live, non-identity transform: position=dockAnchorPosition, rotation=yaw*restTilt,
+set every tick). `applyBend()` then wrote `debugEnd?.position = tipEndPosition` — an already
+world-space value — as if it were *local* to that rotated parent. Double-transform: true world
+position was `dockAnchorPosition + rig.root's rotation applied to tipEndPosition`, not
+`tipEndPosition` itself.
+
+### World: RodRigController
+
+- Fixed by attaching `debugEnd` to a dedicated `DebugEndPin` (same `tipTailOffset` as
+  `LineAttachPin`), matching how `debugHead`/`debugTail` already work correctly — self-updates via
+  the pin every frame, no manual per-tick position write needed. Removed the manual
+  `debugEnd?.position = tipEndPosition` line from `applyBend()` entirely.
+
+### World: FishingLineRope
+
+- Added `debugFirstPoint`/`debugLastPoint` (`#if DEBUG`) exposing the rope's own internal
+  `points[0]`/`points[segmentCount]`, for direct comparison against what was fed into `update()`.
+
+### World: WorldViewModel
+
+- Extended the ADR-112 throttled `[ADR-112]` log (now `[ADR-113]`) to also print
+  `fishingRope.debugFirstPoint`/`debugLastPoint` alongside `tipEndPosition`/`hook` — if these
+  disagree, the bug is inside `FishingLineRope`'s own seed/constraint logic; if they agree but the
+  rendered rope still looks wrong, the bug is downstream in per-segment entity transforms or
+  RealityKit's rendering of them.
+
+### Status
+
+Still in progress — no further static-analysis avenue remains unchecked without new live data.
+Rope constraint solver (ADR-112), tip-anchor formula (ADR-110), per-segment transform math
+(re-verified by hand), and now the debug marker itself have all been examined and found correct in
+isolation. Needs the next live test's `[ADR-113]` console output (specifically whether `ropeFirst`/
+`ropeLast` match `tipEndPosition`/`hook`) before a real fix to the rope can be identified.
+
+### Verification
+
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean (fast
+  syntax-only check, no `.app` produced).
+- `git diff --check` — only pre-existing, unrelated trailing whitespace from the user's own earlier
+  debug-marker edits.
+- **Per explicit instruction, no `xcodebuild`/app-launch verification was performed for this
+  change** — the user will build and test manually.
+
+## Fix: `tipEntity` Was Never Added to the Scene Hierarchy — Root Cause Found (ADR-114)
+
+Date: 2026-07-23.
+
+Reported with the actual `[ADR-113]` console output from a live in-water cast:
+`tipEndPosition=(0.0, 0.25, 0.0) rawTipEntity=(0.0, 0.0, 0.0) hook=(-1.67, 0.041, -22.56)
+controllerPos=(0.22, 1.95, -2.1) ropeFirst=(0.0, 0.25, 0.0) ropeLast=(-1.67, 0.041, -22.56)`.
+
+### Diagnosis
+
+`rawTipEntity` reads exactly `(0,0,0)` — the scene's absolute origin, completely disconnected from
+`controllerPos` (the rig root's real position). `tipEndPosition` reading exactly `(0, 0.25, 0)`
+confirms `tipEntity`'s orientation also read as identity — nothing from the rig (position, rotation,
+bend) was being composed at all. `ropeFirst`/`ropeLast` matching their fed-in values exactly
+confirms `FishingLineRope` itself has zero bugs (per ADR-113's design) — it was faithfully rendering
+garbage inputs.
+
+Root cause: `tipEntity` (`RodRigController.load()`'s `marker`) was `.attach(to: tipMarkerPin)`'d but
+**never added to the scene hierarchy** — no `root.addChild(marker)`. Its sibling debug markers
+(`debugHead`/`debugTail`/`debugEnd`) all additionally call `root.addChild(...)` and all render/
+resolve correctly — direct precedent that `attach(to:)` alone doesn't establish real scene-graph
+parentage; without `addChild`, there's no parent chain for `position(relativeTo: nil)` to walk up,
+so it silently falls back to reading as an isolated entity at the world origin. Since `tipEntity`
+has no mesh, this never produced a visible symptom until its value was actually logged.
+
+### World: RodRigController
+
+- Added `root.addChild(marker)` immediately after `marker.attach(to: tipMarkerPin)`, matching the
+  working sibling markers' pattern.
+
+### Wider implication (flagged, not acted on)
+
+`tipEntity.position(relativeTo: nil)` is also read by `launchHook()` (cast launch origin) and
+`hookDistanceFromRod()` — established, previously-tuned systems predating the rope work. If this
+bug pre-dates the rope entirely, those may have been computing from the same broken origin. Not
+touched by this fix — no cast tuning was adjusted, only the `addChild` omission — but flagged since
+fixing this could change cast behavior as a side effect. Worth specific attention on the next test.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-114.
+
+### Verification
+
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean (syntax-only,
+  no `.app` produced).
+- `git diff --check` — only pre-existing, unrelated whitespace.
+- **Per explicit instruction, no `xcodebuild`/app-launch verification was performed** — the user
+  will build and test manually, watching both the rope and general cast behavior.
+
+## Feature: Max Cast Distance Becomes a Direct, No-Trig Config Number (ADR-115)
+
+Date: 2026-07-23.
+
+Requested directly: "kurangi distance max nya sekitar 3 meter biar ga melebihi size pool", refined
+to "kurangin max range nya jadi 20 meter aja coba. atau, bikinin di config sebuah num yang tinggal
+ku ubah aja tanpa harus melalui perhitungan macem macem" — chose the second, explicitly-preferred
+option.
+
+### World: WorldViewModel
+
+- Replaced fixed `castSpeed: Float = 5.0` (max range ~24 m) with `maxCastDistance: Float = 20.0`
+  (the actual, directly-meaningful number) plus a computed `castSpeed` derived from it by solving
+  the projectile range formula for the speed that lands a max-power cast exactly `maxCastDistance`
+  away. Added `maxPowerLaunchAngle: Float = 0.65`, mirroring Rod's `CastResolver.maximumLaunchAngle`
+  default (World has no direct reference to Rod's resolver config).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-115.
+
+### Verification
+
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean.
+- `git diff --check` — only pre-existing, unrelated whitespace.
+- Derivation hand-verified arithmetically (20 m target in, 20.0 m out through the same formula
+  `launchHook` uses).
+- **Per standing instruction, no `xcodebuild`/app-launch verification performed** — the user will
+  build and confirm the new max range on device.
+
+## Feature: Min Cast Distance Added; Cast Meter's Zone Colors Now Calculate Themselves (ADR-116)
+
+Date: 2026-07-23.
+
+Requested directly: "tambahin aja setup right under maxCastDistance, yaitu minCastDistance, dan
+biarkan meteran hijau-kuning-merah di cast meter itu calculate themself according to the min dan
+max nya" — following up on "gimana kalo min cast nya?" (answered: ~3 m at the new derivation).
+
+### World: WorldViewModel
+
+- Added `minCastDistance: Float = 3.0` right under `maxCastDistance`. Replaced the single
+  `castSpeed` with `minPowerSpeed`/`maxPowerSpeed`, each derived from `minCastDistance`/
+  `maxCastDistance` at `minPowerLaunchAngle`/`maxPowerLaunchAngle` (new constants, `0.15`/`0.65`,
+  mirroring Rod's `CastResolver` defaults). Added `castLaunchSpeed(forPower:)` (linear
+  interpolation between the two speeds) — `launchHook(solution:)` now uses this instead of the old
+  `castSpeed * (1.4 + power * 0.6)` hand-tuned multiplier pair (ADR-066).
+- Added `castDistance(forPower:)` and its bisection-based inverse `castPower(forDistance:)`, and a
+  `castZoneBoundaryPowers: (green: Float, yellow: Float)` (`lazy var`, computed once) — the power
+  fractions where distance crosses 1/3 and 2/3 of `minCastDistance...maxCastDistance`, matching
+  `FishFightController.CastZone`'s own equal-thirds split via the same shared distance-formula
+  helpers, so the two can't silently disagree.
+
+### World: CastMeterView
+
+- Takes a new `zoneBoundaryPowers: (green: Float, yellow: Float)` parameter. Gradient rebuilt from
+  four explicit `Gradient.Stop`s (green@0, yellow@green-boundary, yellow@yellow-boundary, red@1)
+  instead of an implicit even three-color spacing — each zone now reads as a distinct color band.
+
+### World: ContentView
+
+- `CastMeterView(...)` call site passes `zoneBoundaryPowers: viewModel.castZoneBoundaryPowers`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-116.
+
+### Verification
+
+- Standalone script mirroring the exact distance/bisection code: `distance(0) = 3.0`,
+  `distance(1) = 18.0` (both exact), zone-boundary powers `~0.365`/`~0.679` (monotonic, in range,
+  and notably not the naive `0.333`/`0.667` a linear assumption would give — confirms the
+  nonlinearity correction was real).
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean.
+- `git diff --check` — only pre-existing, unrelated whitespace.
+- **Per standing instruction, no `xcodebuild`/app-launch verification performed** — the user will
+  build and confirm the meter's zone colors and new min cast distance on device.
+
+## Feature: Tutorial Rebuilt — Once Per Cycle, Centered, Rod-Driven Buttons (ADR-117)
+
+Date: 2026-07-23.
+
+Requested directly: "tutorial kan sekarang masih rancu, alias cuma click click doang dan setiap end
+fishing -> start fishing, selalu berulang. instead of that, lakuin aja tutorial di awal ketika reset
+progress, dan pastiin informasinya tampil di tengah layar. tambahin button di 'Rod' khusus untuk
+tutorial, yaitu 'Next' atau 'Skip Tutorial'."
+
+### Shared: RodState, NetworkMessage
+
+- `RodState`: added momentary `tutorialAdvanceRequested`/`tutorialSkipRequested: Bool` fields
+  (short wire keys `tad`/`tsk`), default `false`.
+- `NetworkMessage`: added `tutorialState(isActive: Bool, stepIndex: Int, stepCount: Int)`, World ->
+  Rod, reliable delivery. Added to both exhaustive (no-`default`) switches over `NetworkMessage`
+  (`TransportClient.send(_:)`, `RodViewModel.handle(_:)`).
+
+### Rod: RodViewModel, ContentView
+
+- Added `isTutorialActive`/`tutorialStepIndex`/`tutorialStepCount` (mirrored from World's
+  `.tutorialState` messages) and `advanceTutorial()`/`skipTutorial()` (momentary-flag press,
+  guarded by `isTutorialActive`). Both `RodState(...)` construction sites (`publishState()`,
+  `updateAction()`, the `.hookPhase == .idle` reset) updated to include the two new fields.
+- `ContentView`: new `tutorialControls` (step counter + "Skip Tutorial"/"Next" buttons), shown only
+  while `isTutorialActive`.
+
+### World: TutorialView
+
+- Rewritten as a pure display view (`stepIndex: Int` only) — no local `@State`, no
+  `onTapGesture`/tap-anywhere, no `onFinished` closure. `steps`/`TutorialStep` moved to
+  `TutorialView`-scoped/internal so `WorldViewModel` can read the shared step count.
+  Layout changed from `topLeading` + fixed padding to a default-centered `ZStack` plus a light
+  `Color.black.opacity(0.25)` scrim (new, since the bubble now floats mid-screen).
+
+### World: WorldViewModel
+
+- Added `tutorialStepIndex: Published`, persisted `hasSeenTutorial` (`UserDefaults`, mirrors
+  `hasSeenOnboarding`'s pattern), `advanceTutorialStep()`, `sendTutorialState()`.
+- `handleState(_:)`: `isFishing`'s rising edge now only auto-shows the tutorial when
+  `!hasSeenTutorial` (was unconditional every time). Added rising-edge detection for
+  `tutorialAdvanceRequested`/`tutorialSkipRequested` (same `wasFishing`-style pattern), calling
+  `advanceTutorialStep()`/`dismissTutorial()`.
+- `resetProgression()`: now also clears `hasSeenTutorial`, so the tutorial replays once from the
+  top on the next "Start Fishing" after a reset.
+- `dismissTutorial()`: now persists `hasSeenTutorial = true` and calls `sendTutorialState()`.
+
+### World: ContentView
+
+- `TutorialView(...)` call site updated to `TutorialView(stepIndex: viewModel.tutorialStepIndex)`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-117.
+
+### Verification
+
+- `swift build` (Shared, macOS) — clean.
+- Fresh `Shared` build for `arm64-apple-ios17.0-simulator` + `xcrun swiftc -typecheck` against the
+  full `Rod/Rod` file list — clean.
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean (one
+  pre-existing, unrelated warning).
+- Real unsigned `xcodebuild -scheme World` — `** BUILD SUCCEEDED **`.
+- Real unsigned `xcodebuild -scheme Rod -sdk iphonesimulator` — `** BUILD SUCCEEDED **`.
+- Launched the built World app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check` clean.
+- Not run: an actual live session exercising the full Rod-button -> World-tutorial-advance round
+  trip over real BLE — needs a paired physical Rod device. Open device-validation gap.
+
+## Feature: Eight Real Fish Species Replace the Four Placeholders; Sailfish Is Scott (ADR-118)
+
+Date: 2026-07-23.
+
+Requested directly: "sekarang cek dong repository https://github.com/K-ere-Horee/blender-assets/
+tree/main under /FishAssets. Itu kan banyak fish nya, ambil semua fish untuk yang `caught`, tapi
+hanya yang .usdz (kan kalo glb ga bisa di load). Terus, isi ulang fish model sesuai nama fishes
+nya, dan jadiin `Sailfish` as Scott the ultimate boss."
+
+### Asset acquisition
+
+- Listed `FishAssets/` via `gh api` — 10 species folders. 8 have a `Caught/*.usdz` export
+  (Marlin, Bluefin Tuna, Giant Trevally, Mekong Giant Catfish, Yellowfin Tuna, Skipjack Tuna,
+  Grouper, Sailfish); Clownfish/Blue Tang are `.glb`-only (confirmed both directly and via the
+  repo's own `APP_TEAM_HANDOFF.md`), excluded per the request's own reasoning.
+- Downloaded all 7 new `.usdz` files via their `download_url` + `curl` (the Contents API's base64
+  response has a size limit these 1-5 MB files exceed). Verified every download's byte size against
+  the API's reported size and confirmed real zip/USDZ magic bytes via `file` before use. Confirmed
+  the already-integrated `mekong_catfish_caught.usdz` is byte-identical to the repo's current
+  version (size match) rather than blindly trusting it was still current.
+- Copied into `World/World/Assets/FishCaught/`: `marlin_caught.usdz`, `bluefin_tuna_caught.usdz`,
+  `giant_trevally_caught.usdz`, `yellowfin_tuna_caught.usdz`, `skipjack_tuna_caught.usdz`,
+  `grouper_caught.usdz`, `sailfish_caught.usdz`.
+- Read each species' `Documentation/Scientific_Validation.md` (real-world size/weight) and
+  `Documentation/Source_Log.md` (actual authored export scale — not always the same as
+  `Scientific_Validation.md`'s "Model Length" design-target field) to source gameplay data instead
+  of inventing it.
+
+### Shared: FishSpecies
+
+- Added `assetName: String` and `authoredLength: Float`.
+
+### World: FishCatalog
+
+- Replaced `fish_a`/`fish_b`/`fish_c`/`scott` with 8 real species. Tiered by real-world size:
+  small = Grouper, Skipjack Tuna; medium = Giant Trevally, Yellowfin Tuna; big = Mekong Giant
+  Catfish, Bluefin Tuna, Blue Marlin; boss = Sailfish, kept the established display name "Scott"
+  (the game's own existing boss character, per the title screen/tutorial/mascot art) — the Sailfish
+  species/asset now backs that character instead of a nameless placeholder.
+
+### World: FishCatchResult, FishFightController
+
+- `FishCatchResult` gained `speciesID: String`; `FishFightController.resolve(outcome:)` populates
+  it from `species.id`.
+
+### World: WorldViewModel
+
+- `caughtFishEntity`/`caughtFishAuthoredLength` (hardcoded to Mekong) became
+  `caughtFishEntitiesByID: [String: Entity]` — one entity per catalog species, all loaded eagerly in
+  `makeSceneEntity()` (same avoid-a-load-stall rationale as the original single-entity load).
+  `beginCatchCutscene(from:)` looks up the actually-caught species by `speciesID` and points the
+  (otherwise unchanged) cutscene machinery at the right entity/authored length; falls back to
+  `hookEntity`-only animation on a lookup miss, same as before for a load failure.
+- `caughtFishHeadOffset` (fixed 1.15 m, Mekong-specific) is now a `var`, recomputed per catch as
+  `caughtFishHeadOffsetRatio * <species' authoredLength>` — Mekong's own measured ratio applied
+  uniformly to the other 7 as an approximation, explicitly flagged as needing live per-species
+  tuning the same way Mekong's own value took several ADR rounds to land on.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-118.
+
+### Verification
+
+- Every downloaded file's byte size + zip magic bytes verified before use.
+- `swift build` (Shared, macOS) — clean.
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean (one
+  pre-existing unrelated warning).
+- Real unsigned `xcodebuild -scheme World` — `** BUILD SUCCEEDED **`.
+- Confirmed all 8 `*_caught.usdz` files present in the built `.app`'s Resources — the synchronized
+  file group picked them up with no `.pbxproj` edits needed.
+- Launched the built app, confirmed running via `ps` (twice), checked console output for load
+  errors/warnings (none), then quit — no crash.
+- `git diff --check` clean.
+- **Not verified**: the actual visual result (orientation/scale/head-offset/export quality) of any
+  of the 7 newly-wired species' catch cutscene, or Sailfish's boss encounter specifically — the
+  source repo's own `APP_TEAM_HANDOFF.md` documents several `Preview`-state export issues across
+  species (scoped to a different state than `Caught`, but raises per-species export-consistency
+  concerns that could carry over). Needs a live playtest per species, the same way Mekong's own
+  integration took 8 ADR rounds (068-075) of live-screenshot iteration to get right. Open
+  device-validation gap, larger than most given the number of new assets.
+
+## Feature: Fight Speed Scales by Species on Both Sides; Species-Based Progress HUD (ADR-119)
+
+Date: 2026-07-23.
+
+Requested directly: "balance lagi dong fish run speed nya, masa speed lari marlin sama grouper
+sama? harusnya ada difficulty scale berdasarkan ukuran dan jenis ikan. I trust you dengan
+penilaiannya. Also, progressionnya diganti jangan pake standar Fish A Fish B lagi, tapi sesuai
+jenis ikan aja. Tampilin di sebelah kiri as a little stats gitu, udah nangkep ikan jenis apa
+berapa, dan target setiap ikan berapa."
+
+### Shared: FishFightConfig
+
+- `pullSpeedResistanceMultiplier`: 1.8 -> 2.6 (`basePullSpeed` floor untouched — easiest fish feels
+  the same, hardest fish's idle-drift speed stretches further, ~70% -> ~95% faster than the
+  easiest at the extremes).
+- Added `reelSpeedResistanceDrag` (0.45) and `minimumReelSpeedFactor` (0.5, hard floor).
+
+### World: FishFightController
+
+- `reelPullSpeed`: now the existing tension-scaled base, multiplied by `max
+  (minimumReelSpeedFactor, 1 - resistance * reelSpeedResistanceDrag)` — previously had zero
+  species dependency (pure function of `lineTension`), meaning the side of the fight the player
+  actually spends input on (reeling in) didn't scale with difficulty at all. Both sides of the
+  tug-of-war now share the same `resistance` driver.
+- Added `catchCount(forSpeciesID:)` passthrough to `FishRecordStore`.
+- `resetProgression()`: now also calls `recordStore.resetCounts()`, so species catch counts and
+  tier unlocks reset together.
+
+### Shared: FishSpecies / World: FishCatalog
+
+- Added `catchTarget: Int` to `FishSpecies`. `FishCatalog.all` sets it flat per tier: small 5,
+  medium 4, big 3, boss 1.
+
+### World: FishRecordStore
+
+- Added persisted `catchCountBySpeciesID` (separate `UserDefaults` key from the existing
+  best-weight tracking), incremented in `recordCatch(speciesID:weight:)`, exposed via
+  `catchCount(for:)`, cleared via new `resetCounts()`.
+
+### World: SpeciesProgressView (new file), ContentView
+
+- New "FISH LOG" card: one row per `FishCatalog.all` species, `caught/target`, green once complete,
+  dark-card + white-border language matching the rest of the HUD. `ContentView` floats it
+  top-leading (free since ADR-105), builds entries fresh each render from `FishCatalog.all` +
+  `fishFight.catchCount(forSpeciesID:)`.
+- Deleted `FishCounterBadgeView.swift` (the old tier-based "1/5" badge) outright — an explicit
+  replacement per the request ("progressionnya diganti"), not a disable-in-place case.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-119.
+
+### Verification
+
+- `swift build` (Shared, macOS) — clean.
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean (one
+  pre-existing unrelated warning).
+- Real unsigned `xcodebuild -scheme World` — `** BUILD SUCCEEDED **`.
+- Offscreen `NSHostingView` render of `SpeciesProgressView` with sample data — visually confirmed
+  readable, correctly greens a completed entry, fits without crowding.
+- Launched the built app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check` clean.
+- Not run: live-device confirmation of the actual felt fight-speed difference between species, or
+  the species-progress HUD's in-game legibility composited over the real 3D scene (only checked in
+  isolation). Open device-validation gap.
+
+## Fix: Three Notes — 1.5x Run Speed, Bluefin Orientation, Catch-Splash Volume (ADR-120)
+
+Date: 2026-07-23.
+
+Requested directly, three short notes: "multiply semua fish run speed by 1.5x"; "bluefin tuna
+kebalik orientasinya waktu fish catch"; "kurangi volume catch_splash by 50%".
+
+### Shared: FishFightConfig
+
+- `basePullSpeed`: 0.25 -> 0.375 — the shared floor every species' `fishPullSpeed` multiplies
+  against, so raising just this scales every species' run speed by exactly 1.5x uniformly, leaving
+  ADR-119's per-species `pullSpeedResistanceMultiplier` differentiation untouched.
+
+### Shared: FishSpecies / World: FishCatalog
+
+- Added `catchOrientationFlipped: Bool` (default `false`). Set `true` for Bluefin Tuna only.
+
+### World: WorldViewModel
+
+- Added `catchCutsceneOrientationFlipped`, set per-catch in `beginCatchCutscene(from:)` from the
+  caught species. `catchCutsceneFishOrientation` negates its local-Y-head-axis target when set,
+  recomputing the dorsal-axis target from whichever sign is active so the rotation stays proper
+  (non-mirrored) either way — root cause: the shared orientation assumes head-at-local–Y for every
+  species (ADR-118's documented export convention); if Bluefin's actual asset has its head at
+  local +Y instead, the unflipped mapping sends it to world -Y (down), i.e. head-down.
+
+### World: SoundManager
+
+- `Sound.catchSplash` gets its own `defaultVolume` case: `0.425` (was falling through to the
+  shared `0.85` default).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-120.
+
+### Verification
+
+- `swift build` (Shared, macOS) — clean.
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list — clean (one
+  pre-existing unrelated warning).
+- Orientation quaternion validity confirmed offline for both flipped/unflipped cases (proper
+  rotation, determinant ≈ 1, orthonormal columns).
+- Real unsigned `xcodebuild -scheme World` — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check` clean.
+- Not run: felt 1.5x speed change, whether Bluefin's orientation is now actually correct (best
+  guess at the likely cause, not confirmed against a screenshot), or catch-splash's volume in
+  context — all three need a live playtest.
+
+## Fix: `rod_line.usdz`'s Doubled Import-Correction Rotation, Root-Caused and Fixed (ADR-111)
+
+Date: 2026-07-22.
+
+Investigated per an unusually thorough structured brief from the user, explicitly demanding
+root-cause identification over trial-and-error offsets, after their own debug markers showed the
+visible `rod_line.usdz` mesh not beginning at the (visually-confirmed-correct) tip pin.
+
+### Investigation
+
+- Unpacked `rod_line.usdz`/`rod_main.usdz` (both zip archives) and converted the `.usdc` payload to
+  readable USDA via `/usr/bin/usdcat`. Full hierarchy has zero baked transforms anywhere — ruled out
+  translated root/skeleton/mesh directly, not by assumption. Both assets declare `upAxis = "Z"`.
+- Added temporary prints of `rod.transform`/`line.transform` *before* either touches `root` or a pin.
+  Both showed the identical quaternion — an exact 90-degree rotation about X, the signature of
+  RealityKit's USDZ importer correcting Blender's Z-up convention to its own Y-up convention, baked
+  into each loaded root entity's own local transform.
+
+### Root cause
+
+The rod's own pins already resolve this correction into a fully-correct world-space anchor (proven
+by freshly-created marker entities — no import baggage of their own — landing exactly on the tip).
+`rod_line`'s root carries its own independent copy of the identical rotation; `Entity.attach(to:)`
+preserves a child's existing local transform on reparent, so attaching `line` to the already-correct
+pin doubled the rotation, swinging the entire visible mesh off-direction even though its anchor
+point (unaffected by pure rotation) stayed correctly co-located with the pin.
+
+### World: RodRigController
+
+- Immediately after `line.attach(to: tipPin)`, reset `line.transform` to identity — removes the
+  redundant, already-resolved-by-the-pin rotation. Verified via a temporary post-fix print: `line.
+  transform` is now clean identity, not the stale 90-degree quaternion.
+- Removed the temporary investigation-only debug prints once the fix was confirmed; kept the user's
+  own red/blue/green debug marker spheres in place.
+
+### Practical note
+
+`rod_line.usdz`'s skinned mesh is currently always hidden (`setSkeletalLineVisible(false)` since
+ADR-108 — the procedural `FishingLineRope` owns the line's visual role). This fix doesn't change
+current player-visible behavior, but corrects a real, still-live bug (`applyLineTension` runs against
+this asset every tick) in code kept for a possible future re-enable.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-111.
+
+### Verification
+
+- Temporary post-fix print confirmed `line.transform` is identity (was the stale 90-degree
+  quaternion).
+- `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list (matching the project's
+  real Debug config) — clean.
+- Built the actual `World` target (`xcodebuild -workspace CtSPoC.xcworkspace -scheme World`,
+  unsigned) — `** BUILD SUCCEEDED **`.
+- Launched the built app, confirmed running via `ps` (twice), then quit — no crash.
+- `git diff --check`: flags pre-existing trailing whitespace from the user's own earlier debug-
+  marker edits (lines 130/191/219/228/262) — not introduced by this change, left as-is per earlier
+  precedent (a prior attempt to clean similar whitespace was declined).
+
+## Feature: AR Fish Preview Screen, Gated to Caught Species Only (ADR-121, ADR-122, ADR-123)
 
 Date: 2026-07-22.
 
@@ -9587,11 +10186,11 @@ preview dari ikan yang sudah dicatch sama user dan hanya muncul di rod ios."
   migration — so the resolved file only adds back this branch's camera-usage key).
 - ADR numbering collision: this branch's code comments cited "ADR-032" for the whole feature, but
   main had already used ADR-032 for an unrelated, real decision (highest main ADR was 109). Renamed
-  every reference to ADR-110 (`sed` across 6 files), after confirming via targeted grep that the
+  every reference to ADR-121 (`sed` across 6 files), after confirming via targeted grep that the
   other ADR numbers already present in those same files (030, 037, 054) were legitimate references
   to main's own decisions and needed to stay untouched.
 
-### World-to-Rod caught-species sync (new, ADR-111)
+### World-to-Rod caught-species sync (new, ADR-122)
 
 - `Shared/Models/Device/NetworkMessage.swift`: new `.caughtSpecies(Set<String>)` case, always the
   full set (never a delta); added to the reliable-delivery group.
@@ -9604,7 +10203,7 @@ preview dari ikan yang sudah dicatch sama user dan hanya muncul di rod ios."
   `FishRecordStore`'s own pattern — `replace(with:)` overwrites (not merges) the local set.
   `RodViewModel.handle(_:)` gets a new `.caughtSpecies(ids)` case that calls it.
 
-### FishPreviewViewModel gated to caught species (ADR-111)
+### FishPreviewViewModel gated to caught species (ADR-122)
 
 - `species` changed from a fixed `let ... = FishCatalog.all` to `@Published private(set) var
   species: [FishSpecies] = []`, rebuilt by a new `refreshSpecies()` (filters the catalog by
@@ -9618,7 +10217,7 @@ preview dari ikan yang sudah dicatch sama user dan hanya muncul di rod ios."
   `selectedSpecies` use site (`FishInfoCardView`'s call, the placement-hint text). `FishPickerView`'s
   `selectedSpecies` parameter is now `FishSpecies?` too (nil-safe `isSelected` comparison).
 
-### Export-quality audit (ADR-112) — "make sure the export is as good as the game's own"
+### Export-quality audit (ADR-123) — "make sure the export is as good as the game's own"
 
 Verified all 8 `Rod/Rod/Assets/FishPreview/*.usdz` files by SHA-256 and per-file content hash
 against their source exports in `new-blender-project/FishAssets/`, plus `usdcat`/`usdchecker`:
@@ -9645,7 +10244,7 @@ against their source exports in `new-blender-project/FishAssets/`, plus `usdcat`
 
 ### Documentation
 
-- `ARCHITECTURE_DECISIONS.md`: added ADR-110, ADR-111, ADR-112.
+- `ARCHITECTURE_DECISIONS.md`: added ADR-121, ADR-122, ADR-123.
 
 ### Verification
 
@@ -9666,7 +10265,7 @@ against their source exports in `new-blender-project/FishAssets/`, plus `usdcat`
   device-validation gap. Full Xcode/device build (`xcodebuild`) also not run this pass — only the
   manual `swiftc -typecheck` verification described above.
 
-## Fix: Fish Preview Orientation — Applied Sailfish's Baked Transform to 5 Species (ADR-113)
+## Fix: Fish Preview Orientation — Applied Sailfish's Baked Transform to 5 Species (ADR-124)
 
 Date: 2026-07-22.
 
@@ -9675,7 +10274,7 @@ are each species' *baked* orientation) showed only Sailfish rendering correctly 
 Mekong, Bluefin Tuna, and Giant Trevally all visibly wrong (giant diagonal blade spanning the
 screen, sideways/lying fish), Yellowfin Tuna and Grouper showing shattered/broken-looking meshes.
 User: "hanya sailfish yang export dan orientasi nya sudah benar, ikutin sailfish." This overturned
-the previous entry's (ADR-112) file-hash-based conclusion that the newer, Blender-native
+the previous entry's (ADR-123) file-hash-based conclusion that the newer, Blender-native
 `upAxis="Z"`/zero-rotation convention (shared by Mekong/Bluefin/Yellowfin/Skipjack/Grouper) was
 fine as shipped — it isn't, on this hardware; Sailfish's older `upAxis="Y"` + baked
 `xformOp:rotateXYZ=(90,180,0)` patch is the one that actually looks right.
@@ -9693,13 +10292,13 @@ Grouper embed textures inline in the `.usdc`, untouched by this edit). Blue Marl
 Trevally already carried this exact transform beforehand (not touched) — Trevally's own screenshot
 this round still showed it wrong despite already having "Sailfish's" values, independently
 reconfirming the Blender asset repo's own finding that one uniform rotation formula doesn't work
-for every species; its separate confirmed mesh defect (ADR-112) is untouched by this fix and remains
+for every species; its separate confirmed mesh defect (ADR-123) is untouched by this fix and remains
 open.
 
 ### Documentation
 
-- `ARCHITECTURE_DECISIONS.md`: added ADR-113; marked ADR-112 superseded (kept intact, not deleted,
-  per this repo's own convention) with a pointer to ADR-113's corrected conclusion.
+- `ARCHITECTURE_DECISIONS.md`: added ADR-124; marked ADR-123 superseded (kept intact, not deleted,
+  per this repo's own convention) with a pointer to ADR-124's corrected conclusion.
 
 ### Verification
 
@@ -9720,16 +10319,16 @@ open.
 
 Date: 2026-07-22.
 
-On-device re-test after ADR-113's orientation patch: Grouper still renders visibly torn/shattered
+On-device re-test after ADR-124's orientation patch: Grouper still renders visibly torn/shattered
 (spiky, moth-eaten silhouette) in RealityKit. Diffed the pre-patch and post-patch `Grouper_Preview
 .usdc` text dumps line-by-line — confirmed the orientation edit changed *only* the two intended
-fields (`upAxis`, `rotateXYZ`), nothing else — so this is not a regression from ADR-113's edit. The
+fields (`upAxis`, `rotateXYZ`), nothing else — so this is not a regression from ADR-124's edit. The
 mesh itself is broken, contradicting `new-blender-project/FishAssets/CHECKPOINT.md`'s CP48 claim
 that Grouper's Preview mesh was "cleaned up ... visually confirmed solid" — that check only ran in
 Blender's own EEVEE renderer and evidently doesn't hold up in RealityKit on real hardware.
 
 **Debug-only accommodation (`Rod/Rod/ViewModel/FishPreviewViewModel.swift`):** the user hasn't
-caught all 8 species in-game yet, so ADR-111's caught-only gate would block testing the other 4
+caught all 8 species in-game yet, so ADR-122's caught-only gate would block testing the other 4
 species this orientation patch touched. Added a `#if DEBUG` branch to `refreshSpecies()` that shows
 every `FishCatalog` species regardless of catch history — same "temporary tool, never ships"
 convention as the existing debug rotation panel, clearly commented as such. Release builds are

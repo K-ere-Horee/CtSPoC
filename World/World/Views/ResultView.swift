@@ -135,6 +135,7 @@ struct ResultView: View {
     ResultView(
         result: FishCatchResult(
             speciesName: "Rainbow Trout",
+            speciesID: "preview_trout",
             weight: 2.8,
             length: 57,
             outcome: .caught,

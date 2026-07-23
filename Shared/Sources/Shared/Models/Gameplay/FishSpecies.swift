@@ -36,8 +36,10 @@ public enum FishTier: String, Codable, Sendable, CaseIterable {
 
 /// Static per-species gameplay data. World selects a species when a fish
 /// bites and applies its modifiers to bite grace period, line tension, and
-/// catch value. Also carries presentation metadata for Rod's AR preview
-/// screen (ADR-110), now also carrying presentation metadata.
+/// catch value. ADR-118: `assetName`/`authoredLength` wire this to a real 3D
+/// model for the catch cutscene. ADR-124: also carries presentation metadata
+/// (`scientificName`/`rarity`/`description`/`previewAssetName`/`attribution`)
+/// for Rod's standalone AR fish preview screen.
 public struct FishSpecies: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let name: String
@@ -50,11 +52,40 @@ public struct FishSpecies: Codable, Sendable, Equatable, Identifiable {
     public let value: Int
     /// Which progression tier gates this species' availability.
     public let tier: FishTier
+    /// ADR-118: base filename (no extension) of this species' `Caught`-state `.usdz`, e.g.
+    /// `"sailfish_caught"` for `World/World/Assets/FishCaught/sailfish_caught.usdz`. World loads
+    /// one entity per species up front from this name; the catch cutscene picks the right one by
+    /// matching `FishCatchResult.speciesID` back to this `FishSpecies.id`.
+    public let assetName: String
+    /// ADR-118: real-world meters the asset's mesh was scaled to at export (each species'
+    /// `Documentation/Source_Log.md` in the `blender-assets` repo's `FishAssets/` — e.g. Sailfish
+    /// was "Rescaled to 2.72 m"). World divides the actual rolled catch length by this to compute
+    /// the cutscene display scale, replacing a single asset-specific constant that only worked for
+    /// one hardcoded species.
+    public let authoredLength: Float
+    /// ADR-119: how many of this species the species-progress HUD counts toward before showing it
+    /// as "complete" — a per-species checklist goal, replacing the old tier-only ("Fish A/Fish B")
+    /// progress display with something tied to real species identity, per direct request:
+    /// "progressionnya diganti jangan pake standar Fish A Fish B lagi, tapi sesuai jenis ikan aja."
+    public let catchTarget: Int
+    /// ADR-120: `true` if this species' `Caught` asset renders head-down/upside-down under the
+    /// shared `catchCutsceneFishOrientation` convention (local -Y = head, per the source repo's
+    /// documented "length along local Y" export standard) — reported directly for Bluefin Tuna
+    /// ("bluefin tuna kebalik orientasinya waktu fish catch"). World negates the head-axis mapping
+    /// for any species with this set, instead of hand-patching the shared orientation for
+    /// everyone. `false` for every other species, none of which have been reported as flipped.
+    public let catchOrientationFlipped: Bool
+    /// ADR-124: real-world binomial name, shown on Rod's AR preview card. Empty for species with
+    /// no preview yet (currently none — every roster entry has one).
     public let scientificName: String
     public let rarity: FishRarity
+    /// ADR-124: short educational blurb shown on Rod's AR preview card, sourced from the asset
+    /// repo's per-species `Scientific_Validation.md`.
     public let description: String
-    /// Named of the `.usdz` preview asset in the app bundle (without `.usdz`).
-    /// `nil` means no preview model is available for this species.
+    /// Base filename (no extension) of this species' *Preview*-state `.usdz` under
+    /// `Rod/Rod/Assets/FishPreview/` — distinct from `assetName`'s *Caught*-state asset, since Rod
+    /// and World load different exports of the same species. `nil` means no preview model is
+    /// available for this species yet.
     public let previewAssetName: String?
     /// Required CC-BY attribution text, if any. `nil` if no attribution needed.
     public let attribution: String?
@@ -67,6 +98,10 @@ public struct FishSpecies: Codable, Sendable, Equatable, Identifiable {
         resistance: Double,
         value: Int,
         tier: FishTier,
+        assetName: String,
+        authoredLength: Float,
+        catchTarget: Int,
+        catchOrientationFlipped: Bool = false,
         scientificName: String = "",
         rarity: FishRarity = .common,
         description: String = "",
@@ -80,6 +115,10 @@ public struct FishSpecies: Codable, Sendable, Equatable, Identifiable {
         self.resistance = min(1, max(0, resistance))
         self.value = value
         self.tier = tier
+        self.assetName = assetName
+        self.authoredLength = authoredLength
+        self.catchTarget = catchTarget
+        self.catchOrientationFlipped = catchOrientationFlipped
         self.scientificName = scientificName
         self.rarity = rarity
         self.description = description

@@ -1554,7 +1554,7 @@ only starts once `attachFrameLoop(to:)` subscribes — after `makeSceneEntity()`
 finishes — so no loop can start during `.loading` even transiently; there is no longer a separate
 `start()`/screen-transition call path that could race ahead of that.
 
-## AR Fish Preview and Caught-Species Sync (ADR-110, ADR-111, ADR-112)
+## AR Fish Preview and Caught-Species Sync (ADR-121, ADR-122, ADR-123)
 
 `Rod/Rod/ViewModel/FishPreviewViewModel.swift` + `Rod/Rod/Views/FishPreviewView.swift` (plus
 `FishPickerView`, `FishInfoCardView`, `Reality/FishPreviewARViewContainer.swift`) are a Rod-only
@@ -1588,5 +1588,5 @@ patch rather than the asset repo's newer native-orientation convention (Sailfish
 one confirmed correct on-device; Marlin's was never confirmed either way, so it wasn't swapped for
 an unverified alternative); Giant Trevally is a known, still-open exception — its mesh has a
 confirmed unresolved defect (spiky/torn geometry near the head/dorsal) that needs a full rebuild
-in the source Blender project, not something fixable from the app side. See ADR-112 for the full
+in the source Blender project, not something fixable from the app side. See ADR-123 for the full
 per-species audit.

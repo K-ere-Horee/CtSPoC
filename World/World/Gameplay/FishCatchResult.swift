@@ -14,6 +14,10 @@ struct FishCatchResult: Equatable {
     }
 
     let speciesName: String
+    /// ADR-118: `FishSpecies.id`, not the display `speciesName` — lets `WorldViewModel` look up
+    /// which preloaded catch-cutscene entity/asset to show without matching on a human-readable
+    /// string.
+    let speciesID: String
     let weight: Double
     let length: Double
     let outcome: Outcome

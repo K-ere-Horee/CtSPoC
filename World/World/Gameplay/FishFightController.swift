@@ -138,16 +138,25 @@ final class FishFightController: ObservableObject {
         progressionStore.progressTowardNextLevel
     }
 
+    /// ADR-119: how many of `speciesID` have been caught so far — passthrough for the
+    /// species-progress HUD, so it doesn't need its own reference to `FishRecordStore`.
+    func catchCount(forSpeciesID speciesID: String) -> Int {
+        recordStore.catchCount(for: speciesID)
+    }
+
     /// Called by the HUD once it's shown `levelUpAnnouncement` for long enough.
     func dismissLevelUpAnnouncement() {
         levelUpAnnouncement = nil
     }
 
-    /// Resets `ProgressionStore` back to Level 1 (only `.small` catchable) and clears any
-    /// in-flight level-up banner, so the player can replay the tier-unlock progression from
-    /// scratch — a debug/utility action, not part of the fishing session loop itself.
+    /// Resets `ProgressionStore` back to Level 1 (only `.small` catchable), clears every species'
+    /// catch count (ADR-119 — the species-progress checklist starts fresh alongside tier
+    /// progression, not independently), and clears any in-flight level-up banner, so the player can
+    /// replay the whole unlock progression from scratch — a debug/utility action, not part of the
+    /// fishing session loop itself.
     func resetProgression() {
         progressionStore.reset()
+        recordStore.resetCounts()
         currentLevel = progressionStore.level
         levelUpAnnouncement = nil
     }
@@ -327,13 +336,26 @@ final class FishFightController: ObservableObject {
     /// `config.reelPullSpeedDanger` instead — faster by default — rewarding a player willing to
     /// hold tension there rather than backing off to safety. Linearly interpolates between the two
     /// thresholds. World's `reelHook(deltaTime:)` reads this in place of a flat constant.
+    ///
+    /// ADR-119: the tension-scaled base above is then dragged down by `resistance` (same species x
+    /// rolled-size driver as `fishPullSpeed`) — previously this whole property had zero species
+    /// dependency, so reeling in a Grouper and a Marlin felt identical despite `fishPullSpeed`
+    /// (the fish's own idle-drift speed) already differing. Now both sides of the tug-of-war scale
+    /// with difficulty, not just the passive one.
     var reelPullSpeed: Float {
         let low = config.reelSpeedSafeTension
         let high = config.reelSpeedDangerTension
-        guard lineTension > low else { return config.reelPullSpeedSafe }
-        guard lineTension < high else { return config.reelPullSpeedDanger }
-        let t = (lineTension - low) / max(0.0001, high - low)
-        return config.reelPullSpeedSafe + (config.reelPullSpeedDanger - config.reelPullSpeedSafe) * t
+        let base: Float
+        if lineTension <= low {
+            base = config.reelPullSpeedSafe
+        } else if lineTension >= high {
+            base = config.reelPullSpeedDanger
+        } else {
+            let t = (lineTension - low) / max(0.0001, high - low)
+            base = config.reelPullSpeedSafe + (config.reelPullSpeedDanger - config.reelPullSpeedSafe) * t
+        }
+        let dragFactor = max(config.minimumReelSpeedFactor, 1 - resistance * config.reelSpeedResistanceDrag)
+        return base * dragFactor
     }
 
     /// Call when the hook reaches the rod while a fish is attached.
@@ -363,6 +385,7 @@ final class FishFightController: ObservableObject {
 
         lastCatchResult = FishCatchResult(
             speciesName: species.name,
+            speciesID: species.id,
             weight: currentWeight,
             length: currentLength,
             outcome: outcome,
