@@ -369,6 +369,9 @@ final class WorldViewModel: ObservableObject {
                 // can't permanently block casting/reeling on the Rod side.
                 self.lastError = nil
                 Task { await self.send(.hookPhase(self.hookPhase)) }
+                // ADR-111: same reasoning as the `.hookPhase` resync above — Rod's local caught-
+                // species copy has no other way to catch up after a dropped connection.
+                Task { await self.send(.caughtSpecies(self.fishFight.caughtSpeciesIDs)) }
             }
         }
         transport.onMessage = { [weak self] message in
@@ -1137,6 +1140,10 @@ final class WorldViewModel: ObservableObject {
                 fishFight.resolveCatch()
                 beginCatchCutscene(from: hookEntity.position)
                 emit(.catchFish)
+                // ADR-111: Rod has no direct access to `FishRecordStore` — resync the full caught
+                // set (not just this one new ID) so a dropped send can't permanently desync Rod's
+                // local copy from World's.
+                Task { await send(.caughtSpecies(fishFight.caughtSpeciesIDs)) }
             } else {
                 hookEntity.isEnabled = false
             }

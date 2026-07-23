@@ -37,7 +37,7 @@ public enum FishTier: String, Codable, Sendable, CaseIterable {
 /// Static per-species gameplay data. World selects a species when a fish
 /// bites and applies its modifiers to bite grace period, line tension, and
 /// catch value. Also carries presentation metadata for Rod's AR preview
-/// screen (ADR-032).
+/// screen (ADR-110), now also carrying presentation metadata.
 public struct FishSpecies: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let name: String

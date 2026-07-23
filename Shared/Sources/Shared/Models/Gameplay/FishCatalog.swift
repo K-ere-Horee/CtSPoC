@@ -4,7 +4,7 @@
 //
 //  Created by Calzy Akmal Indyramdhani on 18/07/26.
 //
-//  Promoted from World/World/Gameplay/FishCatalog.swift (ADR-032) so World's
+//  Promoted from World/World/Gameplay/FishCatalog.swift (ADR-110) so World's
 //  catch simulation and Rod's standalone AR fish preview screen share one
 //  source of truth. Weight, resistance, and value are first-pass gameplay
 //  approximations pending balancing, not exact biological data; biology text

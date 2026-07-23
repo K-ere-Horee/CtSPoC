@@ -115,6 +115,12 @@ final class FishFightController: ObservableObject {
     private let recordStore: FishRecordStore
     private let progressionStore: ProgressionStore
 
+    /// Passthrough to `recordStore`'s own set (ADR-111) — `WorldViewModel` has no other access to
+    /// `recordStore`, which is private to this controller.
+    var caughtSpeciesIDs: Set<String> {
+        recordStore.caughtSpeciesIDs
+    }
+
     init(
         recordStore: FishRecordStore = FishRecordStore(),
         progressionStore: ProgressionStore = ProgressionStore(),

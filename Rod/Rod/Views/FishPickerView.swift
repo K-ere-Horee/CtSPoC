@@ -10,14 +10,14 @@ import SwiftUI
 
 struct FishPickerView: View {
     let species: [FishSpecies]
-    let selectedSpecies: FishSpecies
+    let selectedSpecies: FishSpecies?
     let onSelect: (FishSpecies) -> Void
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 ForEach(species) { fish in
-                    let isSelected = fish.id == selectedSpecies.id
+                    let isSelected = fish.id == selectedSpecies?.id
                     Button {
                         onSelect(fish)
                     } label: {

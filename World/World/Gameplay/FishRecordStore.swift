@@ -19,6 +19,13 @@ final class FishRecordStore {
         bestWeightBySpeciesID = Self.load()
     }
 
+    /// Every species ID ever caught (ADR-111) — this store's keys already are exactly that set,
+    /// so this is just a typed view over them. Sent to Rod (`NetworkMessage.caughtSpecies`) so its
+    /// standalone AR fish-preview screen can list only species actually caught.
+    var caughtSpeciesIDs: Set<String> {
+        Set(bestWeightBySpeciesID.keys)
+    }
+
     /// Records a catch. Returns `true` if it beat (or is the first of) the
     /// stored best weight for this species.
     @discardableResult

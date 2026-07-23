@@ -11,6 +11,237 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-113 --- Fish Preview Orientation: Apply Sailfish's Baked Transform to Every Species, On-Device Testing Overrides File-Level Audit
+
+## Decision
+
+On-device testing (screenshots across all 8 species, debug rotation panel visible and unused —
+i.e. this is each species' *baked* orientation, no live correction applied) confirmed only
+Sailfish renders correctly. The user's own words: *"hanya sailfish yang export dan orientasi nya
+sudah benar, ikutin sailfish"* (only Sailfish's export and orientation are correct — follow
+Sailfish). This directly overturned ADR-112's file-hash-based conclusion, which had assumed the
+newer Blender-native `upAxis="Z"` + zero-rotation convention (used by Mekong, Bluefin, Yellowfin,
+Skipjack, Grouper — confirmed byte-identical to the asset repo's own latest fixed exports) was
+fine as shipped, precisely because it was the more-recently-fixed convention on the Blender side.
+It wasn't — Sailfish's older `upAxis="Y"` + baked `xformOp:rotateXYZ = (90, 180, 0)` correction is
+the one that actually looks right in RealityKit on this hardware.
+
+Patched the 5 species using the old Z-up/zero-rotation convention (Mekong Giant Catfish, Bluefin
+Tuna, Yellowfin Tuna, Skipjack Tuna, Grouper) to match Sailfish's exact baked values:
+`upAxis="Y"`, `xformOp:rotateXYZ.timeSamples = { <key>: (90, 180, 0) }`. Method: `usdcat` each
+`.usdc` to editable `.usda` text, patch exactly those two fields (each file had exactly one
+`rotateXYZ.timeSamples` block, always immediately following the armature's
+`userProperties:blender:object_name` line — unambiguous edit target, verified per-file before
+editing since a naive `(0, 0, 0)` text match would have also hit each file's separate, unrelated
+zero-valued `translate.timeSamples` block), `usdcat` back to `.usdc`, repackage with `usdzip -r`
+(preserving each species' `textures/` subfolder where present — Mekong and Bluefin embed textures
+as sibling files; Yellowfin/Skipjack/Grouper embed them inline in the `.usdc` itself), verified with
+`usdchecker` (Success on all 5) and a targeted text diff confirming *only* the two intended fields
+changed. Deployed to `Rod/Rod/Assets/FishPreview/*.usdz`, overwriting in place.
+
+Blue Marlin and Giant Trevally already had this exact same baked transform before this change (see
+ADR-112) — not touched here. Giant Trevally's own screenshot in this same on-device round showed it
+still rendering wrong (lying on its side) *despite* already carrying Sailfish's exact values —
+confirming again, independently, the Blender asset repo's own long-standing finding that a single
+uniform rotation formula does not reliably work across every species' differently-authored source
+mesh. Giant Trevally's problem is not (only) this transform; ADR-112's separate finding that its
+mesh itself carries a confirmed, unfixed geometry defect stands. Blue Marlin's on-device screenshot
+in this round was ambiguous (a very large, close, diagonal view — could be scale/placement, not
+necessarily orientation) and wasn't named by the user as either correct or broken; left unchanged
+pending explicit confirmation either way.
+
+## Rationale
+
+Between ADR-112 and this entry, the only thing that changed is evidence quality: ADR-112 reasoned
+from file content alone (no device access in that session); this entry reasons from the user's
+direct visual confirmation on real hardware, which is strictly better evidence and takes priority
+whenever the two disagree. The instruction to "follow Sailfish" is treated literally — Sailfish's
+exact baked values, not just its general approach — because that is what the user explicitly said
+to copy, and because Marlin/Trevally already sharing those exact values (pre-existing, not
+introduced by this change) gave a natural default to extend to the rest.
+
+## Status
+
+Accepted for Mekong/Bluefin/Yellowfin/Skipjack/Grouper, pending the user's on-device re-test — this
+was applied as a direct, mechanical instruction ("ikutin sailfish") rather than something
+independently verifiable in this session (no on-device or Blender-MCP access here either). All 5
+repackaged files pass `usdchecker` and diff to *exactly* the intended two-field change versus their
+pre-patch content — no other risk of regression from the edit mechanism itself. What is **not**
+verified is whether Sailfish's exact numeric transform actually looks correct on every one of these
+5 species' own mesh/rig — Giant Trevally's own screenshot in this same round is a concrete,
+same-day counterexample of that assumption failing for at least one already-patched species, so
+this should be treated as a strong first attempt, not a confirmed fix, until the user reports back.
+If any of these 5 still look wrong, the existing `#if DEBUG` on-screen rotation panel
+(`FishPreviewViewModel.adjustDebugRotation`) is the fastest way to find the actual needed
+correction per species interactively, rather than guessing further from this end.
+
+------------------------------------------------------------------------
+
+# ADR-112 --- Fish Preview Export-Quality Audit: Keep Patched Rotations, Flag Giant Trevally as Known-Broken
+
+**Superseded by ADR-113.** This entry's file-hash-based conclusion (assume byte-identical-to-source
+means correctly oriented) did not hold up against actual on-device testing: the user confirmed only
+Sailfish looked correct, contradicting this ADR's assumption that Mekong/Bluefin/Yellowfin/Skipjack/
+Grouper's newer Blender-native orientation convention was fine as shipped. Kept below, unedited, as
+the record of what was concluded and why before that on-device round — see ADR-113 for the
+corrected decision.
+
+## Decision
+
+Verified all 8 `Rod/Rod/Assets/FishPreview/*.usdz` files against their source exports in the
+Blender asset repo (`new-blender-project/FishAssets/`) by SHA-256, per-file content hash within
+the archive, and `usdcat`/`usdchecker` inspection — the established forensic method from this
+session, since there is no on-device path available here. Findings and the decision for each:
+
+1. **Mekong Giant Catfish, Bluefin Tuna, Yellowfin Tuna, Skipjack Tuna, Grouper** — byte-identical
+   to the current Blender-repo source exports. These already reflect every upstream fix
+   (`FishAssets/CHECKPOINT.md` CP43/CP47/CP48: normals corrections, debris/interior-face cleanup).
+   No action needed.
+2. **Sailfish, Blue Marlin** — app copies differ from the raw Blender-repo source. The source files
+   use `upAxis = "Z"` with a zero-degree bake (Mekong's native convention); the app copies instead
+   use `upAxis = "Y"` with a baked `xformOp:rotateXYZ = (90, 180, 0)` correction — an older
+   post-hoc patch from before the Blender-side fixes existed. **Decision: keep the app's patched
+   copies, do not overwrite from source.** For Sailfish this is explicit: the Blender repo's own
+   handoff note (`FishAssets/APP_TEAM_HANDOFF.md`) says this exact patched version was "confirmed
+   correct on-device" and to leave it alone. Marlin was never confirmed working either way
+   ("untested this round, presumed OK" per the same handoff) — with no on-device path available in
+   this session to validate a swap, replacing a shipped, unflagged asset with an unverified
+   different orientation convention is a needless regression risk for zero confirmed benefit.
+3. **Giant Trevally — genuinely worse than the rest, left as-is, flagged rather than silently
+   patched.** The app's copy is a hand-patched workaround: it carries a `textures/` folder with two
+   JPGs manually re-injected from the sibling `.glb` (the CP38 workaround for a real Blender export
+   bug where this species' multi-material UV-atlas path silently drops shaders during `.usdz`
+   export — the raw current source file has no texture data at all). Textures aside, the mesh
+   itself still carries a real, unresolved defect: spiky/torn geometry near the head/dorsal area,
+   confirmed via the Blender repo's own viewport screenshot (`FishAssets/CHECKPOINT.md` CP46) and
+   explicitly *not* fixed by that pass's cleanup (69 debris/interior faces removed did not address
+   it) or by CP49's later animation work (which only touched the rig, not the mesh). This needs a
+   full weld-before-decimate rebuild from the raw source scan in Blender — out of scope for this
+   app-side session, and not something to paper over with another app-side patch. Giant Trevally
+   does not meet the Mekong-quality bar and should be treated as a known limitation until the
+   Blender-side rebuild happens.
+
+## Rationale
+
+The task was to confirm the AR fish-preview exports are "as good as the export result in the
+game" (user's own framing). Rather than assuming the already-committed `.usdz` files were
+untouched since some earlier session, or blindly re-pulling "latest" from the asset repo (which
+per finding 2 would silently regress two already-working species back to an unverified
+convention), every file was independently re-verified byte-for-byte against its current source of
+truth before drawing any conclusion.
+
+## Status
+
+Accepted — audit only, no asset files changed. Giant Trevally's known defect is a pre-existing
+condition inherited from the Blender asset repo, not something introduced by this feature; it
+applies equally to any other consumer of that species' Preview export. Live Blender MCP access
+was attempted for direct visual re-confirmation but the local Blender instance was not running/
+connected in this session, so the finding rests on the asset repo's own `CHECKPOINT.md` (CP46)
+plus this session's independent file-level forensic corroboration (the size/texture-content
+mismatch above), not a fresh render.
+
+------------------------------------------------------------------------
+
+# ADR-111 --- Fish Preview Gated to Caught Species Only, Synced from World over Transport
+
+## Decision
+
+The AR fish-preview screen (ADR-110) no longer previews the entire `FishCatalog.all` roster
+unconditionally. It now shows only species the player has actually caught in-game, per the
+user's explicit clarification of the feature's scope: *"fitur ini hanya fitur preview dari ikan
+yang sudah dicatch sama user dan hanya muncul di rod ios"* (this is a preview of fish the user has
+already caught, and only appears on Rod iOS).
+
+Since Rod has no direct connection to World's `FishRecordStore` (different physical devices,
+transport-only link, and `Rod -> Shared <- World` forbids a direct dependency either way), this
+required a new one-way sync:
+
+1. **`NetworkMessage.caughtSpecies(Set<String>)`** (new case, `Shared/Sources/Shared/Models/Device/
+   NetworkMessage.swift`) — always the full set, never a delta, so a stale/dropped message can't
+   desync the two sides. Added to `requiresReliableDelivery`'s true-returning group.
+2. **World sends it** from `WorldViewModel`, in two places: right after a catch resolves
+   (`fishFight.resolveCatch()`), and in the existing `.ready`-state reconnect resync block
+   alongside the pre-existing `.hookPhase` resend — so a Rod that reconnects mid-session (or never
+   received the original catch event) still converges to World's actual record.
+   `FishFightController.caughtSpeciesIDs` / `FishRecordStore.caughtSpeciesIDs` expose the set as
+   `Set(bestWeightBySpeciesID.keys)`.
+3. **Rod receives and persists it** — `RodViewModel.handle(_:)` gets a new `.caughtSpecies(ids)`
+   case that overwrites (not merges) `CaughtSpeciesStore`'s local copy. `CaughtSpeciesStore`
+   (`Rod/Rod/Transport/CaughtSpeciesStore.swift`) is a plain UserDefaults-backed class mirroring
+   `FishRecordStore`'s own established pattern — no DI/singleton, multiple instances share state
+   through the same storage key.
+4. **`FishPreviewViewModel.species`** is now `@Published private(set) var species: [FishSpecies] =
+   []` (was a fixed `let ... = FishCatalog.all`), rebuilt by `refreshSpecies()` — filters the
+   catalog by `CaughtSpeciesStore.caughtSpeciesIDs`, keeps the current selection if still valid,
+   otherwise falls back to `species.first` (or `nil` if nothing caught yet). Called from `init()`
+   and from `FishPreviewView`'s `.onAppear`, since `CaughtSpeciesStore` has no publisher of its own
+   and a catch may have synced in while the screen was closed. `selectedSpecies` is now `FishSpecies?`
+   throughout the view layer (`FishPreviewView`, `FishPickerView`) to represent "nothing caught
+   yet," with a dedicated empty-state screen (no AR session started at all in that state — no
+   reason to request camera access before there's anything to place).
+
+## Rationale
+
+Before this change the preview screen was a species *browser* — every catalog entry, reachable
+regardless of catch history. That directly contradicted the feature's actual product intent once
+clarified: a personal collection/album of what the player has *earned*, not a spec sheet for
+fish they haven't caught yet. The full-set/overwrite sync (rather than incremental deltas) matches
+the same reasoning `FishRecordStore` itself already uses for progression state: simpler to reason
+about, and self-correcting after a dropped message or a fresh install.
+
+## Status
+
+Accepted — `Shared` builds clean (`swift build`, macOS host and iOS-simulator destinations both
+green); `World/World` and `Rod/Rod` both typecheck clean (`swiftc -typecheck`, World against
+`arm64-apple-macos26.0`/macOS SDK, Rod against `arm64-apple-ios26.0-simulator` matching Shared's
+own resolved minimum deployment target — ADR-110's note about needing at least iOS 18.0 for
+`Entity(named:in:)`/`InputTargetComponent` still applies, but the actual floor turned out to be
+26.0 once `Shared` itself was built for the simulator destination, not 18.0). One real compile gap
+caught by this verification and fixed: `TransportClient.send(_:)`'s exhaustive switch over
+`NetworkMessage` was missing the new `.caughtSpecies` case (routed to the existing reliable-send
+branch, matching its `requiresReliableDelivery` flag). No on-device verification of the sync
+itself (two paired physical devices, a live catch, and a Rod relaunch to test the resync path) —
+deferred, as usual, to the user's own hardware.
+
+------------------------------------------------------------------------
+
+# ADR-110 --- Standalone AR Fish Preview Screen on Rod, Independent of the Live Connect-Cast-Catch Loop
+
+## Decision
+
+Added a new Rod-only screen — `FishPreviewView` / `FishPreviewViewModel` — reachable from
+`ContentView`'s toolbar (a `fish` SF Symbol button, `.fullScreenCover`-presented) that lets the
+player spawn a real, animated 3D model of a species in their own physical space via ARKit world
+tracking + horizontal-plane detection, read a short info card about it, and toggle between true
+biological scale and a room-friendly compact scale. Deliberately independent of `RodViewModel`
+and the live Connect->Cast->Catch loop — no active Multipeer/CoreBluetooth connection or motion
+calibration is required to open it, since it's a between-sessions "look at what you've caught"
+screen, not part of active gameplay. (Narrowed to caught-species-only in ADR-111 — this entry
+covers the screen mechanics themselves.)
+
+Each species' `FishSpecies.previewAssetName` points at a `.usdz` in
+`Rod/Rod/Assets/FishPreview/`, loaded via `Entity(named:)`, scaled from the *loaded entity's own
+measured bounding box* (`visualBounds`) against `FishSpecies.lengthRange` rather than trusting the
+source asset's declared units — some Preview exports do not honor the stage's declared
+`metersPerUnit`, so trusting it blindly renders certain species wildly wrong-sized (see ADR-112
+for the full per-species export-quality audit).
+
+## Rationale
+
+Rod is the input device, World owns the gameplay loop (per this project's core architecture
+contract) — but neither device gives the player any lingering way to actually look at a fish
+they caught after the moment passes. This screen fills that gap entirely on Rod's side, using
+capabilities (ARKit, RealityKit) Rod already has available and without requiring World to be
+present, paired, or even running.
+
+## Status
+
+Accepted — see ADR-111's Status for the current compile-verification state (this screen's own
+code is covered by that same pass, since the two features share the same files). Export-quality
+of the underlying `.usdz` assets audited separately in ADR-112.
+
+------------------------------------------------------------------------
+
 # ADR-109 --- Line Shown Only In-Water; Hook Becomes a Leaning Bobber
 
 ## Decision

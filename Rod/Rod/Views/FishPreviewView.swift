@@ -2,11 +2,12 @@
 //  FishPreviewView.swift
 //  Rod
 //
-//  Standalone "spawn this fish in AR and read about it" screen (ADR-032).
+//  Standalone "spawn this fish in AR and read about it" screen (ADR-110).
 //  Reachable from ContentView's secondary toolbar icon, entirely outside the
-//  Connect->Cast->Catch loop: all species in `FishCatalog.all` are
-//  previewable regardless of catch history, transport state, or
-//  calibration. Presented via `.fullScreenCover`, so dismissal uses
+//  live Connect->Cast->Catch loop (no active connection/calibration
+//  needed) — but scoped to only species actually caught (ADR-111), read
+//  from `CaughtSpeciesStore`. A collection/album screen, not a species
+//  browser. Presented via `.fullScreenCover`, so dismissal uses
 //  `@Environment(\.dismiss)` rather than a passed-in closure.
 //
 import RealityKit
@@ -19,51 +20,97 @@ struct FishPreviewView: View {
 
     var body: some View {
         ZStack {
-            FishPreviewARViewContainer(viewModel: viewModel)
-                .ignoresSafeArea()
+            if viewModel.species.isEmpty {
+                emptyState
+            } else {
+                FishPreviewARViewContainer(viewModel: viewModel)
+                    .ignoresSafeArea()
 
-            VStack {
-                topBar
+                VStack {
+                    topBar
 
-                if !viewModel.isPlaced {
-                    placementHint
-                }
-
-                if let loadError = viewModel.loadError {
-                    Text(loadError)
-                        .font(.caption)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(.red.opacity(0.85), in: Capsule())
-                        .padding(.top, 8)
-                }
-
-                Spacer()
-
-                if viewModel.isInfoCardVisible {
-                    FishInfoCardView(species: viewModel.selectedSpecies) {
-                        viewModel.isInfoCardVisible = false
+                    if !viewModel.isPlaced {
+                        placementHint
                     }
-                    .padding(.bottom, 8)
-                }
 
-                #if DEBUG
-                if viewModel.isPlaced {
-                    debugRotationPanel
+                    if let loadError = viewModel.loadError {
+                        Text(loadError)
+                            .font(.caption)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.red.opacity(0.85), in: Capsule())
+                            .padding(.top, 8)
+                    }
+
+                    Spacer()
+
+                    if viewModel.isInfoCardVisible, let selectedSpecies = viewModel.selectedSpecies {
+                        FishInfoCardView(species: selectedSpecies) {
+                            viewModel.isInfoCardVisible = false
+                        }
                         .padding(.bottom, 8)
-                }
-                #endif
+                    }
 
-                FishPickerView(
-                    species: viewModel.species,
-                    selectedSpecies: viewModel.selectedSpecies,
-                    onSelect: viewModel.selectSpecies
-                )
-                .padding(.bottom, 12)
+                    #if DEBUG
+                    if viewModel.isPlaced {
+                        debugRotationPanel
+                            .padding(.bottom, 8)
+                    }
+                    #endif
+
+                    FishPickerView(
+                        species: viewModel.species,
+                        selectedSpecies: viewModel.selectedSpecies,
+                        onSelect: viewModel.selectSpecies
+                    )
+                    .padding(.bottom, 12)
+                }
+            }
+
+            if viewModel.species.isEmpty {
+                VStack {
+                    HStack {
+                        Spacer()
+                        dismissButton
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
             }
         }
+        .onAppear { viewModel.refreshSpecies() }
         .onDisappear { viewModel.reset() }
+    }
+
+    /// Shown when `CaughtSpeciesStore` has nothing yet (ADR-111) — a fresh install, or simply no
+    /// catch has synced over from World yet. No AR session is started in this state at all: no
+    /// point requesting camera access before there's anything to place.
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "fish")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+            Text("No fish caught yet")
+                .font(.title3.bold())
+            Text("Catch a fish in-game, then come back here to preview it in AR.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+        }
+    }
+
+    private var dismissButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.headline)
+                .padding(10)
+                .background(.ultraThinMaterial, in: Circle())
+        }
     }
 
     #if DEBUG
@@ -163,12 +210,15 @@ struct FishPreviewView: View {
         .padding(.top, 12)
     }
 
+    @ViewBuilder
     private var placementHint: some View {
-        Text("Tap a horizontal surface to place \(viewModel.selectedSpecies.name)")
-            .font(.subheadline.weight(.semibold))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial, in: Capsule())
-            .padding(.top, 16)
+        if let selectedSpecies = viewModel.selectedSpecies {
+            Text("Tap a horizontal surface to place \(selectedSpecies.name)")
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: Capsule())
+                .padding(.top, 16)
+        }
     }
 }

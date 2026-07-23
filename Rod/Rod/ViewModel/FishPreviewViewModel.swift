@@ -3,10 +3,14 @@
 //  Rod
 //
 //  Drives the standalone "spawn this fish in AR and read about it" screen
-//  (ADR-032). This is intentionally independent of `RodViewModel` and the
-//  Connect->Cast->Catch loop: every species in `FishCatalog.all` is
-//  previewable regardless of catch history, transport connection, or
-//  calibration state.
+//  (ADR-110). Intentionally independent of `RodViewModel` and the live
+//  Connect->Cast->Catch loop (previewing doesn't require an active
+//  connection or calibration) — but `species` (ADR-111) is *not*
+//  independent of catch history: only species the player has actually
+//  caught are previewable, read from `CaughtSpeciesStore`'s local copy of
+//  World's own catch record (World has no direct in-memory link to Rod, so
+//  this arrives over transport as `NetworkMessage.caughtSpecies`, not read
+//  live). This is a collection/album screen, not a species browser.
 //
 
 import ARKit
@@ -18,11 +22,13 @@ import SwiftUI
 @MainActor
 final class FishPreviewViewModel: ObservableObject {
 
-    /// All previewable species. Sourced from the Shared catalog so this
-    /// screen and World's catch simulation share one source of truth.
-    let species: [FishSpecies] = FishCatalog.all
+    /// Only species the player has actually caught (ADR-111), filtered from the Shared catalog by
+    /// `CaughtSpeciesStore`'s locally-persisted copy of World's catch record. Empty until the
+    /// first catch has synced over — `FishPreviewView` shows a distinct empty state in that case
+    /// rather than treating it as a loading/error condition.
+    @Published private(set) var species: [FishSpecies] = []
 
-    @Published private(set) var selectedSpecies: FishSpecies
+    @Published private(set) var selectedSpecies: FishSpecies?
     @Published var isInfoCardVisible = false
     @Published private(set) var isPlaced = false
     @Published var loadError: String?
@@ -60,15 +66,41 @@ final class FishPreviewViewModel: ObservableObject {
     /// Cap applied to the displayed length only when `useTrueScale == false`.
     private static let compactDisplayLengthMeters: Float = 1.1
 
+    private let caughtSpeciesStore = CaughtSpeciesStore()
+
     init() {
-        selectedSpecies = species.first ?? FishCatalog.all[0]
+        refreshSpecies()
+    }
+
+    /// Re-reads `CaughtSpeciesStore` and rebuilds `species`/`selectedSpecies` (ADR-111). Called on
+    /// `init()` and from `FishPreviewView`'s `.onAppear`, in case a catch synced over from World
+    /// while this screen wasn't open — `CaughtSpeciesStore` is a thin, publisher-less UserDefaults
+    /// wrapper (mirrors `FishRecordStore`'s own design), so it can't push updates on its own.
+    /// Keeps the current selection if it's still in the (possibly changed) caught set; otherwise
+    /// falls back to the first available species, or `nil` if none have been caught yet.
+    ///
+    /// `#if DEBUG`: shows every `FishCatalog` species regardless of catch history, so an export/
+    /// orientation audit doesn't require actually catching all 8 fish first (ADR-113's on-device
+    /// round). Never reaches a release build — same temporary-tool convention as
+    /// `debugRotationDegrees` below.
+    func refreshSpecies() {
+        #if DEBUG
+        species = FishCatalog.all
+        #else
+        let caughtIDs = caughtSpeciesStore.caughtSpeciesIDs
+        species = FishCatalog.all.filter { caughtIDs.contains($0.id) }
+        #endif
+        if let selectedSpecies, species.contains(where: { $0.id == selectedSpecies.id }) {
+            return
+        }
+        selectedSpecies = species.first
     }
 
     /// Places the currently selected species at a raycast hit transform and
     /// begins loading its preview asset. Called once, on the first tap,
     /// from `FishPreviewARViewContainer.Coordinator`.
     func placeFish(at transform: simd_float4x4, in arView: ARView) {
-        guard !isPlaced else { return }
+        guard !isPlaced, selectedSpecies != nil else { return }
         self.arView = arView
 
         let anchor = AnchorEntity(world: transform)
@@ -110,7 +142,7 @@ final class FishPreviewViewModel: ObservableObject {
     /// Switches the previewed species. If a fish is already placed, reloads
     /// the new species' asset in place of the old one.
     func selectSpecies(_ newSpecies: FishSpecies) {
-        guard newSpecies.id != selectedSpecies.id else { return }
+        guard newSpecies.id != selectedSpecies?.id else { return }
         selectedSpecies = newSpecies
         isInfoCardVisible = false
         guard isPlaced else { return }
@@ -144,8 +176,8 @@ final class FishPreviewViewModel: ObservableObject {
     }
 
     private func loadAndAttachFish() async {
-        guard let anchorEntity, let assetName = selectedSpecies.previewAssetName else {
-            loadError = "No preview model available for \(selectedSpecies.name)."
+        guard let anchorEntity, let selectedSpecies, let assetName = selectedSpecies.previewAssetName else {
+            loadError = selectedSpecies.map { "No preview model available for \($0.name)." }
             return
         }
 
