@@ -1553,3 +1553,40 @@ active only while a fish is hooked during gameplay (`screen == .playing && (hook
 only starts once `attachFrameLoop(to:)` subscribes — after `makeSceneEntity()`'s async asset load
 finishes — so no loop can start during `.loading` even transiently; there is no longer a separate
 `start()`/screen-transition call path that could race ahead of that.
+
+## AR Fish Preview and Caught-Species Sync (ADR-121, ADR-122, ADR-123)
+
+`Rod/Rod/ViewModel/FishPreviewViewModel.swift` + `Rod/Rod/Views/FishPreviewView.swift` (plus
+`FishPickerView`, `FishInfoCardView`, `Reality/FishPreviewARViewContainer.swift`) are a Rod-only
+screen, reachable from `ContentView`'s toolbar and entirely independent of the live
+Connect->Cast->Catch loop — no active transport connection or motion calibration is required to
+open it. It uses ARKit world tracking + horizontal-plane detection to let the player spawn a real,
+animated `.usdz` model of a caught species in their own physical space, scaled from the loaded
+entity's own measured bounding box against `FishSpecies.lengthRange` (not the source asset's
+declared units, since not every Preview export honors them), with a true-scale/compact-scale
+toggle and a tap-to-inspect info card.
+
+This is a personal collection screen, not a species browser: `species` is filtered down to only
+what `CaughtSpeciesStore` (`Rod/Rod/Transport/CaughtSpeciesStore.swift`) has recorded as caught,
+falling back to a dedicated empty state (no AR session started at all) when nothing has been
+caught yet. Since Rod has no direct link to World's `FishRecordStore` — different physical
+devices, transport-only connection, and the `Rod -> Shared <- World` dependency direction forbids
+a direct reference either way — World pushes its own `FishRecordStore.caughtSpeciesIDs`
+(`Set(bestWeightBySpeciesID.keys)`) over a new `NetworkMessage.caughtSpecies(Set<String>)` case
+(always the full set, never a delta), both right after a catch resolves and again in the
+reconnect resync block alongside the existing `.hookPhase` resend. `RodViewModel.handle(_:)`
+overwrites `CaughtSpeciesStore`'s local copy on receipt; `FishPreviewViewModel.refreshSpecies()`
+re-reads it on `init()` and on the preview screen's own `.onAppear`, since the store has no
+publisher to push updates on its own.
+
+`Rod/Rod/Assets/FishPreview/*.usdz` (one per real species in `FishCatalog.all`, `blue_marlin`
+through `sailfish`, `scott` excluded — no preview asset for the boss) are sourced from a separate
+Blender asset repository (`new-blender-project/FishAssets/`), pulled in as a byte-for-byte copy
+per species. Export quality is not uniform: most species match the asset repo's current, already
+fixed exports exactly; Sailfish and Blue Marlin intentionally keep an older app-side rotation
+patch rather than the asset repo's newer native-orientation convention (Sailfish's patch is the
+one confirmed correct on-device; Marlin's was never confirmed either way, so it wasn't swapped for
+an unverified alternative); Giant Trevally is a known, still-open exception — its mesh has a
+confirmed unresolved defect (spiky/torn geometry near the head/dorsal) that needs a full rebuild
+in the source Blender project, not something fixable from the app side. See ADR-123 for the full
+per-species audit.

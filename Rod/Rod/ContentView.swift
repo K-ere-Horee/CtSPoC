@@ -18,6 +18,7 @@ struct ContentView: View {
     var viewModel: RodViewModel
 
     @State private var showDeveloperDetails = false
+    @State private var showFishPreview = false
 
     /// ADR-121: "layar disable touch ketika lagi reel fight" — during an active fight the player
     /// is physically waving/reeling the phone, and the only *unconditionally* tappable control on
@@ -87,8 +88,16 @@ struct ContentView: View {
                  */
             }
             .allowsHitTesting(!isReelFightActive)
+            .navigationTitle("Controller")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showFishPreview = true
+                    } label: {
+                        Image(systemName: "fish")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         viewModel.calibrateMotion()
@@ -101,6 +110,9 @@ struct ContentView: View {
                     .disabled(!viewModel.hasMotionSample || viewModel.hookPhase != .idle)
                 }
             }
+        }
+        .fullScreenCover(isPresented: $showFishPreview) {
+            FishPreviewView()
         }
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }

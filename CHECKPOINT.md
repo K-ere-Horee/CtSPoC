@@ -10246,6 +10246,233 @@ this asset every tick) in code kept for a possible future re-enable.
   marker edits (lines 130/191/219/228/262) — not introduced by this change, left as-is per earlier
   precedent (a prior attempt to clean similar whitespace was declined).
 
+## Feature: AR Fish Preview Screen, Gated to Caught Species Only (ADR-127, ADR-128, ADR-129)
+
+Date: 2026-07-22.
+
+Branch: `feat/fish-preview`. Continued and completed pre-existing, uncommitted work on a
+standalone Rod-only AR screen for previewing caught fish, per: "pindah ke branch feat/fish-preview,
+pull main, lanjutin feature nya dan pastikan hasil export nya sama bagusnya seperti hasil export
+pada game nya." Clarifying the screen's actual scope, the user specified: "fitur ini hanya fitur
+preview dari ikan yang sudah dicatch sama user dan hanya muncul di rod ios."
+
+### Merge: origin/main into feat/fish-preview
+
+- Reconciled two independently-evolved data models: main's tier-gated placeholder `FishCatalog`
+  (`.small/.medium/.big/.boss`, `.boss` = Scott) vs. this branch's 8-species real-fish catalog.
+  Kept both — `FishSpecies` merged main's required `tier` field alongside this branch's
+  presentation fields (`scientificName`, `rarity`, `description`, `previewAssetName`,
+  `attribution`); `FishCatalog.all` now has all 8 real species mapped to a tier plus Scott kept as
+  the sole `.boss` (per the project's own name — "Catch the Scott"). `World/World/Gameplay/
+  FishCatalog.swift` deleted (superseded by the `Shared` version, a modify/delete conflict
+  resolved in the Shared version's favor). `randomSpecies(unlockedTiers:)` kept from main.
+- `Rod/ContentView.swift`/`Info.plist` merge conflicts resolved by combining both branches' toolbar
+  items / plist keys (Info.plist's real current main-branch baseline turned out to be an empty
+  `<dict/>` — Bonjour keys were already removed there after the CoreBluetooth transport
+  migration — so the resolved file only adds back this branch's camera-usage key).
+- ADR numbering collision: this branch's code comments cited "ADR-032" for the whole feature, but
+  main had already used ADR-032 for an unrelated, real decision (highest main ADR was 109). Renamed
+  every reference to ADR-127 (`sed` across 6 files), after confirming via targeted grep that the
+  other ADR numbers already present in those same files (030, 037, 054) were legitimate references
+  to main's own decisions and needed to stay untouched.
+
+### World-to-Rod caught-species sync (new, ADR-128)
+
+- `Shared/Models/Device/NetworkMessage.swift`: new `.caughtSpecies(Set<String>)` case, always the
+  full set (never a delta); added to the reliable-delivery group.
+- `World/Gameplay/FishRecordStore.swift` / `FishFightController.swift`: new `caughtSpeciesIDs`
+  computed property (`Set(bestWeightBySpeciesID.keys)`), passed through the controller.
+- `World/ViewModels/WorldViewModel.swift`: sends `.caughtSpecies` right after a catch resolves, and
+  again in the existing `.ready`-state reconnect resync block (alongside the pre-existing
+  `.hookPhase` resend).
+- `Rod/Transport/CaughtSpeciesStore.swift` (new file): plain UserDefaults-backed class mirroring
+  `FishRecordStore`'s own pattern — `replace(with:)` overwrites (not merges) the local set.
+  `RodViewModel.handle(_:)` gets a new `.caughtSpecies(ids)` case that calls it.
+
+### FishPreviewViewModel gated to caught species (ADR-128)
+
+- `species` changed from a fixed `let ... = FishCatalog.all` to `@Published private(set) var
+  species: [FishSpecies] = []`, rebuilt by a new `refreshSpecies()` (filters the catalog by
+  `CaughtSpeciesStore.caughtSpeciesIDs`, preserves the current selection if still valid, else falls
+  back to `species.first`/`nil`). Called from `init()` and `FishPreviewView`'s new `.onAppear`
+  (`CaughtSpeciesStore` has no publisher, so a catch synced in while the screen was closed needs an
+  explicit refresh on reopen).
+- `selectedSpecies` changed to `FishSpecies?` throughout the view layer. `FishPreviewView` gained a
+  dedicated empty state (shown when `species.isEmpty` — no AR session started in that case, no
+  reason to request camera access before there's anything to place) and now guards every remaining
+  `selectedSpecies` use site (`FishInfoCardView`'s call, the placement-hint text). `FishPickerView`'s
+  `selectedSpecies` parameter is now `FishSpecies?` too (nil-safe `isSelected` comparison).
+
+### Export-quality audit (ADR-129) — "make sure the export is as good as the game's own"
+
+Verified all 8 `Rod/Rod/Assets/FishPreview/*.usdz` files by SHA-256 and per-file content hash
+against their source exports in `new-blender-project/FishAssets/`, plus `usdcat`/`usdchecker`:
+
+- Mekong Giant Catfish, Bluefin Tuna, Yellowfin Tuna, Skipjack Tuna, Grouper: byte-identical to
+  the latest fixed Blender-repo exports (that repo's own CP43/CP47/CP48). No action needed.
+- Sailfish, Blue Marlin: app copies use an older `upAxis="Y"` + baked `(90,180,0)` rotation patch,
+  while the raw Blender-repo source now natively uses `upAxis="Z"` + zero rotation (Mekong's
+  convention). Left the app's patched copies untouched — Sailfish's patched version is the one the
+  Blender repo's own handoff note explicitly says was "confirmed correct on-device, do not touch";
+  Marlin was never confirmed working either way, and swapping to an unverified different
+  convention with no on-device test path available is a needless regression risk.
+- Giant Trevally: app copy carries a manually re-injected `textures/` folder (workaround for a real
+  Blender export bug — CP38 — that silently drops shaders for this species' multi-material atlas
+  export path; the raw current source has no texture data at all). Independent of textures, the
+  mesh itself still has a real, unresolved defect (spiky/torn geometry near the head/dorsal,
+  confirmed via that repo's own CP46 viewport screenshot, not fixed by CP46's cleanup or CP49's
+  later animation-only pass). **Giant Trevally does not meet the Mekong-quality bar** — needs a
+  full mesh rebuild in Blender, out of scope for this app-side session. Flagged, not silently
+  patched over.
+- Attempted live Blender MCP access for direct visual re-confirmation instead of relying solely on
+  the asset repo's own log; the local Blender instance was not running/connected, so the finding
+  rests on that repo's CHECKPOINT.md plus this session's independent file-level forensics.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-127, ADR-128, ADR-129.
+
+### Verification
+
+- `cd Shared && swift build` — clean, both against the default macOS host destination and against
+  an explicit iOS-simulator destination file (needed to typecheck Rod, since Shared has no
+  platform floor declared in `Package.swift` and otherwise only builds for the host).
+- `swiftc -typecheck` against the full `Rod/Rod` file list, `-target arm64-apple-ios26.0-simulator`
+  (not 18.0 — Shared's resolved minimum deployment target for the simulator destination turned out
+  to be 26.0, one level above the 18.0 floor needed for `Entity(named:in:)`/`InputTargetComponent`
+  noted in earlier sessions) — exit code 0. Caught and fixed one real gap in this pass:
+  `TransportClient.send(_:)`'s exhaustive switch was missing the new `.caughtSpecies` case.
+- `swiftc -typecheck` against the full `World/World` file list, `-target arm64-apple-macos26.0` —
+  exit code 0, no errors.
+- `git diff --check` clean.
+- Not run: on-device verification of the sync (two paired physical devices, a live catch, and a
+  Rod relaunch to confirm the reconnect-resync path), and on-device confirmation of the AR preview
+  screen itself (plane detection, placement, scale toggle). Deferred to the user's device. Open
+  device-validation gap. Full Xcode/device build (`xcodebuild`) also not run this pass — only the
+  manual `swiftc -typecheck` verification described above.
+
+## Fix: Fish Preview Orientation — Applied Sailfish's Baked Transform to 5 Species (ADR-130)
+
+Date: 2026-07-22.
+
+On-device screenshots across all 8 species (debug rotation panel visible but untouched, so these
+are each species' *baked* orientation) showed only Sailfish rendering correctly — Blue Marlin,
+Mekong, Bluefin Tuna, and Giant Trevally all visibly wrong (giant diagonal blade spanning the
+screen, sideways/lying fish), Yellowfin Tuna and Grouper showing shattered/broken-looking meshes.
+User: "hanya sailfish yang export dan orientasi nya sudah benar, ikutin sailfish." This overturned
+the previous entry's (ADR-129) file-hash-based conclusion that the newer, Blender-native
+`upAxis="Z"`/zero-rotation convention (shared by Mekong/Bluefin/Yellowfin/Skipjack/Grouper) was
+fine as shipped — it isn't, on this hardware; Sailfish's older `upAxis="Y"` + baked
+`xformOp:rotateXYZ=(90,180,0)` patch is the one that actually looks right.
+
+### What changed
+
+Patched Mekong Giant Catfish, Bluefin Tuna, Yellowfin Tuna, Skipjack Tuna, and Grouper's
+`Rod/Rod/Assets/FishPreview/*.usdz` to Sailfish's exact baked values (`upAxis="Y"`,
+`rotateXYZ=(90,180,0)`). Method: `usdcat` each `.usdc` to text, patch exactly the `upAxis` line and
+the single `rotateXYZ.timeSamples` value line (verified each file had exactly one such block, always
+directly after the armature's `userProperties:blender:object_name` line, to avoid the separate
+zero-valued `translate.timeSamples` block also present in every file), `usdcat` back to `.usdc`,
+`usdzip -r` to repackage (Mekong/Bluefin keep their sibling `textures/` folder; Yellowfin/Skipjack/
+Grouper embed textures inline in the `.usdc`, untouched by this edit). Blue Marlin and Giant
+Trevally already carried this exact transform beforehand (not touched) — Trevally's own screenshot
+this round still showed it wrong despite already having "Sailfish's" values, independently
+reconfirming the Blender asset repo's own finding that one uniform rotation formula doesn't work
+for every species; its separate confirmed mesh defect (ADR-129) is untouched by this fix and remains
+open.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-130; marked ADR-129 superseded (kept intact, not deleted,
+  per this repo's own convention) with a pointer to ADR-130's corrected conclusion.
+
+### Verification
+
+- All 5 repackaged `.usdz` files: `usdchecker` — Success. Targeted text diff against each file's
+  pre-patch content confirmed *only* the two intended fields (`upAxis`, `rotateXYZ`) changed —
+  same texture/mesh/animation data otherwise, no risk of the repackage step silently corrupting or
+  dropping anything.
+- Not verified: whether Sailfish's exact numeric transform is actually *correct* for these 5
+  species' own mesh/rig, beyond "it's what the user asked to copy." Giant Trevally is a live,
+  same-day counterexample of this exact transform still being wrong on a different mesh — so this
+  is a strong first attempt per explicit instruction, not a confirmed fix. No on-device or Blender
+  MCP access in this session (Blender instance not running/connected) to verify further. If any of
+  the 5 still look wrong on re-test, the existing `#if DEBUG` rotation panel
+  (`FishPreviewViewModel.adjustDebugRotation`) is the fastest way to find the real per-species
+  correction interactively; report the confirmed values back to bake in permanently.
+
+## Fix: Fish Preview Orientation — 180-Degree Yaw Correction in Swift, Not Another Asset Patch (ADR-131)
+
+Date: 2026-07-23.
+
+On-device re-test after ADR-130's "apply Sailfish's baked transform to every species" fix found the
+opposite of the intended result: every species except Sailfish ("scott") now renders backwards.
+User: "semua ikan di preview kebalik semua posisinya. rotate semua ikan 180 derajat ketika preview
+(cuma scott yang orientasinya bener)" (all fish in preview are flipped, rotate them 180 degrees —
+only Scott's orientation is correct). Also folded in the same turn: `LineTensionView`'s ADR-127
+symmetric gradient and the ADR-127/122 audio work had been sitting uncommitted on `dev` since the
+prior session and got swept into a `git stash` while resolving the `feat/fish-preview` PR's merge
+conflicts — restored separately, not part of this entry's diff.
+
+### Rod: FishPreviewViewModel
+
+- New `previewOrientationCorrection(for:)`: returns a 180-degree rotation around the vertical (Y)
+  axis for every species except `"sailfish"`, identity for Sailfish — a direct Swift-side
+  correction rather than a third round of unpacking/patching/repackaging `.usdz` files, since two
+  prior asset-patch rounds (ADR-129, ADR-130) were each contradicted by the next on-device test.
+- Applied once in `loadAndAttachFish()` right after scale is set.
+- `applyDebugRotation()` (the `#if DEBUG` live rotation panel) changed from a plain
+  `fishEntity?.orientation = qz * qy * qx` overwrite to `baseCorrection * (qz * qy * qx)` — it was
+  silently erasing this new correction whenever the debug panel was at its zero default.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-131.
+
+### Verification
+
+- Real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme Rod -sdk iphonesimulator` build —
+  `** BUILD SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: an actual on-device screenshot pass confirming all 7 non-Scott species now read
+  correctly and Scott is still unaffected — needs the user's own on-device re-test, same open gap
+  as ADR-129/124.
+
+## Handoff: Grouper (and likely others) Have a Genuine Mesh Defect, Not an Orientation Problem — Blender-Side Investigation Delegated
+
+Date: 2026-07-22.
+
+On-device re-test after ADR-130's orientation patch: Grouper still renders visibly torn/shattered
+(spiky, moth-eaten silhouette) in RealityKit. Diffed the pre-patch and post-patch `Grouper_Preview
+.usdc` text dumps line-by-line — confirmed the orientation edit changed *only* the two intended
+fields (`upAxis`, `rotateXYZ`), nothing else — so this is not a regression from ADR-130's edit. The
+mesh itself is broken, contradicting `new-blender-project/FishAssets/CHECKPOINT.md`'s CP48 claim
+that Grouper's Preview mesh was "cleaned up ... visually confirmed solid" — that check only ran in
+Blender's own EEVEE renderer and evidently doesn't hold up in RealityKit on real hardware.
+
+**Debug-only accommodation (`Rod/Rod/ViewModel/FishPreviewViewModel.swift`):** the user hasn't
+caught all 8 species in-game yet, so ADR-128's caught-only gate would block testing the other 4
+species this orientation patch touched. Added a `#if DEBUG` branch to `refreshSpecies()` that shows
+every `FishCatalog` species regardless of catch history — same "temporary tool, never ships"
+convention as the existing debug rotation panel, clearly commented as such. Release builds are
+unaffected (still gated to caught species only).
+
+**Blender access:** attempted to connect to the local Blender MCP server (`localhost:9876`) to
+investigate/rebuild Grouper's mesh directly, per the user's request. Initial connection attempts
+timed out despite Blender running and the port showing `LISTEN`. Per the user's explicit
+instruction, force-quit the stale Blender process and relaunched it fresh — the MCP addon's server
+auto-started again (port reopened) but the connection still timed out on retry. Did not diagnose
+further (e.g. whether the long-lived `blender-mcp` stdio bridge process needed restarting too,
+independent of Blender itself) before the user redirected.
+
+**Status: delegated.** The user is handing the Blender-side mesh investigation (Grouper, and
+presumptively the other species sharing its multi-material UV-atlas export path — Yellowfin,
+Skipjack, Giant Trevally per the asset repo's own diagnosis) to a separate agent/session with
+working Blender access, rather than continuing to fight the MCP connection here. This app-side
+session's remaining open items once that lands: re-verify the newly rebuilt exports with the same
+SHA-256/`usdcat`/`usdchecker` forensic method used throughout this branch's work, re-copy into
+`Rod/Rod/Assets/FishPreview/`, and remove the `#if DEBUG` all-species bypass once real playtesting
+resumes (or leave it — it's harmless in DEBUG builds and useful for any future asset audit).
 ## Fix: Catch-Cutscene Audio Duck Could Get Stuck On, Silencing `idle` at the Main Menu Forever (ADR-126)
 
 Date: 2026-07-23.
