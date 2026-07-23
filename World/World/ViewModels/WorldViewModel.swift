@@ -858,6 +858,13 @@ final class WorldViewModel: ObservableObject {
         caughtFishAnimationController = nil
         catchCutscene = nil
         isShowingCatchCutscene = false
+        // ADR-126: this is the *other* place `isShowingCatchCutscene` flips false — an abrupt
+        // "End Fishing"/disconnect while the cutscene is still playing. `updateCatchCutscene`'s own
+        // natural-completion path already calls this; without it here too, `sounds
+        // .isDuckedForCatchCutscene` gets stuck `true` forever whenever a fight is abandoned
+        // mid-cutscene, permanently blocking `idle` (and everything else) from ever restarting —
+        // "ketika balik ke main menu, idle ga ke play lagi."
+        sounds.catchCutsceneEnded()
         isShowingTutorial = false
         fishFight.resetForNewCast()
         setHookPhase(.idle)

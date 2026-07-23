@@ -11,6 +11,36 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-126 --- Catch-Cutscene Audio Duck Could Get Stuck On, Silencing `idle` at the Main Menu Forever
+
+## Decision
+
+`returnToMenu()` (fires on "End Fishing" or a Rod disconnect fail-safe) sets
+`isShowingCatchCutscene = false` directly but never called `sounds.catchCutsceneEnded()` — the
+only other place that flips the flag, `updateCatchCutscene`'s own natural-completion path, does.
+If the player ended fishing (or disconnected) while the catch cutscene was still playing,
+`FishingSounds.isDuckedForCatchCutscene` (ADR-122) got stuck `true` permanently: every
+`update*Loop(active:)` no-ops while ducked, so `idle` could never start again back at the main
+menu, and neither could `ambienceLake`/`reelFight`/`reelLoop` for the rest of the session. Fixed
+by also calling `sounds.catchCutsceneEnded()` in `returnToMenu()`, right after
+`isShowingCatchCutscene = false`.
+
+## Rationale
+
+Reported directly: "ketika balik ke main menu, idle ga ke play lagi" (when going back to the main
+menu, idle doesn't play again). ADR-122 only wired the duck flag's clear-side to the cutscene's own
+*normal* end; `returnToMenu()` is a second, abrupt way `isShowingCatchCutscene` reaches `false` that
+was missed at the time.
+
+## Status
+
+Accepted — verified via a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World`
+build (`** BUILD SUCCEEDED **`) and `git diff --check` clean. **Not verified**: an actual
+live-session repro (end fishing mid-cutscene, confirm `idle` resumes at the main menu) — needs a
+real play session.
+
+------------------------------------------------------------------------
+
 # ADR-122 --- Catch Cutscene Ducks All Other Audio; Catch-Splash Quieted Further
 
 ## Decision

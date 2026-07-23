@@ -10245,3 +10245,37 @@ this asset every tick) in code kept for a possible future re-enable.
 - `git diff --check`: flags pre-existing trailing whitespace from the user's own earlier debug-
   marker edits (lines 130/191/219/228/262) — not introduced by this change, left as-is per earlier
   precedent (a prior attempt to clean similar whitespace was declined).
+
+## Fix: Catch-Cutscene Audio Duck Could Get Stuck On, Silencing `idle` at the Main Menu Forever (ADR-126)
+
+Date: 2026-07-23.
+
+Reported directly: "ketika balik ke main menu, idle ga ke play lagi" (idle doesn't play again once
+back at the main menu).
+
+### Root cause
+
+`returnToMenu()` (fires on "End Fishing" or a Rod disconnect fail-safe) set
+`isShowingCatchCutscene = false` directly but never called `sounds.catchCutsceneEnded()` — the
+only other place that flips the flag, `updateCatchCutscene`'s own natural-completion path, does.
+Ending fishing (or disconnecting) while the catch cutscene was still playing left
+`FishingSounds.isDuckedForCatchCutscene` (ADR-122) stuck `true` permanently: every
+`update*Loop(active:)` no-ops while ducked, so `idle` (and `ambienceLake`/`reelFight`/`reelLoop`)
+could never restart for the rest of the session.
+
+### World: WorldViewModel
+
+- `returnToMenu()` now also calls `sounds.catchCutsceneEnded()` right after
+  `isShowingCatchCutscene = false`.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-126.
+
+### Verification
+
+- Real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` build — `** BUILD
+  SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: an actual live-session repro (end fishing mid-cutscene, confirm `idle` resumes at the
+  main menu) — needs a real play session.
