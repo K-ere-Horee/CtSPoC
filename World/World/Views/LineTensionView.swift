@@ -19,6 +19,12 @@ import SwiftUI
 /// entire bar, replacing the earlier partial safe-zone outline — the safe-zone concept is dropped
 /// as a distinct visual since the border already frames the bar as a whole and the marker
 /// communicates the live position that matters.
+///
+/// ADR-121: gradient is symmetric red-yellow-green-yellow-red, not a plain green->red ramp —
+/// tension danger is bidirectional (too low = slack/losing the fish, too high = snapping), so the
+/// safe zone belongs in the *middle* of the bar with danger at both ends, matching how
+/// `dangerLow`/`dangerHigh` already worked. Requested directly: "meteran line tension kan sekarang
+/// hijau-kuning-merah, ganti ke merah-kuning-hijau-kuning-merah."
 struct LineTensionView: View {
     let isFighting: Bool
     let tension: Float
@@ -47,7 +53,7 @@ struct LineTensionView: View {
                         Capsule()
                             .fill(
                                 LinearGradient(
-                                    colors: [.green, .yellow, .red],
+                                    colors: [.red, .yellow, .green, .yellow, .red],
                                     startPoint: .leading,
                                     endPoint: .trailing
                                 )

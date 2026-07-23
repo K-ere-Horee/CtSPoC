@@ -11,6 +11,44 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-125 --- Fish Preview Orientation: 180-Degree Yaw Correction in Swift, Not Another Asset Patch
+
+## Decision
+
+On-device re-test after ADR-124's "apply Sailfish's baked transform to every species" fix found
+the opposite of the intended result: every species except Sailfish ("scott") now renders backwards
+in preview. The user's own words: all fish in preview are flipped, rotate them 180 degrees, "cuma
+scott yang orientasinya bener" (only Scott's orientation is correct).
+
+Rather than a third round of re-patching `.usdz` files (ADR-123/124's approach, already shown twice
+not to generalize across these species' differently-authored source meshes — see ADR-124's own
+Giant Trevally counterexample), this is a direct Swift-side correction in
+`FishPreviewViewModel`: a new `previewOrientationCorrection(for:)` returns an extra 180-degree
+rotation around the vertical (Y) axis for every species except Sailfish, and identity for Sailfish.
+Applied once in `loadAndAttachFish()` right after scale is set, and folded into `applyDebugRotation()`
+(`baseCorrection * (qz * qy * qx)`, not a plain overwrite) so the `#if DEBUG` live rotation panel
+composes on top of this correction instead of silently erasing it — the panel was clobbering
+`entity.orientation` outright before this change.
+
+## Rationale
+
+Two rounds of asset-level patching (ADR-123, ADR-124) have now each been contradicted by the next
+on-device test — the asset repo's per-species meshes don't share one export convention reliably
+enough for a single baked-transform value to generalize. A one-line, species-keyed correction
+living in app code is trivial to revert or retarget per-species later, unlike a `.usdz` binary patch
+that requires unpacking/patching/repackaging/verifying each time. Yaw (Y-axis) was chosen as "the"
+180-degree axis per the user's plain "rotate 180 degrees" — the previous baked corrections
+(`xformOp:rotateXYZ = (90, 180, 0)`) already put the large flip on the same axis.
+
+## Status
+
+Accepted — verified via a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme Rod -sdk
+iphonesimulator` build (`** BUILD SUCCEEDED **`) and `git diff --check` clean. **Not verified**: an
+actual on-device screenshot pass confirming all 7 non-Scott species now read correctly and Scott is
+still unaffected — needs the user's own on-device re-test, same as the two ADRs before this one.
+
+------------------------------------------------------------------------
+
 # ADR-124 --- Fish Preview Orientation: Apply Sailfish's Baked Transform to Every Species, On-Device Testing Overrides File-Level Audit
 
 ## Decision

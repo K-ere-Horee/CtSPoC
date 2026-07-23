@@ -191,6 +191,7 @@ final class FishPreviewViewModel: ObservableObject {
 
             let scale = realisticScale(for: entity, species: selectedSpecies)
             entity.scale = SIMD3<Float>(repeating: scale)
+            entity.orientation = Self.previewOrientationCorrection(for: selectedSpecies)
 
             if let animation = entity.availableAnimations.first {
                 entity.playAnimation(animation.repeat())
@@ -229,7 +230,8 @@ final class FishPreviewViewModel: ObservableObject {
         let qx = simd_quatf(angle: radians.x, axis: SIMD3<Float>(1, 0, 0))
         let qy = simd_quatf(angle: radians.y, axis: SIMD3<Float>(0, 1, 0))
         let qz = simd_quatf(angle: radians.z, axis: SIMD3<Float>(0, 0, 1))
-        fishEntity?.orientation = qz * qy * qx
+        let baseCorrection = selectedSpecies.map(Self.previewOrientationCorrection) ?? simd_quatf()
+        fishEntity?.orientation = baseCorrection * (qz * qy * qx)
     }
 
     enum Axis3D {
@@ -257,6 +259,20 @@ final class FishPreviewViewModel: ObservableObject {
             : min(realisticLengthMeters, Self.compactDisplayLengthMeters)
 
         return targetLengthMeters / nativeLength
+    }
+
+    /// ADR-125: on-device testing after ADR-124's "apply Sailfish's baked transform to every
+    /// species" fix found the opposite of what was intended — every species except Sailfish
+    /// ("scott") now renders backwards. The user's own words: all fish in preview are flipped,
+    /// rotate them 180 degrees, "cuma scott yang orientasinya bener" (only Scott's orientation is
+    /// correct). Rather than re-patching more `.usdz` files (ADR-123/124's approach, already shown
+    /// twice not to generalize across these species' differently-authored source meshes — see
+    /// ADR-124's own Giant Trevally counterexample), this is a direct Swift-side yaw correction:
+    /// every species but Sailfish gets an extra 180-degree turn around the vertical axis at preview
+    /// time; Sailfish keeps its already-correct baked orientation untouched (identity here).
+    private static func previewOrientationCorrection(for species: FishSpecies) -> simd_quatf {
+        guard species.id != "sailfish" else { return simd_quatf() }
+        return simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
     }
 
     private func isDescendant(_ entity: Entity, of root: Entity) -> Bool {

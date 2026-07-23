@@ -10315,6 +10315,43 @@ open.
   (`FishPreviewViewModel.adjustDebugRotation`) is the fastest way to find the real per-species
   correction interactively; report the confirmed values back to bake in permanently.
 
+## Fix: Fish Preview Orientation — 180-Degree Yaw Correction in Swift, Not Another Asset Patch (ADR-125)
+
+Date: 2026-07-23.
+
+On-device re-test after ADR-124's "apply Sailfish's baked transform to every species" fix found the
+opposite of the intended result: every species except Sailfish ("scott") now renders backwards.
+User: "semua ikan di preview kebalik semua posisinya. rotate semua ikan 180 derajat ketika preview
+(cuma scott yang orientasinya bener)" (all fish in preview are flipped, rotate them 180 degrees —
+only Scott's orientation is correct). Also folded in the same turn: `LineTensionView`'s ADR-121
+symmetric gradient and the ADR-121/122 audio work had been sitting uncommitted on `dev` since the
+prior session and got swept into a `git stash` while resolving the `feat/fish-preview` PR's merge
+conflicts — restored separately, not part of this entry's diff.
+
+### Rod: FishPreviewViewModel
+
+- New `previewOrientationCorrection(for:)`: returns a 180-degree rotation around the vertical (Y)
+  axis for every species except `"sailfish"`, identity for Sailfish — a direct Swift-side
+  correction rather than a third round of unpacking/patching/repackaging `.usdz` files, since two
+  prior asset-patch rounds (ADR-123, ADR-124) were each contradicted by the next on-device test.
+- Applied once in `loadAndAttachFish()` right after scale is set.
+- `applyDebugRotation()` (the `#if DEBUG` live rotation panel) changed from a plain
+  `fishEntity?.orientation = qz * qy * qx` overwrite to `baseCorrection * (qz * qy * qx)` — it was
+  silently erasing this new correction whenever the debug panel was at its zero default.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-125.
+
+### Verification
+
+- Real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme Rod -sdk iphonesimulator` build —
+  `** BUILD SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: an actual on-device screenshot pass confirming all 7 non-Scott species now read
+  correctly and Scott is still unaffected — needs the user's own on-device re-test, same open gap
+  as ADR-123/124.
+
 ## Handoff: Grouper (and likely others) Have a Genuine Mesh Defect, Not an Orientation Problem — Blender-Side Investigation Delegated
 
 Date: 2026-07-22.
