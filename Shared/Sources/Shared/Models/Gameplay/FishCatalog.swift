@@ -4,7 +4,7 @@
 //
 //  Created by Calzy Akmal Indyramdhani on 18/07/26.
 //
-//  Promoted from World/World/Gameplay/FishCatalog.swift (ADR-121) so World's catch simulation and
+//  Promoted from World/World/Gameplay/FishCatalog.swift (ADR-127) so World's catch simulation and
 //  Rod's standalone AR fish preview screen share one source of truth.
 //
 //  ADR-118: replaced the four `fish_a`/`fish_b`/`fish_c`/`scott` placeholders with 8 real species
@@ -24,7 +24,7 @@
 //  flat per tier — small 5, medium 4, big 3, boss 1 — matching the "rarer tier = fewer needed"
 //  shape `ProgressionStore`'s own tier thresholds already use, not independently tuned per species.
 //
-//  ADR-124: merged in Rod's AR fish preview presentation metadata (`scientificName`/`rarity`/
+//  ADR-130: merged in Rod's AR fish preview presentation metadata (`scientificName`/`rarity`/
 //  `description`/`previewAssetName`/`attribution`), matched onto this roster by species `id`.
 //  `previewAssetName` points at `Rod/Rod/Assets/FishPreview/*.usdz`, which is exported/named
 //  independently of `assetName`'s `Caught`-state asset (e.g. "marlin"'s preview file is

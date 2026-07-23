@@ -2,7 +2,7 @@
 //  FishPreviewARViewContainer.swift
 //  Rod
 //
-//  ADR-121: a deliberate, narrow exception to "Rod never contains RealityKit
+//  ADR-127: a deliberate, narrow exception to "Rod never contains RealityKit
 //  rendering logic" (AGENTS.md), scoped only to this file and the rest of
 //  Rod/Rod/Reality/. Rod is the device already in the player's hand, and
 //  World's RealityView runs non-AR/virtual (ADR-030) with no passthrough

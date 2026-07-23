@@ -2,10 +2,10 @@
 //  FishPreviewView.swift
 //  Rod
 //
-//  Standalone "spawn this fish in AR and read about it" screen (ADR-121).
+//  Standalone "spawn this fish in AR and read about it" screen (ADR-127).
 //  Reachable from ContentView's secondary toolbar icon, entirely outside the
 //  live Connect->Cast->Catch loop (no active connection/calibration
-//  needed) — but scoped to only species actually caught (ADR-122), read
+//  needed) — but scoped to only species actually caught (ADR-128), read
 //  from `CaughtSpeciesStore`. A collection/album screen, not a species
 //  browser. Presented via `.fullScreenCover`, so dismissal uses
 //  `@Environment(\.dismiss)` rather than a passed-in closure.
@@ -84,7 +84,7 @@ struct FishPreviewView: View {
         .onDisappear { viewModel.reset() }
     }
 
-    /// Shown when `CaughtSpeciesStore` has nothing yet (ADR-122) — a fresh install, or simply no
+    /// Shown when `CaughtSpeciesStore` has nothing yet (ADR-128) — a fresh install, or simply no
     /// catch has synced over from World yet. No AR session is started in this state at all: no
     /// point requesting camera access before there's anything to place.
     private var emptyState: some View {

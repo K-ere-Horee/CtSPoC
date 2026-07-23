@@ -2,10 +2,10 @@
 //  FishAssetDebugChecker.swift
 //  Rod
 //
-//  Debug-only tooling (ADR-121) that loads every `FishCatalog` preview asset
+//  Debug-only tooling (ADR-127) that loads every `FishCatalog` preview asset
 //  once and reports pass/fail plus animation count, so a bad/missing
 //  `.usdz` surfaces in "Developer Details" instead of only at AR-preview
-//  time. Scoped to Rod/Rod/Reality/ per the ADR-121 RealityKit exception;
+//  time. Scoped to Rod/Rod/Reality/ per the ADR-127 RealityKit exception;
 //  `ContentView` only sees the Foundation-only result type below.
 //
 

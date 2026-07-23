@@ -2,13 +2,13 @@
 //  CaughtSpeciesStore.swift
 //  Rod
 //
-//  Rod's local copy of which species the player has caught (ADR-122), received over transport
+//  Rod's local copy of which species the player has caught (ADR-128), received over transport
 //  from World's own `FishRecordStore` (`NetworkMessage.caughtSpecies`, always the full set, never
 //  a delta — see that case's own doc comment). Mirrors `FishRecordStore`'s own simple pattern:
 //  a plain class instantiated wherever needed, reading/writing the same UserDefaults key, so
 //  multiple instances (one in `RodViewModel` to receive updates, one in `FishPreviewViewModel` to
 //  read them) stay in sync through shared storage rather than needing to be wired together
-//  directly. `FishPreviewViewModel.species` (ADR-121) filters `FishCatalog.all` down to this set,
+//  directly. `FishPreviewViewModel.species` (ADR-127) filters `FishCatalog.all` down to this set,
 //  since the AR preview screen is meant to show only fish already caught, not the full catalog.
 //
 

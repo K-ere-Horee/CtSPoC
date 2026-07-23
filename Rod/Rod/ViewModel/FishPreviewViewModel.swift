@@ -3,9 +3,9 @@
 //  Rod
 //
 //  Drives the standalone "spawn this fish in AR and read about it" screen
-//  (ADR-121). Intentionally independent of `RodViewModel` and the live
+//  (ADR-127). Intentionally independent of `RodViewModel` and the live
 //  Connect->Cast->Catch loop (previewing doesn't require an active
-//  connection or calibration) — but `species` (ADR-122) is *not*
+//  connection or calibration) — but `species` (ADR-128) is *not*
 //  independent of catch history: only species the player has actually
 //  caught are previewable, read from `CaughtSpeciesStore`'s local copy of
 //  World's own catch record (World has no direct in-memory link to Rod, so
@@ -22,7 +22,7 @@ import SwiftUI
 @MainActor
 final class FishPreviewViewModel: ObservableObject {
 
-    /// Only species the player has actually caught (ADR-122), filtered from the Shared catalog by
+    /// Only species the player has actually caught (ADR-128), filtered from the Shared catalog by
     /// `CaughtSpeciesStore`'s locally-persisted copy of World's catch record. Empty until the
     /// first catch has synced over — `FishPreviewView` shows a distinct empty state in that case
     /// rather than treating it as a loading/error condition.
@@ -72,7 +72,7 @@ final class FishPreviewViewModel: ObservableObject {
         refreshSpecies()
     }
 
-    /// Re-reads `CaughtSpeciesStore` and rebuilds `species`/`selectedSpecies` (ADR-122). Called on
+    /// Re-reads `CaughtSpeciesStore` and rebuilds `species`/`selectedSpecies` (ADR-128). Called on
     /// `init()` and from `FishPreviewView`'s `.onAppear`, in case a catch synced over from World
     /// while this screen wasn't open — `CaughtSpeciesStore` is a thin, publisher-less UserDefaults
     /// wrapper (mirrors `FishRecordStore`'s own design), so it can't push updates on its own.
@@ -80,7 +80,7 @@ final class FishPreviewViewModel: ObservableObject {
     /// falls back to the first available species, or `nil` if none have been caught yet.
     ///
     /// `#if DEBUG`: shows every `FishCatalog` species regardless of catch history, so an export/
-    /// orientation audit doesn't require actually catching all 8 fish first (ADR-124's on-device
+    /// orientation audit doesn't require actually catching all 8 fish first (ADR-130's on-device
     /// round). Never reaches a release build — same temporary-tool convention as
     /// `debugRotationDegrees` below.
     func refreshSpecies() {
@@ -261,13 +261,13 @@ final class FishPreviewViewModel: ObservableObject {
         return targetLengthMeters / nativeLength
     }
 
-    /// ADR-125: on-device testing after ADR-124's "apply Sailfish's baked transform to every
+    /// ADR-131: on-device testing after ADR-130's "apply Sailfish's baked transform to every
     /// species" fix found the opposite of what was intended — every species except Sailfish
     /// ("scott") now renders backwards. The user's own words: all fish in preview are flipped,
     /// rotate them 180 degrees, "cuma scott yang orientasinya bener" (only Scott's orientation is
-    /// correct). Rather than re-patching more `.usdz` files (ADR-123/124's approach, already shown
+    /// correct). Rather than re-patching more `.usdz` files (ADR-129/124's approach, already shown
     /// twice not to generalize across these species' differently-authored source meshes — see
-    /// ADR-124's own Giant Trevally counterexample), this is a direct Swift-side yaw correction:
+    /// ADR-130's own Giant Trevally counterexample), this is a direct Swift-side yaw correction:
     /// every species but Sailfish gets an extra 180-degree turn around the vertical axis at preview
     /// time; Sailfish keeps its already-correct baked orientation untouched (identity here).
     private static func previewOrientationCorrection(for species: FishSpecies) -> simd_quatf {
