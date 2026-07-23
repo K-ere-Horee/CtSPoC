@@ -99,11 +99,12 @@ struct MainMenuView: View {
                         .buttonStyle(StackedMenuButtonStyle(isProminent: isRodReady))
                     Button("Credits") { isShowingCredits = true }
                         .buttonStyle(StackedMenuButtonStyle(isProminent: false))
-                    pairedDeviceRow
-                    Button("Reset Progress", role: .destructive, action: onResetProgression)
-                        .font(.caption.bold())
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.red.opacity(0.85))
+                    if hasPairedDevice {
+                        Text("Paired with \(pairedDeviceName ?? "Rod")")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.75))
+                    }
+                    destructiveActionsRow
                 }
                 .padding(.bottom, 56)
             }
@@ -163,22 +164,41 @@ struct MainMenuView: View {
         )
     }
 
-    /// Shows which Rod this Mac is paired with (see `PairedDeviceStore`/ADR-043), and a way to
-    /// clear that pairing to pair with a different phone — device pairing is unrelated to the
-    /// fishing session boundary, so it lives here rather than gated behind `isRodReady`.
-    @ViewBuilder
-    private var pairedDeviceRow: some View {
-        if hasPairedDevice {
-            VStack(spacing: 4) {
-                Text("Paired with \(pairedDeviceName ?? "Rod")")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.75))
+    /// ADR-132: "Forget Device" (device pairing, see `PairedDeviceStore`/ADR-043) and "Reset
+    /// Progress" (tier-unlock progression) — two unrelated destructive actions that used to sit as
+    /// separate bare red texts stacked vertically (one under the paired-device row, one standalone
+    /// below "Credits"). Both now sit side by side as small background-chip buttons, matching the
+    /// screen's card language instead of relying on bare red text alone. Reported directly: "dua
+    /// tulisan bawah yang merah (forget sama reset), itu kasih background, ukuran kecil aja tapi
+    /// sampingan."
+    private var destructiveActionsRow: some View {
+        HStack(spacing: 10) {
+            if hasPairedDevice {
                 Button("Forget Device", role: .destructive, action: onForgetDevice)
-                    .font(.caption.bold())
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.red.opacity(0.85))
+                    .buttonStyle(SmallDestructiveButtonStyle())
             }
+            Button("Reset Progress", role: .destructive, action: onResetProgression)
+                .buttonStyle(SmallDestructiveButtonStyle())
         }
+    }
+}
+
+/// Small background-chip treatment for secondary destructive actions (ADR-132) — bare red text
+/// alone read as an undesigned afterthought next to the rest of the screen's stacked-card language.
+/// Same dark-ink + white-border materials as `StackedMenuButtonStyle`, just scaled down to a pill
+/// and without the offset "stacked" second rectangle, since these are minor/rare actions rather
+/// than primary navigation.
+private struct SmallDestructiveButtonStyle: ButtonStyle {
+    private static let ink = Color(red: 0.16, green: 0.12, blue: 0.09)
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.caption2.bold())
+            .foregroundStyle(.red.opacity(0.85))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Self.ink.opacity(configuration.isPressed ? 0.6 : 0.9), in: Capsule())
+            .overlay(Capsule().stroke(.white.opacity(0.6), lineWidth: 1))
     }
 }
 

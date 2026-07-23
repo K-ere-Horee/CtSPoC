@@ -347,6 +347,8 @@ final class RodViewModel: ObservableObject {
             }
         case .state:
             break
+        case let .caughtSpecies(ids):
+            CaughtSpeciesStore().replace(with: ids)
         }
     }
 

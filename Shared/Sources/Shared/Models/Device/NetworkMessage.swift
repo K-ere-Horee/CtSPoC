@@ -17,6 +17,13 @@ public enum NetworkMessage: Codable, Sendable {
     /// when to show its own "Next"/"Skip Tutorial" buttons rather than the tutorial living only as
     /// a World-side tap-to-advance overlay with no dedicated controls.
     case tutorialState(isActive: Bool, stepIndex: Int, stepCount: Int)
+    /// Full set of species IDs (`FishSpecies.id`) the player has ever caught, per World's own
+    /// `FishRecordStore` (ADR-128) — sent so Rod's standalone AR fish-preview screen can list
+    /// only species actually caught, since Rod has no direct access to World's local record.
+    /// Always the *complete* set, not a delta — simplest thing that can't drift out of sync from
+    /// a dropped incremental update, and cheap enough (a handful of short string IDs) that the
+    /// resend cost is negligible.
+    case caughtSpecies(Set<String>)
 
     /// Continuous, high-frequency telemetry (`state`, streamed on every motion sample) should use
     /// unreliable/unordered transport delivery: a stale orientation sample is worthless once a
@@ -28,7 +35,7 @@ public enum NetworkMessage: Codable, Sendable {
         switch self {
         case .state:
             return false
-        case .discoveryToken, .fishingEvent, .hookPhase, .tutorialState:
+        case .discoveryToken, .fishingEvent, .hookPhase, .tutorialState, .caughtSpecies:
             return true
         }
     }

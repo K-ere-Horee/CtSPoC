@@ -347,6 +347,23 @@ or other Rod-only implementation details. The World controller root remains
 spatially attached to the player; only hook and future fishing-line gameplay
 objects move through the scene.
 
+### Exception: AR Fish Preview (ADR-121, ADR-122)
+
+Rod has one deliberate, narrow exception to "Rod must not display ... fish
+information ... or catch results": a standalone AR screen
+(`FishPreviewView`/`FishPreviewViewModel`) that lets the player spawn and
+inspect a species they've already caught, entirely outside the live
+Connect->Cast->Catch loop. Confirmed explicitly by the user as Rod-only and
+scoped to already-caught species only ("fitur ini hanya fitur preview dari
+ikan yang sudah dicatch sama user dan hanya muncul di rod ios") — not a
+gameplay HUD, not reachable during an active session, and not a channel for
+World to push live gameplay/progression state onto Rod. The one-way sync
+that backs it (`NetworkMessage.caughtSpecies`, World -> Rod, ADR-122) exists
+only to tell Rod *which* species are unlocked for this out-of-session
+screen; it carries no HUD, tension, tutorial, or result-screen content, and
+this exception should not be read as license to route any of those onto Rod.
+Everything else in this document's Rod/World split remains unchanged.
+
 ------------------------------------------------------------------------
 
 ## V1 Success Criteria

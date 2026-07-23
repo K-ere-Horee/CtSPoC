@@ -37,8 +37,9 @@ public enum FishTier: String, Codable, Sendable, CaseIterable {
 /// Static per-species gameplay data. World selects a species when a fish
 /// bites and applies its modifiers to bite grace period, line tension, and
 /// catch value. ADR-118: `assetName`/`authoredLength` wire this to a real 3D
-/// model for the catch cutscene, once optional/absent, now populated for
-/// every species `FishCatalog` defines.
+/// model for the catch cutscene. ADR-130: also carries presentation metadata
+/// (`scientificName`/`rarity`/`description`/`previewAssetName`/`attribution`)
+/// for Rod's standalone AR fish preview screen.
 public struct FishSpecies: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let name: String
@@ -74,6 +75,20 @@ public struct FishSpecies: Codable, Sendable, Equatable, Identifiable {
     /// for any species with this set, instead of hand-patching the shared orientation for
     /// everyone. `false` for every other species, none of which have been reported as flipped.
     public let catchOrientationFlipped: Bool
+    /// ADR-130: real-world binomial name, shown on Rod's AR preview card. Empty for species with
+    /// no preview yet (currently none — every roster entry has one).
+    public let scientificName: String
+    public let rarity: FishRarity
+    /// ADR-130: short educational blurb shown on Rod's AR preview card, sourced from the asset
+    /// repo's per-species `Scientific_Validation.md`.
+    public let description: String
+    /// Base filename (no extension) of this species' *Preview*-state `.usdz` under
+    /// `Rod/Rod/Assets/FishPreview/` — distinct from `assetName`'s *Caught*-state asset, since Rod
+    /// and World load different exports of the same species. `nil` means no preview model is
+    /// available for this species yet.
+    public let previewAssetName: String?
+    /// Required CC-BY attribution text, if any. `nil` if no attribution needed.
+    public let attribution: String?
 
     public init(
         id: String,
@@ -86,7 +101,12 @@ public struct FishSpecies: Codable, Sendable, Equatable, Identifiable {
         assetName: String,
         authoredLength: Float,
         catchTarget: Int,
-        catchOrientationFlipped: Bool = false
+        catchOrientationFlipped: Bool = false,
+        scientificName: String = "",
+        rarity: FishRarity = .common,
+        description: String = "",
+        previewAssetName: String? = nil,
+        attribution: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -99,5 +119,10 @@ public struct FishSpecies: Codable, Sendable, Equatable, Identifiable {
         self.authoredLength = authoredLength
         self.catchTarget = catchTarget
         self.catchOrientationFlipped = catchOrientationFlipped
+        self.scientificName = scientificName
+        self.rarity = rarity
+        self.description = description
+        self.previewAssetName = previewAssetName
+        self.attribution = attribution
     }
 }

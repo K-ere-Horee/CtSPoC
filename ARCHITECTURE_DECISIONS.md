@@ -11,6 +11,273 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-136 --- Fish Fight Retuned: Fish Pull Speed -25%, Reel Pull Speed 3/5 m/s Safe/Danger
+
+## Decision
+
+Two `FishFightConfig` numbers retuned, both scaling uniformly across every species/tier (leaving
+each field's own resistance multiplier untouched, matching every prior retune's approach in this
+file):
+
+- `basePullSpeed` (the fish's own idle-drift/tug-of-war speed floor): `0.375 -> 0.28125` (-25%).
+- `reelPullSpeedSafe` (m/s while `lineTension` is in green *or* either left yellow/red band —
+  everything at/below `reelSpeedSafeTension`): `2.0 -> 3.0`.
+- `reelPullSpeedDanger` (m/s once `lineTension` reaches the right/high-tension red band): `4.0 ->
+  5.0`.
+
+The two safe/danger threshold positions (`reelSpeedSafeTension`/`reelSpeedDangerTension`, 0.7/0.85)
+are untouched — only the speeds at each end changed. This already gave exactly the asymmetric split
+requested: green, left-yellow, and left-red all share one speed (nothing rewards drifting toward the
+*low*-tension "losing the fish" edge), while only the right/high-tension "snap" edge gets the faster
+reward speed, with the region between the two thresholds interpolating linearly as it already did.
+
+## Rationale
+
+Requested directly: "tune sedikit fish pull speed nya, reduce by 25%. terus tingkatin pull speed di
+hijau jadi 3 m/s, dan merah (kanan) 5 m/s. buat yang merah dan kuning kiri pull speed nya sama aja
+3m/s."
+
+## Status
+
+Accepted — verified via a fresh `Shared` build (macOS) and real unsigned `xcodebuild` builds for
+both `World` and `Rod -sdk iphonesimulator` (all clean/`** BUILD SUCCEEDED **`), `git diff --check`
+clean. **Not verified**: actual fight feel on a live device/session at the new speeds — needs a real
+playtest.
+
+------------------------------------------------------------------------
+
+# ADR-135 --- `.reelFight` Now Branches on Catch/Fail; Tutorial Artwork Shares the Meter VStack
+
+## Decision
+
+**1. `.reelFight` no longer advances on any reel motion.** Its artwork now stays up for the whole
+fight, and branches on the real outcome: `emit(.catchFish)`'s success branch (right after
+`fishFight.resolveCatch()`) advances straight to `.end` — "tutorial_6_end hanya muncul ketika
+berhasil caught fish" — while `resolveFightFailure(_:)` (both `.escaped` and `.lineBreak`) loops
+back to `.startCast` instead — "kalo gagal ya balik lagi ke tutorial_2_start_cast," giving the
+player another full cast-and-fight attempt rather than leaving the tutorial stuck on a failed
+step.
+
+**2. `TutorialView` is no longer an independent overlay.** It mounts as the first element of the
+same top-center `VStack` `CastMeterView`/`LineTensionView` already live in (`ContentView.swift`),
+so while showing, the tutorial artwork sits directly above those two meters as one stack —
+"cast meter dan line tension harus dibawah tutorial asset (jadiin vstack aja)." `TutorialView`
+itself is now pure content with no positioning of its own (dropped its old wrapping `VStack`/
+`Spacer`/`frame`). Removing it needs no separate "restore position" step: once `isShowingTutorial`
+goes false, the two meters are simply back to being this VStack's first elements on their own,
+identical to their pre-tutorial position — "once tutorial beres, yaudah balikin lagi cast meter dan
+line tension ke posisi semula."
+
+## Rationale
+
+Requested directly: "tutorial_6_end hanya muncul ketika berhasil caught fish, kalo gagal ya balik
+lagi ke tutorial_2_start_cast. terus, cast meter dan line tension harus dibawah tutorial asset
+(jadiin vstack aja) ketika tutorial. once tutorial beres, yaudah balikin lagi cast meter dan line
+tension ke posisi semula."
+
+## Status
+
+Accepted — verified via real unsigned `xcodebuild` builds for both `World` and `Rod -sdk
+iphonesimulator` (both `** BUILD SUCCEEDED **`) and `git diff --check` clean. **Not verified**: a
+live playthrough of a full catch and a full failed fight during the tutorial, or how the combined
+tutorial-artwork-plus-meters VStack actually looks/fits on screen — needs a real device session.
+
+------------------------------------------------------------------------
+
+# ADR-134 --- Tutorial Drops the Pause/Freeze Mechanic; Image-Only Overlay; Rod Buttons Restyled
+
+## Decision
+
+Three follow-up simplifications to ADR-133's just-shipped tutorial rework, all requested after a
+first look:
+
+**1. No pause, no freeze, no "at least 2" — every step advances live on the first real event.**
+`isTutorialPaused` and the whole `tick(deltaTime:)` pause-guard are removed entirely; the gameplay
+`switch` runs unconditionally again, same as before ADR-133. Step `.cast` now advances straight to
+`.waitForBite` the instant `pendingCastSolution` appears — no 0.8s freeze hold, casting proceeds
+exactly as it would outside the tutorial. Step `.reelFight` now advances to `.end` on the *first*
+`.reeling` rising edge, not the second — `tutorialReelMotionCount`/`tutorialReelMotionTarget`/
+`isTutorialCastGestureCaptured`/`tutorialCastFreezeDuration` are all deleted. The tutorial state
+machine's shape (six steps, same gating events) is otherwise unchanged from ADR-133.
+
+**2. `TutorialView` is image-only.** `TutorialStep` drops its `text` field down to just
+`illustration: String` (no longer optional — every step has one). The dark scrim, text bubble,
+brown card background, and `FrameIcon` corner graphic are all gone; the view is now just the
+step's artwork, doubled in width (340 -> 680) since it no longer shares space with a text bubble,
+anchored top-center instead of screen-center.
+
+**3. Rod's "Next"/"Skip Intro" buttons match the screen's other buttons.** Replaced the bespoke
+`.thinMaterial`-card-with-one-stretched-button layout with the same `.bordered`/`.borderedProminent`
++ `.controlSize(.large)` + full-width-`Label` language `fishingButton`/`startCastingButton` already
+use — both buttons now equal-width and centered as a pair, instead of one compact and one
+stretched.
+
+## Rationale
+
+Requested directly: "for tutorial, ga perlu text ato apapun itu lagi. cukup gunakan image asset aja,
+resize x2 semua, dan posisikan di top centre dari layar. terus, waktu aku nge cast dari tutorial,
+harusnya langsung cast aja deng, gausah ada pause menu itu, pun untuk reel (ga perlu valid 2x reel
+motion dulu, cek aja ketika user nge reel, dari pause langsung lanjut gameplay nya). juga tombol
+next dan skip intro di rod, sesuaiin dengan bahasa design yang lain (dua button itu juga ga
+centre)."
+
+## Status
+
+Accepted — verified via real unsigned `xcodebuild` builds for both `World` and `Rod -sdk
+iphonesimulator` (both `** BUILD SUCCEEDED **`) and `git diff --check` clean. **Not verified**: a
+live playthrough of the simplified flow, or the new 680pt-wide top-centered artwork's actual fit/
+legibility on screen — needs a real device session.
+
+------------------------------------------------------------------------
+
+# ADR-133 --- Tutorial Rebuilt Again: Six Gameplay-Gated Steps Instead of Six Manually-Advanced Ones
+
+## Decision
+
+The tutorial's six steps (`TutorialView.steps`, unchanged count) now each gate on a real gameplay
+moment instead of Rod's "Next" button, using the new `tutorial_1_intro.png` ... `tutorial_6_end.png`
+artwork (`World/World/Assets/Tutorials/`) as each step's illustration in place of the old
+`HandTutor`/nil placeholders:
+
+1. **`.intro`** — unchanged: Rod's "Next" or "Skip Intro" (renamed from "Skip Tutorial", and no
+   longer destructive — it now does the exact same thing as "Next," since there's nothing within
+   the intro text itself to skip separately) advance to `.startCast`. Every later step has no Rod
+   button at all — `ContentView`'s tutorial controls only render while `tutorialStepIndex == 0`.
+2. **`.startCast`** — auto-advances to `.cast` the instant Rod reports `isCastingArmed` going true
+   (a rising edge in `WorldViewModel.handleState(_:)`).
+3. **`.cast`** — pauses simulation (`isTutorialPaused = true`) the moment it's entered. Rod's own
+   motion classification is untouched by World's pause (it has no pause concept and doesn't need
+   one), so the player's real backswing/charge/flick still drives `CastMeterView` normally — it was
+   already unconditionally driven from live `RodState`, needing no tutorial-specific wiring. The
+   instant a full cast resolves (`pendingCastSolution` set), the step holds on that reading for
+   `tutorialCastFreezeDuration` (0.8s), then unpauses and advances to `.waitForBite` —
+   `tick(deltaTime:)`'s own `.idle` branch then launches the hook and lets it fly into the water
+   exactly as it would outside the tutorial.
+4. **`.waitForBite`** — passive; gameplay runs normally. Auto-advances to `.reelFight` the instant
+   `setHookPhase(.fishOnHook)` actually fires (a fish is hooked), which also immediately pauses
+   simulation for step 5's gate, matching step 3's own enter-paused pattern.
+5. **`.reelFight`** — counts rising edges of `rodState.action == .reeling` while paused here.
+   Reaching `tutorialReelMotionTarget` (2) unpauses and advances to `.end` immediately — no extra
+   hold like step 3's, the fight simply resumes.
+6. **`.end`** — passive; waits for either edge: `isCastingArmed` going true again (same edge
+   `.startCast` gates, just evaluated on a different current step), or `isFishing` going false
+   (`returnToMenu()`). Either one calls `dismissTutorial()`, which persists `hasSeenTutorial` so the
+   tutorial doesn't auto-show again until `resetProgression()` — matching "kemudian di gameplay
+   selanjutnya tidak perlu ada tutorial lagi." Ending fishing on any *earlier* step still hides the
+   tutorial (via `returnToMenu()`'s existing `isShowingTutorial = false`) without marking it seen,
+   so it shows again next session — an early exit isn't treated as completion.
+
+**Pausing** is a single `isTutorialPaused` flag: `tick(deltaTime:)` skips its whole hook-physics/
+fish-AI/fight-timer `switch` while set, but still runs `updateRodPose()`/`updateCameraFollow()`
+every frame so the rod visually keeps tracking the player's real device motion instead of looking
+frozen mid-gesture. `handleState(_:)` (where `pendingCastSolution`/reel-motion edges are captured)
+is untouched by the pause — it always runs, since the whole point is capturing what Rod reports
+*during* the pause, not blocking it.
+
+`advanceTutorial(to:)` is the single choke point for every non-terminal transition: sets the step,
+resets `tutorialReelMotionCount`, and derives `isTutorialPaused` from whether the destination step
+is `.cast`/`.reelFight`, so no call site has to remember to flip the pause flag itself.
+
+## Rationale
+
+Requested directly, full spec for all six steps given by name (matching the new artwork's own
+filenames): "tutorial_1_intro... hanya bisa progress kalau user menekan 'next' atau 'skip intro'";
+"tutorial_2_start_cast: tunggu user press 'start casting'"; "tutorial_3_cast: pause game... meteran
+cast di pause state itu, lalu ketika user berhasil nge cast, freeze, dan kembali ke gameplay...";
+"tutorial_4_wait: tunggu hingga masuk momen reel fight"; "tutorial_5_reel_fight: pause game
+sebentar... input gerakan reel yang valid, sebanyak 2x at least"; "tutorial_6_end: tunggu hingga
+user menekan start casting lagi atau end fishing... tidak perlu ada tutorial lagi." The prior
+ADR-117 tutorial was fully decoupled from actual gameplay — a player could "Next" through every
+step without ever casting or fighting a fish — this ties each step to proof the player actually did
+the thing being taught.
+
+## Status
+
+Accepted — verified via real unsigned `xcodebuild` builds for both `World` and `Rod -sdk
+iphonesimulator` (both `** BUILD SUCCEEDED **`) and `git diff --check` clean. **Not verified**: an
+actual live playthrough of all six steps end to end (does the `.cast` freeze read as a deliberate
+beat rather than a stutter, does the 2-reel-motion count in `.reelFight` feel right against real
+motion-classifier noise, does `CastMeterView` actually render correctly during `.cast`'s pause as
+assumed from its existing always-live wiring) — this needs a real device session before shipping.
+
+------------------------------------------------------------------------
+
+# ADR-132 --- Calibration Guidance, Rod's Connection Badge, and the Main Menu's Destructive Actions Now Follow the Shared Card Language
+
+## Decision
+
+Three related visual-consistency fixes, all "doesn't follow the rest of the game's design
+language":
+
+**1. `CalibrationGuidanceView` gains the same dark-card + white-border treatment** every other HUD
+element already uses (`ContentView.panelColor`/`CatchCutsceneView.panelColor`, `Color(red: 0.16,
+green: 0.12, blue: 0.09)` + a white `.stroke`). It previously had no background at all — bare text
+floating directly over whatever was behind it: the Main Menu's photo background at first
+calibration, or a mismatched `.regularMaterial` frosted wrapper (only at the mid-session
+recalibration call site, not the Main Menu one). The card now lives inside the shared component
+itself, so both call sites get it uniformly; `World/ContentView.swift`'s `recalibrationOverlay`
+drops its now-redundant `.regularMaterial` wrapper.
+
+**2. Rod's connection-status text gains the same badge treatment**, replacing the old
+`.green`-when-streaming / `.secondary`-otherwise text coloring. It was bare text with no background
+at all, using color alone as its only "connected" signal — inconsistent with World's own connection
+readout, which already sits in a bordered card. Same status text at every connection state, now in
+a small capsule using that same dark-card color and white border, regardless of state.
+
+**3. The Main Menu's "Forget Device" and "Reset Progress" actions move into a shared
+`destructiveActionsRow`**, sitting side by side as small background-chip buttons
+(`SmallDestructiveButtonStyle`) instead of stacking as two separate bare-red-text lines (one under
+the paired-device row, one standalone below "Credits"). Same dark-ink + white-border materials as
+`StackedMenuButtonStyle`, scaled down to a pill without the offset "stacked" second rectangle, since
+these are secondary/rare actions rather than primary navigation.
+
+## Rationale
+
+Reported directly: "ketika calibrate di main menu, design nya masih aneh (alias ga ngikutin bahasa
+design)"; the Rod connection badge (clarified as the target once asked, since World's own connection
+readout already had a card) — "jangan ijo gitu, kasih background yang sama kek yg coklat coklat";
+"dua tulisan bawah yang merah (forget sama reset), itu kasih background, ukuran kecil aja tapi
+sampingan."
+
+## Status
+
+Accepted — verified via real unsigned `xcodebuild` builds for both `World` and `Rod -sdk
+iphonesimulator` (both `** BUILD SUCCEEDED **`) and `git diff --check` clean. **Not verified**: live
+visual confirmation on-device/in-simulator (screenshots weren't taken this pass) — needs a real look
+at the Main Menu and Rod's home screen before calling the design match final.
+
+------------------------------------------------------------------------
+
+# ADR-126 --- Catch-Cutscene Audio Duck Could Get Stuck On, Silencing `idle` at the Main Menu Forever
+
+## Decision
+
+`returnToMenu()` (fires on "End Fishing" or a Rod disconnect fail-safe) sets
+`isShowingCatchCutscene = false` directly but never called `sounds.catchCutsceneEnded()` — the
+only other place that flips the flag, `updateCatchCutscene`'s own natural-completion path, does.
+If the player ended fishing (or disconnected) while the catch cutscene was still playing,
+`FishingSounds.isDuckedForCatchCutscene` (ADR-122) got stuck `true` permanently: every
+`update*Loop(active:)` no-ops while ducked, so `idle` could never start again back at the main
+menu, and neither could `ambienceLake`/`reelFight`/`reelLoop` for the rest of the session. Fixed
+by also calling `sounds.catchCutsceneEnded()` in `returnToMenu()`, right after
+`isShowingCatchCutscene = false`.
+
+## Rationale
+
+Reported directly: "ketika balik ke main menu, idle ga ke play lagi" (when going back to the main
+menu, idle doesn't play again). ADR-122 only wired the duck flag's clear-side to the cutscene's own
+*normal* end; `returnToMenu()` is a second, abrupt way `isShowingCatchCutscene` reaches `false` that
+was missed at the time.
+
+## Status
+
+Accepted — verified via a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World`
+build (`** BUILD SUCCEEDED **`) and `git diff --check` clean. **Not verified**: an actual
+live-session repro (end fishing mid-cutscene, confirm `idle` resumes at the main menu) — needs a
+real play session.
+
+------------------------------------------------------------------------
+
 # ADR-122 --- Catch Cutscene Ducks All Other Audio; Catch-Splash Quieted Further
 
 ## Decision
@@ -94,6 +361,272 @@ and `git diff --check` clean. **Not verified**: the actual touch-lock's felt beh
 device during a real fight (does it re-enable promptly the instant the fight ends, does it feel
 intrusive or correct), or the new gradient's legibility against the live 3D scene rather than in
 isolation — both need an actual play session.
+# ADR-131 --- Fish Preview Orientation: 180-Degree Yaw Correction in Swift, Not Another Asset Patch
+
+## Decision
+
+On-device re-test after ADR-130's "apply Sailfish's baked transform to every species" fix found
+the opposite of the intended result: every species except Sailfish ("scott") now renders backwards
+in preview. The user's own words: all fish in preview are flipped, rotate them 180 degrees, "cuma
+scott yang orientasinya bener" (only Scott's orientation is correct).
+
+Rather than a third round of re-patching `.usdz` files (ADR-129/124's approach, already shown twice
+not to generalize across these species' differently-authored source meshes — see ADR-130's own
+Giant Trevally counterexample), this is a direct Swift-side correction in
+`FishPreviewViewModel`: a new `previewOrientationCorrection(for:)` returns an extra 180-degree
+rotation around the vertical (Y) axis for every species except Sailfish, and identity for Sailfish.
+Applied once in `loadAndAttachFish()` right after scale is set, and folded into `applyDebugRotation()`
+(`baseCorrection * (qz * qy * qx)`, not a plain overwrite) so the `#if DEBUG` live rotation panel
+composes on top of this correction instead of silently erasing it — the panel was clobbering
+`entity.orientation` outright before this change.
+
+## Rationale
+
+Two rounds of asset-level patching (ADR-129, ADR-130) have now each been contradicted by the next
+on-device test — the asset repo's per-species meshes don't share one export convention reliably
+enough for a single baked-transform value to generalize. A one-line, species-keyed correction
+living in app code is trivial to revert or retarget per-species later, unlike a `.usdz` binary patch
+that requires unpacking/patching/repackaging/verifying each time. Yaw (Y-axis) was chosen as "the"
+180-degree axis per the user's plain "rotate 180 degrees" — the previous baked corrections
+(`xformOp:rotateXYZ = (90, 180, 0)`) already put the large flip on the same axis.
+
+## Status
+
+Accepted — verified via a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme Rod -sdk
+iphonesimulator` build (`** BUILD SUCCEEDED **`) and `git diff --check` clean. **Not verified**: an
+actual on-device screenshot pass confirming all 7 non-Scott species now read correctly and Scott is
+still unaffected — needs the user's own on-device re-test, same as the two ADRs before this one.
+
+------------------------------------------------------------------------
+
+# ADR-130 --- Fish Preview Orientation: Apply Sailfish's Baked Transform to Every Species, On-Device Testing Overrides File-Level Audit
+
+## Decision
+
+On-device testing (screenshots across all 8 species, debug rotation panel visible and unused —
+i.e. this is each species' *baked* orientation, no live correction applied) confirmed only
+Sailfish renders correctly. The user's own words: *"hanya sailfish yang export dan orientasi nya
+sudah benar, ikutin sailfish"* (only Sailfish's export and orientation are correct — follow
+Sailfish). This directly overturned ADR-129's file-hash-based conclusion, which had assumed the
+newer Blender-native `upAxis="Z"` + zero-rotation convention (used by Mekong, Bluefin, Yellowfin,
+Skipjack, Grouper — confirmed byte-identical to the asset repo's own latest fixed exports) was
+fine as shipped, precisely because it was the more-recently-fixed convention on the Blender side.
+It wasn't — Sailfish's older `upAxis="Y"` + baked `xformOp:rotateXYZ = (90, 180, 0)` correction is
+the one that actually looks right in RealityKit on this hardware.
+
+Patched the 5 species using the old Z-up/zero-rotation convention (Mekong Giant Catfish, Bluefin
+Tuna, Yellowfin Tuna, Skipjack Tuna, Grouper) to match Sailfish's exact baked values:
+`upAxis="Y"`, `xformOp:rotateXYZ.timeSamples = { <key>: (90, 180, 0) }`. Method: `usdcat` each
+`.usdc` to editable `.usda` text, patch exactly those two fields (each file had exactly one
+`rotateXYZ.timeSamples` block, always immediately following the armature's
+`userProperties:blender:object_name` line — unambiguous edit target, verified per-file before
+editing since a naive `(0, 0, 0)` text match would have also hit each file's separate, unrelated
+zero-valued `translate.timeSamples` block), `usdcat` back to `.usdc`, repackage with `usdzip -r`
+(preserving each species' `textures/` subfolder where present — Mekong and Bluefin embed textures
+as sibling files; Yellowfin/Skipjack/Grouper embed them inline in the `.usdc` itself), verified with
+`usdchecker` (Success on all 5) and a targeted text diff confirming *only* the two intended fields
+changed. Deployed to `Rod/Rod/Assets/FishPreview/*.usdz`, overwriting in place.
+
+Blue Marlin and Giant Trevally already had this exact same baked transform before this change (see
+ADR-129) — not touched here. Giant Trevally's own screenshot in this same on-device round showed it
+still rendering wrong (lying on its side) *despite* already carrying Sailfish's exact values —
+confirming again, independently, the Blender asset repo's own long-standing finding that a single
+uniform rotation formula does not reliably work across every species' differently-authored source
+mesh. Giant Trevally's problem is not (only) this transform; ADR-129's separate finding that its
+mesh itself carries a confirmed, unfixed geometry defect stands. Blue Marlin's on-device screenshot
+in this round was ambiguous (a very large, close, diagonal view — could be scale/placement, not
+necessarily orientation) and wasn't named by the user as either correct or broken; left unchanged
+pending explicit confirmation either way.
+
+## Rationale
+
+Between ADR-129 and this entry, the only thing that changed is evidence quality: ADR-129 reasoned
+from file content alone (no device access in that session); this entry reasons from the user's
+direct visual confirmation on real hardware, which is strictly better evidence and takes priority
+whenever the two disagree. The instruction to "follow Sailfish" is treated literally — Sailfish's
+exact baked values, not just its general approach — because that is what the user explicitly said
+to copy, and because Marlin/Trevally already sharing those exact values (pre-existing, not
+introduced by this change) gave a natural default to extend to the rest.
+
+## Status
+
+Accepted for Mekong/Bluefin/Yellowfin/Skipjack/Grouper, pending the user's on-device re-test — this
+was applied as a direct, mechanical instruction ("ikutin sailfish") rather than something
+independently verifiable in this session (no on-device or Blender-MCP access here either). All 5
+repackaged files pass `usdchecker` and diff to *exactly* the intended two-field change versus their
+pre-patch content — no other risk of regression from the edit mechanism itself. What is **not**
+verified is whether Sailfish's exact numeric transform actually looks correct on every one of these
+5 species' own mesh/rig — Giant Trevally's own screenshot in this same round is a concrete,
+same-day counterexample of that assumption failing for at least one already-patched species, so
+this should be treated as a strong first attempt, not a confirmed fix, until the user reports back.
+If any of these 5 still look wrong, the existing `#if DEBUG` on-screen rotation panel
+(`FishPreviewViewModel.adjustDebugRotation`) is the fastest way to find the actual needed
+correction per species interactively, rather than guessing further from this end.
+
+------------------------------------------------------------------------
+
+# ADR-129 --- Fish Preview Export-Quality Audit: Keep Patched Rotations, Flag Giant Trevally as Known-Broken
+
+**Superseded by ADR-130.** This entry's file-hash-based conclusion (assume byte-identical-to-source
+means correctly oriented) did not hold up against actual on-device testing: the user confirmed only
+Sailfish looked correct, contradicting this ADR's assumption that Mekong/Bluefin/Yellowfin/Skipjack/
+Grouper's newer Blender-native orientation convention was fine as shipped. Kept below, unedited, as
+the record of what was concluded and why before that on-device round — see ADR-130 for the
+corrected decision.
+
+## Decision
+
+Verified all 8 `Rod/Rod/Assets/FishPreview/*.usdz` files against their source exports in the
+Blender asset repo (`new-blender-project/FishAssets/`) by SHA-256, per-file content hash within
+the archive, and `usdcat`/`usdchecker` inspection — the established forensic method from this
+session, since there is no on-device path available here. Findings and the decision for each:
+
+1. **Mekong Giant Catfish, Bluefin Tuna, Yellowfin Tuna, Skipjack Tuna, Grouper** — byte-identical
+   to the current Blender-repo source exports. These already reflect every upstream fix
+   (`FishAssets/CHECKPOINT.md` CP43/CP47/CP48: normals corrections, debris/interior-face cleanup).
+   No action needed.
+2. **Sailfish, Blue Marlin** — app copies differ from the raw Blender-repo source. The source files
+   use `upAxis = "Z"` with a zero-degree bake (Mekong's native convention); the app copies instead
+   use `upAxis = "Y"` with a baked `xformOp:rotateXYZ = (90, 180, 0)` correction — an older
+   post-hoc patch from before the Blender-side fixes existed. **Decision: keep the app's patched
+   copies, do not overwrite from source.** For Sailfish this is explicit: the Blender repo's own
+   handoff note (`FishAssets/APP_TEAM_HANDOFF.md`) says this exact patched version was "confirmed
+   correct on-device" and to leave it alone. Marlin was never confirmed working either way
+   ("untested this round, presumed OK" per the same handoff) — with no on-device path available in
+   this session to validate a swap, replacing a shipped, unflagged asset with an unverified
+   different orientation convention is a needless regression risk for zero confirmed benefit.
+3. **Giant Trevally — genuinely worse than the rest, left as-is, flagged rather than silently
+   patched.** The app's copy is a hand-patched workaround: it carries a `textures/` folder with two
+   JPGs manually re-injected from the sibling `.glb` (the CP38 workaround for a real Blender export
+   bug where this species' multi-material UV-atlas path silently drops shaders during `.usdz`
+   export — the raw current source file has no texture data at all). Textures aside, the mesh
+   itself still carries a real, unresolved defect: spiky/torn geometry near the head/dorsal area,
+   confirmed via the Blender repo's own viewport screenshot (`FishAssets/CHECKPOINT.md` CP46) and
+   explicitly *not* fixed by that pass's cleanup (69 debris/interior faces removed did not address
+   it) or by CP49's later animation work (which only touched the rig, not the mesh). This needs a
+   full weld-before-decimate rebuild from the raw source scan in Blender — out of scope for this
+   app-side session, and not something to paper over with another app-side patch. Giant Trevally
+   does not meet the Mekong-quality bar and should be treated as a known limitation until the
+   Blender-side rebuild happens.
+
+## Rationale
+
+The task was to confirm the AR fish-preview exports are "as good as the export result in the
+game" (user's own framing). Rather than assuming the already-committed `.usdz` files were
+untouched since some earlier session, or blindly re-pulling "latest" from the asset repo (which
+per finding 2 would silently regress two already-working species back to an unverified
+convention), every file was independently re-verified byte-for-byte against its current source of
+truth before drawing any conclusion.
+
+## Status
+
+Accepted — audit only, no asset files changed. Giant Trevally's known defect is a pre-existing
+condition inherited from the Blender asset repo, not something introduced by this feature; it
+applies equally to any other consumer of that species' Preview export. Live Blender MCP access
+was attempted for direct visual re-confirmation but the local Blender instance was not running/
+connected in this session, so the finding rests on the asset repo's own `CHECKPOINT.md` (CP46)
+plus this session's independent file-level forensic corroboration (the size/texture-content
+mismatch above), not a fresh render.
+
+------------------------------------------------------------------------
+
+# ADR-128 --- Fish Preview Gated to Caught Species Only, Synced from World over Transport
+
+## Decision
+
+The AR fish-preview screen (ADR-127) no longer previews the entire `FishCatalog.all` roster
+unconditionally. It now shows only species the player has actually caught in-game, per the
+user's explicit clarification of the feature's scope: *"fitur ini hanya fitur preview dari ikan
+yang sudah dicatch sama user dan hanya muncul di rod ios"* (this is a preview of fish the user has
+already caught, and only appears on Rod iOS).
+
+Since Rod has no direct connection to World's `FishRecordStore` (different physical devices,
+transport-only link, and `Rod -> Shared <- World` forbids a direct dependency either way), this
+required a new one-way sync:
+
+1. **`NetworkMessage.caughtSpecies(Set<String>)`** (new case, `Shared/Sources/Shared/Models/Device/
+   NetworkMessage.swift`) — always the full set, never a delta, so a stale/dropped message can't
+   desync the two sides. Added to `requiresReliableDelivery`'s true-returning group.
+2. **World sends it** from `WorldViewModel`, in two places: right after a catch resolves
+   (`fishFight.resolveCatch()`), and in the existing `.ready`-state reconnect resync block
+   alongside the pre-existing `.hookPhase` resend — so a Rod that reconnects mid-session (or never
+   received the original catch event) still converges to World's actual record.
+   `FishFightController.caughtSpeciesIDs` / `FishRecordStore.caughtSpeciesIDs` expose the set as
+   `Set(bestWeightBySpeciesID.keys)`.
+3. **Rod receives and persists it** — `RodViewModel.handle(_:)` gets a new `.caughtSpecies(ids)`
+   case that overwrites (not merges) `CaughtSpeciesStore`'s local copy. `CaughtSpeciesStore`
+   (`Rod/Rod/Transport/CaughtSpeciesStore.swift`) is a plain UserDefaults-backed class mirroring
+   `FishRecordStore`'s own established pattern — no DI/singleton, multiple instances share state
+   through the same storage key.
+4. **`FishPreviewViewModel.species`** is now `@Published private(set) var species: [FishSpecies] =
+   []` (was a fixed `let ... = FishCatalog.all`), rebuilt by `refreshSpecies()` — filters the
+   catalog by `CaughtSpeciesStore.caughtSpeciesIDs`, keeps the current selection if still valid,
+   otherwise falls back to `species.first` (or `nil` if nothing caught yet). Called from `init()`
+   and from `FishPreviewView`'s `.onAppear`, since `CaughtSpeciesStore` has no publisher of its own
+   and a catch may have synced in while the screen was closed. `selectedSpecies` is now `FishSpecies?`
+   throughout the view layer (`FishPreviewView`, `FishPickerView`) to represent "nothing caught
+   yet," with a dedicated empty-state screen (no AR session started at all in that state — no
+   reason to request camera access before there's anything to place).
+
+## Rationale
+
+Before this change the preview screen was a species *browser* — every catalog entry, reachable
+regardless of catch history. That directly contradicted the feature's actual product intent once
+clarified: a personal collection/album of what the player has *earned*, not a spec sheet for
+fish they haven't caught yet. The full-set/overwrite sync (rather than incremental deltas) matches
+the same reasoning `FishRecordStore` itself already uses for progression state: simpler to reason
+about, and self-correcting after a dropped message or a fresh install.
+
+## Status
+
+Accepted — `Shared` builds clean (`swift build`, macOS host and iOS-simulator destinations both
+green); `World/World` and `Rod/Rod` both typecheck clean (`swiftc -typecheck`, World against
+`arm64-apple-macos26.0`/macOS SDK, Rod against `arm64-apple-ios26.0-simulator` matching Shared's
+own resolved minimum deployment target — ADR-127's note about needing at least iOS 18.0 for
+`Entity(named:in:)`/`InputTargetComponent` still applies, but the actual floor turned out to be
+26.0 once `Shared` itself was built for the simulator destination, not 18.0). One real compile gap
+caught by this verification and fixed: `TransportClient.send(_:)`'s exhaustive switch over
+`NetworkMessage` was missing the new `.caughtSpecies` case (routed to the existing reliable-send
+branch, matching its `requiresReliableDelivery` flag). No on-device verification of the sync
+itself (two paired physical devices, a live catch, and a Rod relaunch to test the resync path) —
+deferred, as usual, to the user's own hardware.
+
+------------------------------------------------------------------------
+
+# ADR-127 --- Standalone AR Fish Preview Screen on Rod, Independent of the Live Connect-Cast-Catch Loop
+
+## Decision
+
+Added a new Rod-only screen — `FishPreviewView` / `FishPreviewViewModel` — reachable from
+`ContentView`'s toolbar (a `fish` SF Symbol button, `.fullScreenCover`-presented) that lets the
+player spawn a real, animated 3D model of a species in their own physical space via ARKit world
+tracking + horizontal-plane detection, read a short info card about it, and toggle between true
+biological scale and a room-friendly compact scale. Deliberately independent of `RodViewModel`
+and the live Connect->Cast->Catch loop — no active Multipeer/CoreBluetooth connection or motion
+calibration is required to open it, since it's a between-sessions "look at what you've caught"
+screen, not part of active gameplay. (Narrowed to caught-species-only in ADR-128 — this entry
+covers the screen mechanics themselves.)
+
+Each species' `FishSpecies.previewAssetName` points at a `.usdz` in
+`Rod/Rod/Assets/FishPreview/`, loaded via `Entity(named:)`, scaled from the *loaded entity's own
+measured bounding box* (`visualBounds`) against `FishSpecies.lengthRange` rather than trusting the
+source asset's declared units — some Preview exports do not honor the stage's declared
+`metersPerUnit`, so trusting it blindly renders certain species wildly wrong-sized (see ADR-129
+for the full per-species export-quality audit).
+
+## Rationale
+
+Rod is the input device, World owns the gameplay loop (per this project's core architecture
+contract) — but neither device gives the player any lingering way to actually look at a fish
+they caught after the moment passes. This screen fills that gap entirely on Rod's side, using
+capabilities (ARKit, RealityKit) Rod already has available and without requiring World to be
+present, paired, or even running.
+
+## Status
+
+Accepted — see ADR-128's Status for the current compile-verification state (this screen's own
+code is covered by that same pass, since the two features share the same files). Export-quality
+of the underlying `.usdz` assets audited separately in ADR-129.
 
 ------------------------------------------------------------------------
 

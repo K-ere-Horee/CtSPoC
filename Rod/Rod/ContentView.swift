@@ -18,6 +18,12 @@ struct ContentView: View {
     var viewModel: RodViewModel
 
     @State private var showDeveloperDetails = false
+    @State private var showFishPreview = false
+
+    /// ADR-132: same dark-card color World's HUD uses throughout (`ContentView.panelColor` /
+    /// `CatchCutsceneView.panelColor` on the World side) — Rod had never needed this token before
+    /// its connection-status badge below.
+    private static let panelColor = Color(red: 0.16, green: 0.12, blue: 0.09)
 
     /// ADR-121: "layar disable touch ketika lagi reel fight" — during an active fight the player
     /// is physically waving/reeling the phone, and the only *unconditionally* tappable control on
@@ -35,15 +41,28 @@ struct ContentView: View {
             VStack(spacing: 28) {
                 Spacer()
 
-                VStack(spacing: 6) {
+                VStack(spacing: 8) {
                     Text("Catch the Scott")
                         .font(.largeTitle.bold())
+                    // ADR-132: was bare text colored green only while streaming — didn't match
+                    // World's dark-card + white-border design language used everywhere else in the
+                    // game, and relying on color alone as the only "connected" signal read as
+                    // undesigned. Same status text at every connection state now, just tagged with
+                    // that shared card language instead of hue-shifting.
                     Text(viewModel.connectionState.rawValue.uppercased())
                         .font(.subheadline.bold())
-                        .foregroundStyle(viewModel.connectionState == .streaming ? .green : .secondary)
+                        .foregroundStyle(.white.opacity(0.9))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
+                        .background(Self.panelColor, in: Capsule())
+                        .overlay(Capsule().stroke(.white, lineWidth: 1.5))
                 }
 
-                if viewModel.isTutorialActive {
+                // ADR-133: "Next"/"Skip Intro" only apply to the tutorial's first step now — every
+                // later step advances on its own from a real gameplay event (start casting, a
+                // valid cast, a fish bite, a valid reel motion), so these buttons would just be
+                // dead weight past `.intro` (index 0).
+                if viewModel.isTutorialActive, viewModel.tutorialStepIndex == 0 {
                     tutorialControls
                         .padding(.horizontal, 32)
                 }
@@ -87,8 +106,16 @@ struct ContentView: View {
                  */
             }
             .allowsHitTesting(!isReelFightActive)
+            .navigationTitle("Controller")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showFishPreview = true
+                    } label: {
+                        Image(systemName: "fish")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         viewModel.calibrateMotion()
@@ -101,6 +128,9 @@ struct ContentView: View {
                     .disabled(!viewModel.hasMotionSample || viewModel.hookPhase != .idle)
                 }
             }
+        }
+        .fullScreenCover(isPresented: $showFishPreview) {
+            FishPreviewView()
         }
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
@@ -157,11 +187,17 @@ struct ContentView: View {
         }
     }
 
-    /// ADR-117: dedicated tutorial controls, shown only while World reports the tutorial overlay
-    /// active (`isTutorialActive`, mirrored from `NetworkMessage.tutorialState`). Replaces the old
-    /// tap-anywhere-on-World-to-advance interaction — "cuma click click doang" — with real,
-    /// labeled buttons living on the device the player is actually holding and using to follow the
-    /// tutorial's own instructions.
+    /// ADR-117/134: dedicated tutorial controls, shown only for the tutorial's first step
+    /// (`.intro` — see `ContentView.body`'s `viewModel.tutorialStepIndex == 0` guard). Every later
+    /// step advances on its own from a real gameplay event instead, so there's nothing left for
+    /// these buttons to drive past the intro text. "Skip Intro" and "Next" now do the same thing —
+    /// both just move past the intro text, since there's nothing within it to skip separately.
+    ///
+    /// ADR-134: both buttons now match the same `.bordered`/`.borderedProminent` +
+    /// `.controlSize(.large)` + full-width-`Label` language `fishingButton`/`startCastingButton`
+    /// already use elsewhere on this screen, instead of a bespoke `.thinMaterial` card with one
+    /// compact button and one stretched one — "sesuaiin dengan bahasa design yang lain (dua button
+    /// itu juga ga centre)."
     private var tutorialControls: some View {
         VStack(spacing: 10) {
             Text("Tutorial \u{2022} Step \(viewModel.tutorialStepIndex + 1) of \(viewModel.tutorialStepCount)")
@@ -169,20 +205,25 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 12) {
-                Button("Skip Tutorial", role: .destructive) {
+                Button {
                     viewModel.skipTutorial()
+                } label: {
+                    Label("Skip Intro", systemImage: "forward.fill")
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
+                .controlSize(.large)
 
-                Button("Next") {
+                Button {
                     viewModel.advanceTutorial()
+                } label: {
+                    Label("Next", systemImage: "arrow.right")
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .frame(maxWidth: .infinity)
+                .controlSize(.large)
             }
         }
-        .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
     /// Arms one cast attempt (see `RodViewModel.startCasting()`/`RodMotionInterpreter`'s own doc

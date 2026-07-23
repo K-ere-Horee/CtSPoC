@@ -16,6 +16,14 @@ import SwiftUI
 struct CalibrationGuidanceView: View {
     let step: CalibrationStep
 
+    /// ADR-132: matches the dark-card + white-border language used everywhere else in the HUD
+    /// (`ContentView.panelColor`, `CatchCutsceneView.panelColor`, etc.) — this view previously had
+    /// no background at all, floating bare text directly over whatever was behind it (the Main
+    /// Menu's photo background, or a `.regularMaterial` wrapper only at one of its two call sites),
+    /// reading as visually inconsistent with the rest of the screen. Reported directly: "ketika
+    /// calibrate di main menu, design nya masih aneh (alias ga ngikutin bahasa design)."
+    private static let panelColor = Color(red: 0.16, green: 0.12, blue: 0.09)
+
     private var title: String {
         switch step {
         case .idle: "Step 1 of 3 \u{2014} Idle Pose"
@@ -70,5 +78,7 @@ struct CalibrationGuidanceView: View {
         }
         .padding(24)
         .frame(maxWidth: 360)
+        .background(Self.panelColor, in: RoundedRectangle(cornerRadius: 20))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(.white, lineWidth: 2))
     }
 }

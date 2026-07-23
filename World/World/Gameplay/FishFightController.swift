@@ -115,6 +115,12 @@ final class FishFightController: ObservableObject {
     private let recordStore: FishRecordStore
     private let progressionStore: ProgressionStore
 
+    /// Passthrough to `recordStore`'s own set (ADR-111) — `WorldViewModel` has no other access to
+    /// `recordStore`, which is private to this controller.
+    var caughtSpeciesIDs: Set<String> {
+        recordStore.caughtSpeciesIDs
+    }
+
     init(
         recordStore: FishRecordStore = FishRecordStore(),
         progressionStore: ProgressionStore = ProgressionStore(),
@@ -324,7 +330,8 @@ final class FishFightController: ObservableObject {
     }
 
     /// m/s per full (1.0) `RodState.reelSpeed` input, right now — tension-scaled risk/reward:
-    /// reeling while `lineTension` is at/below `config.reelSpeedSafeTension` (the safe/green zone)
+    /// reeling while `lineTension` is at/below `config.reelSpeedSafeTension` (green plus both the
+    /// left yellow/red bands — see `FishFightConfig.reelPullSpeedSafe`'s own doc comment)
     /// pulls in at `config.reelPullSpeedSafe`; reeling with tension pushed up to/past
     /// `config.reelSpeedDangerTension` (the near-snap red zone) pulls in at
     /// `config.reelPullSpeedDanger` instead — faster by default — rewarding a player willing to
