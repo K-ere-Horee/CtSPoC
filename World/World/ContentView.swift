@@ -61,13 +61,6 @@ struct ContentView: View {
                 ResultView(result: result)
             }
 
-            if viewModel.screen == .playing, let announcement = fishFight.levelUpAnnouncement {
-                LevelUpBannerView(message: announcement) {
-                    viewModel.sounds.uiClick()
-                    fishFight.dismissLevelUpAnnouncement()
-                }
-            }
-
         }
     }
 
