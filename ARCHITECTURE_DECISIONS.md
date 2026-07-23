@@ -11,6 +11,80 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-139 --- V1 Development Closes
+
+## Decision
+
+This is the final entry in the CtSPoC "Catch the Scott" V1 development log — ADR-001 through
+ADR-139, spanning 2026-07-16 through 2026-07-23. No further ADRs are expected under this numbering
+sequence.
+
+## Rationale
+
+Stated directly by the project owner: "set ke ADR dan CHECKPOINT bahwa ini last entry di v1. We may
+never see v2 sadly."
+
+## Status
+
+Closed. The full history — every decision, retune, bug root-cause, and direct request quoted
+verbatim — stays intact above and in `CHECKPOINT.md`, unedited, as the record of what V1 was and
+why it ended up the way it did.
+
+------------------------------------------------------------------------
+
+# ADR-138 --- Real Credits Content Replaces the Placeholder
+
+## Decision
+
+`CreditsView`'s "Credits content coming soon." placeholder replaced with the real roster, grouped
+by role: **Art and Game Design** — Bintang Lay; **3D and Game Program** — Radit Silver, Calzy;
+**Music and Sound Design** — Gerald. New private `CreditsEntry(role:names:)` struct drives a
+`ForEach` over role sections, each showing a bold role heading followed by one line per name below
+it, using the screen's existing `Theme.buttonLabel`/`fredoka`/`fredokaBold` tokens — no new visual
+language introduced, just real content in the same structure the placeholder already had.
+
+## Rationale
+
+Requested directly, full roster given by role.
+
+## Status
+
+Accepted — verified via a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World`
+build (`** BUILD SUCCEEDED **`) and `git diff --check` clean. **Not verified**: an actual on-screen
+look at the new multi-role layout (no offscreen render this pass) — worth a quick look before
+shipping.
+
+------------------------------------------------------------------------
+
+# ADR-137 --- Tier Level-Up Banner Removed, Superseded by ADR-119's Species-Progress HUD
+
+## Decision
+
+Removed the entire tier-level-up-announcement mechanism, dead since ADR-119 replaced tier-based
+progression display with `SpeciesProgressView`'s per-species "fish log": `FishFightController`'s
+`currentLevel`/`levelUpAnnouncement` published properties, `dismissLevelUpAnnouncement()`,
+`announcement(forLevel:)` (the "Medium fish have entered the lake!"/"Scott has appeared" text),
+the now-orphaned `progressTowardNextLevel` passthrough, `ContentView`'s `LevelUpBannerView` usage,
+and `LevelUpBannerView.swift` itself (deleted — nothing else referenced it). `resolve(outcome:)`
+still calls `progressionStore.recordCatch(tier:)` for its real side effect (advancing tier
+progress), just no longer consumes or reacts to its returned level number.
+
+## Rationale
+
+Flagged directly, pointing at `announcement(forLevel:)`: "ini kayanya udah ga diperluin lagi" (this
+doesn't seem needed anymore). Confirmed via grep that `currentLevel`/`progressTowardNextLevel` had
+zero references anywhere outside this dead mechanism — `SpeciesProgressView` (ADR-119) is fully
+decoupled, driven only by `FishCatalog.all` and `catchCount(forSpeciesID:)`. Underlying tier-gating
+logic (`ProgressionStore.unlockedTiers`, read by `FishCatalog.randomSpecies(unlockedTiers:)`) is
+untouched — only the now-orphaned *display* layer for the old tier-milestone banner was removed.
+
+## Status
+
+Accepted — verified via a real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World`
+build (`** BUILD SUCCEEDED **`, confirming no dangling references) and `git diff --check` clean.
+
+------------------------------------------------------------------------
+
 # ADR-136 --- Fish Fight Retuned: Fish Pull Speed -25%, Reel Pull Speed 3/5 m/s Safe/Danger
 
 ## Decision

@@ -10744,3 +10744,72 @@ hijau jadi 3 m/s, dan merah (kanan) 5 m/s. buat yang merah dan kuning kiri pull 
   iphonesimulator` builds — both `** BUILD SUCCEEDED **`.
 - `git diff --check` clean.
 - Not run: actual fight feel on a live device/session at the new speeds — needs a real playtest.
+
+## Cleanup: Tier Level-Up Banner Removed, Superseded by ADR-119's Species-Progress HUD (ADR-137)
+
+Date: 2026-07-23.
+
+Flagged directly, pointing at `announcement(forLevel:)`: "ini kayanya udah ga diperluin lagi."
+Confirmed dead via grep — `SpeciesProgressView` (ADR-119) fully replaced this display and has zero
+dependency on it.
+
+### World: FishFightController
+
+- Removed `currentLevel`/`levelUpAnnouncement` published properties, `dismissLevelUpAnnouncement()`,
+  `announcement(forLevel:)`, and the now-orphaned `progressTowardNextLevel` passthrough.
+- `resolve(outcome:)` still calls `progressionStore.recordCatch(tier:)` for its real side effect,
+  just discards the returned level (already `@discardableResult`).
+- `resetProgression()` no longer resets `currentLevel`/`levelUpAnnouncement`.
+
+### World: ContentView
+
+- Removed the `LevelUpBannerView` overlay usage.
+
+### World: LevelUpBannerView.swift
+
+- Deleted — nothing else referenced it.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-137.
+
+### Verification
+
+- Real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` build — `** BUILD
+  SUCCEEDED **` (confirms no dangling references from the deleted file/removed properties).
+- `git diff --check` clean.
+
+## Feature: Real Credits Content Replaces the Placeholder (ADR-138)
+
+Date: 2026-07-23.
+
+Requested directly, full roster given by role: Art and Game Design (Bintang Lay); 3D and Game
+Program (Radit Silver, Calzy); Music and Sound Design (Gerald).
+
+### World: CreditsView
+
+- Replaced the "Credits content coming soon." placeholder with a real role/name roster — new
+  private `CreditsEntry(role:names:)` struct, rendered via `ForEach` as one section per role (bold
+  role heading, one line per name below), using the screen's existing `Theme`/`fredoka` tokens.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-138.
+
+### Verification
+
+- Real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` build — `** BUILD
+  SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: an actual on-screen look at the new layout (no offscreen render this pass).
+
+## V1 Development Closes (ADR-139)
+
+Date: 2026-07-23.
+
+This is the final entry in this checkpoint log. Development on CtSPoC "Catch the Scott" began
+2026-07-16 and closes here, 2026-07-23 — 139 ADRs, this file's own long history of dated entries,
+and every direct request that shaped them, left intact above as the record of what V1 was.
+
+Stated directly by the project owner: "set ke ADR dan CHECKPOINT bahwa ini last entry di v1. We may
+never see v2 sadly."

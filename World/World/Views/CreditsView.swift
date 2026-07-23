@@ -2,13 +2,24 @@
 //  CreditsView.swift
 //  World
 //
-//  Placeholder credits screen reached from the Main Menu's "Credit" button.
+//  Credits screen reached from the Main Menu's "Credits" button.
 //
 
 import SwiftUI
 
+private struct CreditsEntry {
+    let role: String
+    let names: [String]
+}
+
 struct CreditsView: View {
     let onBack: () -> Void
+
+    private static let entries: [CreditsEntry] = [
+        CreditsEntry(role: "Art and Game Design", names: ["Bintang Lay"]),
+        CreditsEntry(role: "3D and Game Program", names: ["Radit Silver", "Calzy"]),
+        CreditsEntry(role: "Music and Sound Design", names: ["Gerald"]),
+    ]
 
     var body: some View {
         ZStack {
@@ -19,9 +30,21 @@ struct CreditsView: View {
                     .font(.fredokaBold(28))
                     .foregroundStyle(Theme.buttonLabel)
 
-                Text("Credits content coming soon.")
-                    .font(.fredoka(16))
-                    .foregroundStyle(Theme.buttonLabel.opacity(0.8))
+                VStack(spacing: 20) {
+                    ForEach(Self.entries, id: \.role) { entry in
+                        VStack(spacing: 6) {
+                            Text(entry.role)
+                                .font(.fredokaBold(16))
+                                .foregroundStyle(Theme.buttonLabel)
+                            ForEach(entry.names, id: \.self) { name in
+                                Text(name)
+                                    .font(.fredoka(16))
+                                    .foregroundStyle(Theme.buttonLabel.opacity(0.8))
+                            }
+                        }
+                    }
+                }
+                .multilineTextAlignment(.center)
 
                 Spacer()
 
