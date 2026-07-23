@@ -38,6 +38,17 @@ final class RodViewModel: ObservableObject {
     /// `.idle`/`.result` (ADR-061 — arming is also allowed from `.result`, see `startCasting()`),
     /// or on `endFishing()` — a stale arm can never survive past one cast attempt.
     @Published private(set) var isCastingArmed = false
+    /// ADR-117: whether World is currently showing the tutorial overlay, and which step —
+    /// mirrored from World's own `NetworkMessage.tutorialState` so Rod knows when to surface its
+    /// "Next"/"Skip Tutorial" buttons instead of guessing from unrelated state.
+    @Published private(set) var isTutorialActive = false
+    @Published private(set) var tutorialStepIndex = 0
+    @Published private(set) var tutorialStepCount = 0
+    /// Momentary, mirrors `isCastingArmed`'s own shape but simpler: set true, published once via
+    /// `publishState()`, then cleared immediately — there's no server round-trip to wait for like
+    /// `isCastingArmed` has, since World just needs to see the single edge.
+    @Published private(set) var tutorialAdvanceRequested = false
+    @Published private(set) var tutorialSkipRequested = false
 
     /// Debug-only: the calibrated `reelSpeed` ramp's min/max rotation rate (`calibrateMotion()`'s
     /// `.reel` step), surfaced so a narrow calibrated range — the leading suspect for the
@@ -212,6 +223,24 @@ final class RodViewModel: ObservableObject {
         isCastingArmed = true
     }
 
+    /// ADR-117: Rod's "Next" tutorial button — a momentary edge World reacts to, not a held state.
+    /// Guarded by `isTutorialActive` so a stray press after the tutorial has already dismissed
+    /// (e.g. a queued tap landing just after World's own dismissal) is a no-op.
+    func advanceTutorial() {
+        guard isTutorialActive else { return }
+        tutorialAdvanceRequested = true
+        publishState()
+        tutorialAdvanceRequested = false
+    }
+
+    /// ADR-117: Rod's "Skip Tutorial" button — same momentary-edge shape as `advanceTutorial()`.
+    func skipTutorial() {
+        guard isTutorialActive else { return }
+        tutorialSkipRequested = true
+        publishState()
+        tutorialSkipRequested = false
+    }
+
     /// Requires `hookPhase == .idle` (ADR-064) rather than the old `!isFishing`-only gate — a
     /// player can now recalibrate at any point the hook itself isn't mid-cast/fight, including
     /// mid-session, not only before ever pressing "Start Fishing." Motion during recalibration
@@ -278,6 +307,10 @@ final class RodViewModel: ObservableObject {
             spatialManager.handleDiscoveryToken(data)
         case let .fishingEvent(event):
             fishingHaptics.handle(event)
+        case let .tutorialState(isActive, stepIndex, stepCount):
+            isTutorialActive = isActive
+            tutorialStepIndex = stepIndex
+            tutorialStepCount = stepCount
         case let .hookPhase(phase):
             hookPhase = phase
             // `.result` is deliberately excluded here (ADR-061): World auto-dismisses `.result`
@@ -306,7 +339,9 @@ final class RodViewModel: ObservableObject {
                     castSolution: nil,
                     isFishing: isFishing,
                     isCastingArmed: isCastingArmed,
-                    calibrationStep: calibrationStep
+                    calibrationStep: calibrationStep,
+                    tutorialAdvanceRequested: tutorialAdvanceRequested,
+                    tutorialSkipRequested: tutorialSkipRequested
                 )
                 publishState()
             }
@@ -330,7 +365,9 @@ final class RodViewModel: ObservableObject {
             castHoldDuration: rodState.castHoldDuration,
             isFishing: isFishing,
             isCastingArmed: isCastingArmed,
-            calibrationStep: calibrationStep
+            calibrationStep: calibrationStep,
+            tutorialAdvanceRequested: tutorialAdvanceRequested,
+            tutorialSkipRequested: tutorialSkipRequested
         )
         guard connectionState == .ready || connectionState == .streaming else { return }
         connectionState = .streaming
@@ -392,7 +429,9 @@ final class RodViewModel: ObservableObject {
             castHoldDuration: interpretation.castHoldDuration,
             isFishing: isFishing,
             isCastingArmed: isCastingArmed,
-            calibrationStep: calibrationStep
+            calibrationStep: calibrationStep,
+            tutorialAdvanceRequested: tutorialAdvanceRequested,
+            tutorialSkipRequested: tutorialSkipRequested
         )
 
         if action == .casting, previousAction != .casting {

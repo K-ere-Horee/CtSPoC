@@ -73,7 +73,7 @@ struct ContentView: View {
             // (`isShowingTutorial` flips true alongside `screen = .playing` in `handleState(_:)`),
             // just reachable through this screen's own overlay `ZStack` instead of a separate router.
             if viewModel.screen == .playing, viewModel.isShowingTutorial {
-                TutorialView(onFinished: viewModel.dismissTutorial)
+                TutorialView(stepIndex: viewModel.tutorialStepIndex)
             }
         }
     }
@@ -127,6 +127,17 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding()
 
+                // ADR-119: species-progress "fish log," floating top-leading — the top-leading
+                // corner has been free since ADR-105 moved the fps/connection card to
+                // bottom-leading. Kept visible outside the catch-cutscene fade below, same
+                // persistent-readout reasoning as `LastCatchStatBoxView`.
+                VStack(alignment: .leading) {
+                    SpeciesProgressView(entries: speciesProgressEntries)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+
                 // MARK: - Debug purpose only. Can ignore
                 /*
                 GroupBox("Controller State") {
@@ -165,14 +176,11 @@ struct ContentView: View {
                     // ADR-097: `LineTensionView` shares this exact slot — the two are mutually
                     // exclusive in time (charging vs. fighting), so stacking both here reads as
                     // one continuous meter rather than two HUD elements.
-                    // ADR-104: extra top padding so the badge/meter stack doesn't sit flush
-                    // against the top edge ("biar ga terlalu nempel ke atas").
+                    // ADR-104: extra top padding so the meter stack doesn't sit flush against the
+                    // top edge ("biar ga terlalu nempel ke atas"). ADR-119: `FishCounterBadgeView`
+                    // (the old tier-based "1/5" badge) no longer lives here — replaced by
+                    // `SpeciesProgressView`, floating top-leading instead.
                     VStack {
-                        FishCounterBadgeView(
-                            progress: fishFight.progressTowardNextLevel,
-                            caughtCount: fishFight.caughtCount
-                        )
-
                         CastMeterView(
                             castSolution: viewModel.rodState.castSolution,
                             power: viewModel.rodState.castPower,
@@ -228,6 +236,21 @@ struct ContentView: View {
     }
 
     private static let panelColor = Color(red: 0.16, green: 0.12, blue: 0.09)
+
+    /// ADR-119: recomputed every render (cheap — 8 entries) rather than cached/`@Published`, so it
+    /// always reflects `fishFight`'s latest state without needing its own change-tracking; any
+    /// `@Published` change on `fishFight` (e.g. `caughtCount` incrementing) already triggers a
+    /// re-render here via the `@ObservedObject`, so this piggybacks on that for free.
+    private var speciesProgressEntries: [SpeciesProgressEntry] {
+        FishCatalog.all.map { species in
+            SpeciesProgressEntry(
+                id: species.id,
+                name: species.name,
+                caught: fishFight.catchCount(forSpeciesID: species.id),
+                target: species.catchTarget
+            )
+        }
+    }
 
     private var statusBox: some View {
         VStack(alignment: .leading, spacing: 4) {

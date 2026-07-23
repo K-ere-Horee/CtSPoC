@@ -52,12 +52,28 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
     /// "fish pull speed rasanya terlalu kencang"), then cut a further 25% -> **0.2625** ("kurangin
     /// keduanya by 25%") — since `fishPullSpeed` is `basePullSpeed * (1 + resistance *
     /// pullSpeedResistanceMultiplier)`, scaling only this term keeps the reduction uniform across
-    /// every resistance/tier, without needing to also touch `pullSpeedResistanceMultiplier`.
+    /// every resistance/tier, without needing to also touch `pullSpeedResistanceMultiplier`. Raised
+    /// 0.25 -> **0.375** (ADR-120, "multiply semua fish run speed by 1.5x") — since every species'
+    /// `fishPullSpeed` shares this same floor term multiplicatively, scaling only this uniformly
+    /// raises *every* species' run speed by exactly 1.5x while leaving `pullSpeedResistanceMultiplier`
+    /// (ADR-119's per-species differentiation) untouched.
     public var basePullSpeed: Float
     /// How strongly `resistance` scales `fishPullSpeed` on top of `basePullSpeed`:
     /// `fishPullSpeed = basePullSpeed * (1 + resistance * pullSpeedResistanceMultiplier)`. Same
     /// role as `pullRateResistanceMultiplier` above, for the physical tug-of-war instead of
     /// tension.
+    ///
+    /// ADR-119: raised 1.8 -> 2.6 — reported directly, "masa speed lari marlin sama grouper sama?
+    /// harusnya ada difficulty scale berdasarkan ukuran dan jenis ikan" (why is Marlin's running
+    /// speed the same as Grouper's? there should be a difficulty scale based on the fish's size
+    /// and species). At the old 1.8, a max-size-roll Grouper (`resistance` ceiling 0.25) and a
+    /// max-size-roll Marlin (ceiling 0.80) produced `fishPullSpeed` of 0.36 vs 0.61 m/s — real but
+    /// modest (~70% faster), easy to miss mid-fight since it only governs the *idle-drift* half of
+    /// the tug-of-war (see `reelSpeedResistanceDrag` below for the other half, which had *zero*
+    /// species dependency before this same pass). At 2.6 the same pair is 0.41 vs 0.80 m/s
+    /// (~95% faster) — `basePullSpeed` (the `resistance == 0` floor every species shares) is
+    /// deliberately left untouched, so the easiest fish still feels the same, only the top end of
+    /// the scale stretches further.
     public var pullSpeedResistanceMultiplier: Float
     /// Extra line (meters beyond the fight's starting hook-to-rod distance) a fish may take
     /// before the fight resolves as escaped outright — the "spooled" failure, independent of
@@ -127,6 +143,19 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
     /// move to `2.0` ("dari 2 m/s di area green, naik jadi 4 m/s di area merah"), keeping the same
     /// 2x ratio between the two.
     public var reelPullSpeedDanger: Float
+    /// ADR-119: how much `resistance` (species x rolled size, same driver as `fishPullSpeed`/
+    /// `effectiveFishPullRate`) drags down reel-in speed — `reelPullSpeed *= max
+    /// (minimumReelSpeedFactor, 1 - resistance * reelSpeedResistanceDrag)`. Added because
+    /// `reelPullSpeed` previously had *zero* species dependency (purely a function of
+    /// `lineTension`), so a Grouper and a Marlin reeled in at the identical rate — only the
+    /// passive/idle-drift side of the tug-of-war (`fishPullSpeed`) scaled with difficulty, which is
+    /// half the reason "speed lari marlin sama grouper sama" was reported: the side of the fight
+    /// the player actually spends most of their input on (reeling) didn't scale at all.
+    public var reelSpeedResistanceDrag: Float
+    /// Hard floor on the drag above, so a maxed-out `resistance` (the boss) can slow reeling but
+    /// never make it feel broken/impossible — reeling a Scott-tier fish is still meaningfully
+    /// possible, just visibly harder than a Grouper.
+    public var minimumReelSpeedFactor: Float
 
     // MARK: Tension bands (Rod haptic rhythm)
 
@@ -154,8 +183,8 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
         baseFishPullRate: Float = 0.15,
         baseReelTensionRate: Float = 0.6,
         pullRateResistanceMultiplier: Float = 3.0,
-        basePullSpeed: Float = 0.25,
-        pullSpeedResistanceMultiplier: Float = 1.8,
+        basePullSpeed: Float = 0.375,
+        pullSpeedResistanceMultiplier: Float = 2.6,
         escapeDistanceAllowance: Float = 6.0,
         escapeAllowanceResistancePenalty: Float = 3.5,
         minEscapeDistanceAllowance: Float = 2.0,
@@ -169,6 +198,8 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
         reelSpeedDangerTension: Float = 0.85,
         reelPullSpeedSafe: Float = 2.0,
         reelPullSpeedDanger: Float = 4.0,
+        reelSpeedResistanceDrag: Float = 0.45,
+        minimumReelSpeedFactor: Float = 0.5,
         tensionBandMediumThreshold: Float = 0.55,
         tensionBandHighThreshold: Float = 0.8,
         lowBandInterval: TimeInterval = 0.5,
@@ -200,6 +231,8 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
         self.reelSpeedDangerTension = reelSpeedDangerTension
         self.reelPullSpeedSafe = reelPullSpeedSafe
         self.reelPullSpeedDanger = reelPullSpeedDanger
+        self.reelSpeedResistanceDrag = reelSpeedResistanceDrag
+        self.minimumReelSpeedFactor = minimumReelSpeedFactor
         self.tensionBandMediumThreshold = tensionBandMediumThreshold
         self.tensionBandHighThreshold = tensionBandHighThreshold
         self.lowBandInterval = lowBandInterval

@@ -13,6 +13,10 @@ public enum NetworkMessage: Codable, Sendable {
     case discoveryToken(Data)
     case fishingEvent(FishingEvent)
     case hookPhase(HookPhase)
+    /// ADR-117: World -> Rod, sent whenever the tutorial's visibility or step changes, so Rod knows
+    /// when to show its own "Next"/"Skip Tutorial" buttons rather than the tutorial living only as
+    /// a World-side tap-to-advance overlay with no dedicated controls.
+    case tutorialState(isActive: Bool, stepIndex: Int, stepCount: Int)
 
     /// Continuous, high-frequency telemetry (`state`, streamed on every motion sample) should use
     /// unreliable/unordered transport delivery: a stale orientation sample is worthless once a
@@ -24,7 +28,7 @@ public enum NetworkMessage: Codable, Sendable {
         switch self {
         case .state:
             return false
-        case .discoveryToken, .fishingEvent, .hookPhase:
+        case .discoveryToken, .fishingEvent, .hookPhase, .tutorialState:
             return true
         }
     }

@@ -110,7 +110,7 @@ final class TransportClient: NSObject, TransportProtocol {
         switch message {
         case .state:
             sendUnreliable(data)
-        case .discoveryToken, .fishingEvent, .hookPhase:
+        case .discoveryToken, .fishingEvent, .hookPhase, .tutorialState:
             try await sendReliable(data)
         }
     }

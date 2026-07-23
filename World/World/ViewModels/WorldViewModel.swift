@@ -47,12 +47,16 @@ final class WorldViewModel: ObservableObject {
     /// this is purely a World-side presentation flag gating which overlay `ContentView` shows, not a
     /// new `HookPhase` case, so Shared/Rod need no changes.
     @Published private(set) var isShowingCatchCutscene = false
-    /// Ported from `feat/ui-slice`'s `RootView` (ADR-087): shown as soon as `screen` flips to
-    /// `.playing`, dismissed by `dismissTutorial()` once `TutorialView`'s tap-to-advance sequence
-    /// finishes. Shown unconditionally on every "Start Fishing," not gated to a player's first
-    /// session — an explicit, inherited simplification (persisted first-session gating was flagged
-    /// as future work on the original branch, not implemented here either).
+    /// Ported from `feat/ui-slice`'s `RootView` (ADR-087), restructured in ADR-117: shown on the
+    /// first "Start Fishing" after install (or after `resetProgression()`), not on every one —
+    /// `hasSeenTutorial` gates it. Advanced/dismissed by Rod's own "Next"/"Skip Tutorial" buttons
+    /// (`advanceTutorialStep()`/`dismissTutorial()`, driven by `RodState.tutorialAdvanceRequested`/
+    /// `tutorialSkipRequested` edges in `handleState(_:)`), not by tapping `TutorialView` itself.
     @Published private(set) var isShowingTutorial = false
+    /// ADR-117: which `TutorialView.steps` entry is currently shown — the single source of truth
+    /// for both `TutorialView`'s own rendering and what gets mirrored to Rod via
+    /// `NetworkMessage.tutorialState` so its "Next"/"Skip Tutorial" controls know the step count.
+    @Published private(set) var tutorialStepIndex = 0
     @Published private(set) var lastError: String?
     @Published private(set) var fps: Double = 0
     /// Debug pair for diagnosing cast direction: where a perfectly straight-ahead cast of the
@@ -303,7 +307,26 @@ final class WorldViewModel: ObservableObject {
     /// nya masih nyangkut dengan ikan") at the fish's mouth instead of leaving it behind at the water
     /// or hidden. Scaled by `caughtFishEntity.scale` each frame, since the displayed fish size varies
     /// with the rolled catch length (ADR-068).
-    private let caughtFishHeadOffset: Float = 1.15
+    ///
+    /// ADR-118: was a fixed constant measured against Mekong specifically; now a `var`, recomputed
+    /// in `beginCatchCutscene(from:)` for whichever species was actually caught, as
+    /// `caughtFishHeadOffsetRatio * <that species' authoredLength>` — an approximation (Mekong's
+    /// own 1.15 m / 2.0 m authored length ratio applied uniformly to every other species, since
+    /// none of the other 7 have had their own nose offset individually measured yet). Everything
+    /// downstream that reads this value is unchanged; only how it gets set is new.
+    private var caughtFishHeadOffset: Float = 1.15
+
+    /// See `caughtFishHeadOffset`'s own doc comment — Mekong's measured `1.15 / 2.0` ratio, reused
+    /// as a reasonable average-fish-proportions approximation for every other species until each
+    /// gets its own measured value (the same kind of live on-device tuning Mekong's own offset took
+    /// several rounds, ADR-072 through ADR-075, to land on).
+    private let caughtFishHeadOffsetRatio: Float = 0.575
+
+    /// ADR-120: whether the *currently active* `caughtFishEntity` needs its head-axis mapping
+    /// negated in `catchCutsceneFishOrientation` — set in `beginCatchCutscene(from:)` from the
+    /// caught species' own `FishSpecies.catchOrientationFlipped` (`true` for Bluefin Tuna only,
+    /// reported rendering head-down under the orientation every other species uses correctly).
+    private var catchCutsceneOrientationFlipped = false
 
     /// Line tension (see `lineTension(for:)`) held during the catch cutscene (ADR-074) instead of
     /// relaxing to `0` for the whole `.result` phase as before — a slack line read as disconnected
@@ -369,12 +392,6 @@ final class WorldViewModel: ObservableObject {
     }
     private var catchCutscene: CatchCutscene?
 
-    /// Authored body length (m) of `mekong_catfish_caught.usdz` — `new-blender-project`'s
-    /// `Fish06_MekongGiantCatfish/Documentation/Source_Log.md` step 4: "scaled to 2.0 m." Used only
-    /// to derive `caughtFishEntity`'s cutscene display scale (ADR-068) from the actual rolled catch
-    /// length, not to place/scale anything else.
-    private let caughtFishAuthoredLength: Float = 2.0
-
     private var rodRig: RodRigController?
     private var controllerEntity: Entity?
     private var hookEntity: ModelEntity?
@@ -384,10 +401,17 @@ final class WorldViewModel: ObservableObject {
     /// Replaces `rod_line.usdz`'s short skeletal droop and the earlier rigid single-box line
     /// (ADR-106/107), neither of which had any dynamics. Stepped each tick by `updateFishingRope()`.
     private var fishingRope: FishingLineRope?
-    /// The real animated fish shown during the catch cutscene (ADR-068) — currently always
-    /// `mekong_catfish_caught.usdz` regardless of which `FishSpecies` tier was actually caught (see
-    /// `beginCatchCutscene`'s doc comment for why). `nil` if the asset failed to load, in which case
-    /// the cutscene silently falls back to animating `hookEntity` instead (its pre-ADR-068 behavior).
+    /// ADR-118: one preloaded, disabled entity per `FishCatalog.all` species with a real asset,
+    /// keyed by `FishSpecies.id` — loaded once up front in `makeSceneEntity()` (same
+    /// avoid-a-load-stall-on-first-catch rationale ADR-068 originally used for the single Mekong
+    /// entity this replaces), not lazily per catch. `beginCatchCutscene(from:)` looks up the
+    /// caught species' entity here and points `caughtFishEntity` at it for the cutscene.
+    private var caughtFishEntitiesByID: [String: Entity] = [:]
+    /// The real animated fish currently shown during the catch cutscene (ADR-068) — reassigned to
+    /// whichever `caughtFishEntitiesByID` entry matches the actually-caught species (ADR-118; was
+    /// always the same hardcoded Mekong Giant Catfish entity regardless of species). `nil` if that
+    /// species' asset failed to load, in which case the cutscene silently falls back to animating
+    /// `hookEntity` instead (its pre-ADR-068 behavior).
     private var caughtFishEntity: Entity?
     /// The controller for `caughtFishEntity`'s currently-playing clip (ADR-070) — kept so
     /// `updateCatchCutscene` can retarget `.speed` every frame as the slow-motion envelope moves
@@ -501,9 +525,13 @@ final class WorldViewModel: ObservableObject {
     }
 
     /// Resets tier-unlock progression back to Level 1 — the player's way to replay the unlock
-    /// curve without reinstalling or clearing app data by hand.
+    /// curve without reinstalling or clearing app data by hand. ADR-117: also clears
+    /// `hasSeenTutorial`, so the tutorial plays again once from the top on the next "Start
+    /// Fishing" — "lakuin aja tutorial di awal ketika reset progress" (just run the tutorial at
+    /// the start when progress is reset).
     func resetProgression() {
         fishFight.resetProgression()
+        Self.hasSeenTutorial = false
     }
 
     // MARK: - Onboarding (ADR-064)
@@ -530,10 +558,47 @@ final class WorldViewModel: ObservableObject {
         screen = .onboarding
     }
 
-    /// `TutorialView`'s tap-to-advance sequence reaching its last step (ADR-087). No persisted
-    /// state to update — see `isShowingTutorial`'s own doc comment for why it's shown every time.
+    // MARK: - Tutorial (ADR-087, restructured ADR-117)
+
+    private static let hasSeenTutorialKey = "world.hasSeenTutorial"
+
+    /// Persisted so the tutorial only auto-shows once per progression cycle — cleared by
+    /// `resetProgression()`, set once the player reaches the end or presses "Skip Tutorial".
+    private static var hasSeenTutorial: Bool {
+        get { UserDefaults.standard.bool(forKey: hasSeenTutorialKey) }
+        set { UserDefaults.standard.set(newValue, forKey: hasSeenTutorialKey) }
+    }
+
+    /// Rod's "Next" button reaching the tutorial's last step advances straight to dismissal —
+    /// mirrors `TutorialView`'s own old `advance()` logic, just driven from Rod's edge instead of
+    /// a local tap gesture.
+    private func advanceTutorialStep() {
+        if tutorialStepIndex < TutorialView.steps.count - 1 {
+            tutorialStepIndex += 1
+            sendTutorialState()
+        } else {
+            dismissTutorial()
+        }
+    }
+
+    /// Reaching the tutorial's last "Next" press, or Rod's "Skip Tutorial" button at any step.
+    /// Persists `hasSeenTutorial` so it doesn't auto-show again until `resetProgression()`.
     func dismissTutorial() {
         isShowingTutorial = false
+        tutorialStepIndex = 0
+        Self.hasSeenTutorial = true
+        sendTutorialState()
+    }
+
+    /// Mirrors the tutorial's current visibility/step to Rod (`NetworkMessage.tutorialState`) so
+    /// its "Next"/"Skip Tutorial" buttons know when to show themselves and what step count to
+    /// display — called on every visibility/step change, not just once, since Rod has no other way
+    /// to learn this (World owns the tutorial's whole state machine).
+    private func sendTutorialState() {
+        let isActive = isShowingTutorial
+        let stepIndex = tutorialStepIndex
+        let stepCount = TutorialView.steps.count
+        Task { await send(.tutorialState(isActive: isActive, stepIndex: stepIndex, stepCount: stepCount)) }
     }
 
     /// Called once from `ContentView`'s `RealityView` `make` closure. Subscribes to the scene's
@@ -639,11 +704,16 @@ final class WorldViewModel: ObservableObject {
         root.addChild(rope.root)
         rig.setSkeletalLineVisible(false)
 
-        // ADR-068: loaded once up front like every other scene entity, not lazily on first catch —
-        // `Entity(named:)` is async and this avoids a load stall on the player's very first catch.
-        if let fish = try? await Entity(named: "mekong_catfish_caught") {
+        // ADR-068/118: one entity per catalog species loaded once up front like every other scene
+        // entity, not lazily on first catch — `Entity(named:)` is async and this avoids a load
+        // stall on the player's first catch of *any* given species, not just the very first catch
+        // overall. A species whose asset fails to load is silently absent from the dictionary;
+        // `beginCatchCutscene(from:)` already falls back to animating `hookEntity` alone when a
+        // lookup misses, so one bad/missing asset can't break the others.
+        for species in FishCatalog.all {
+            guard let fish = try? await Entity(named: species.assetName) else { continue }
             fish.isEnabled = false
-            caughtFishEntity = fish
+            caughtFishEntitiesByID[species.id] = fish
             root.addChild(fish)
         }
 
@@ -1276,27 +1346,34 @@ final class WorldViewModel: ObservableObject {
     /// it arrives at the dock. `hookPhase` is already `.result` by the time this is called (set by
     /// `reelHook`'s caller), so casting/reeling are locked for the whole cutscene exactly as before.
     ///
-    /// ADR-068: shows `caughtFishEntity` (a real animated fish, `mekong_catfish_caught.usdz`) in the
-    /// hook's place, playing that asset's baked "Caught" clip. Always the same species regardless of
-    /// which `FishSpecies` tier (`fish_a`/`fish_b`/`fish_c`/`scott`) was actually rolled —
-    /// `FishCatalog`'s four tiers are still placeholder data with no asset reference of their own
-    /// (see its own doc comment), and only one species out of the asset repo's ten has a fully
-    /// verified-good export/orientation (see `caughtFishEntity`'s doc comment). Mapping specific
-    /// tiers to specific species is a content decision left for later, once more species are vetted.
-    /// `caughtFishEntity`'s *display scale* does still vary with the actual rolled catch length, so
-    /// the size at least tracks what `ResultView` shows next.
+    /// ADR-068/118: shows a real animated fish in the hook's place, playing that asset's baked
+    /// "Caught" clip — the specific species/entity now matches whichever `FishSpecies` was actually
+    /// rolled (`fishFight.lastCatchResult?.speciesID` looked up against `FishCatalog.all` and
+    /// `caughtFishEntitiesByID`), not always the same hardcoded Mekong Giant Catfish. Falls back to
+    /// animating `hookEntity` alone (this function's pre-ADR-068 behavior) if the lookup misses —
+    /// no result recorded yet, or that species' asset failed to load.
     ///
-    /// ADR-074: `hookEntity` is **not** disabled when `caughtFishEntity` is available — it stays
+    /// ADR-074: `hookEntity` is **not** disabled when a `caughtFishEntity` is available — it stays
     /// visible, parked at the fish's mouth (`caughtFishHeadOffset` along the fish's local `-Y`/head
     /// axis, scaled to match), so the line rigged to it still reads as physically hooked into the
     /// catch instead of the fish appearing to float free while the hook/line vanish.
     private func beginCatchCutscene(from position: SIMD3<Float>) {
+        let caughtSpecies = fishFight.lastCatchResult.flatMap { result in
+            FishCatalog.all.first { $0.id == result.speciesID }
+        }
+        caughtFishEntity = caughtSpecies.flatMap { caughtFishEntitiesByID[$0.id] }
+        if let caughtSpecies {
+            caughtFishHeadOffset = caughtFishHeadOffsetRatio * caughtSpecies.authoredLength
+            catchCutsceneOrientationFlipped = caughtSpecies.catchOrientationFlipped
+        }
+
         if let caughtFishEntity {
             caughtFishEntity.isEnabled = true
             caughtFishEntity.position = position
             caughtFishEntity.orientation = catchCutsceneFishOrientation
             let lengthMeters = Float((fishFight.lastCatchResult?.length ?? 100) / 100)
-            let scale = max(lengthMeters / caughtFishAuthoredLength, 0.35)
+            let authoredLength = caughtSpecies?.authoredLength ?? 2.0
+            let scale = max(lengthMeters / authoredLength, 0.35)
             caughtFishEntity.scale = SIMD3<Float>(repeating: scale)
             // ADR-075: also scales the hook sphere itself (fixed-size otherwise, unlike the fish) —
             // a live screenshot on a small catch showed a full-size hook dwarfing the scaled-down
@@ -1345,6 +1422,14 @@ final class WorldViewModel: ObservableObject {
         }
     }
 
+    /// ADR-118: applied to whichever species' entity is active, not just Mekong Giant Catfish —
+    /// every species in `FishAssets/`'s `Documentation/Source_Log.md` documents the same "length
+    /// along local Y (head at −Y), dorsal along local Z" export convention, though only Mekong's
+    /// axes were independently re-verified here (`unzip`+`usdcat` on the copied `.usdz`, see
+    /// `fishOrientation(facing:)`'s own doc comment) rather than taken on the source repo's word —
+    /// a live look at each of the other 7 species during the cutscene is the real confirmation this
+    /// still needs.
+    ///
     /// Fixed vertical "hooked and hanging" pose for `caughtFishEntity` (ADR-073 — ADR-072's
     /// horizontal `+X`-facing pose was seen live and reported as "ikannya kaya berenang... harusnya
     /// kepala nya [di atas], vertical" — the fish read as lying flat like an ordinary swim cycle, not
@@ -1362,7 +1447,15 @@ final class WorldViewModel: ObservableObject {
     /// and gives explicit control over the roll instead of leaving it arbitrary.
     private var catchCutsceneFishOrientation: simd_quatf {
         let localXTarget = SIMD3<Float>(0, 0, -1)   // fish's lateral/width axis -> world -Z
-        let localYTarget = SIMD3<Float>(0, -1, 0)   // fish's body axis -> world -Y (head, at local -Y, ends up at world +Y)
+        // ADR-120: negated for species whose asset renders head-down under the standard mapping
+        // (`catchCutsceneOrientationFlipped`, set per-catch in `beginCatchCutscene(from:)` — true
+        // for Bluefin Tuna only, "bluefin tuna kebalik orientasinya waktu fish catch"). Recomputing
+        // `localZTarget` from whichever sign is active (not hardcoding it) keeps the rotation
+        // proper/non-mirrored either way, rather than just flipping the fish upside down along the
+        // wrong axis.
+        let localYTarget: SIMD3<Float> = catchCutsceneOrientationFlipped
+            ? SIMD3<Float>(0, 1, 0)
+            : SIMD3<Float>(0, -1, 0)   // fish's body axis -> world -Y (head, at local -Y, ends up at world +Y)
         // Dorsal (local Z) target computed, not guessed, so the rotation stays proper or (no
         // mirroring) — cross product of the two chosen columns, matching this rig's right-handed
         // local axes (confirmed via `upAxis = "Z"`, a direct Blender-convention export).
@@ -1507,6 +1600,8 @@ final class WorldViewModel: ObservableObject {
 
     private func handleState(_ state: RodState) {
         let wasFishing = rodState.isFishing
+        let wasTutorialAdvanceRequested = rodState.tutorialAdvanceRequested
+        let wasTutorialSkipRequested = rodState.tutorialSkipRequested
         rodState = state
         if let solution = state.castSolution, state.action == .casting {
             pendingCastSolution = solution
@@ -1524,9 +1619,26 @@ final class WorldViewModel: ObservableObject {
         // `isFishing`'s edges instead of a World-side button.
         if state.isFishing, !wasFishing {
             screen = .playing
-            isShowingTutorial = true
+            // ADR-117: only auto-show once per progression cycle, not on every "Start Fishing" —
+            // "setiap end fishing -> start fishing, selalu berulang" was the exact complaint.
+            if !Self.hasSeenTutorial {
+                isShowingTutorial = true
+                tutorialStepIndex = 0
+                sendTutorialState()
+            }
         } else if !state.isFishing, wasFishing {
             returnToMenu()
+        }
+
+        // ADR-117: Rod's "Next"/"Skip Tutorial" buttons — momentary edges, mirroring how
+        // `isCastingArmed`'s own press is detected elsewhere. Guarded by `isShowingTutorial` so a
+        // stray edge after dismissal (e.g. a queued press landing just after the last step) is a
+        // no-op, matching `advanceTutorial()`/`skipTutorial()`'s own Rod-side guard.
+        if isShowingTutorial, state.tutorialAdvanceRequested, !wasTutorialAdvanceRequested {
+            advanceTutorialStep()
+        }
+        if isShowingTutorial, state.tutorialSkipRequested, !wasTutorialSkipRequested {
+            dismissTutorial()
         }
     }
 

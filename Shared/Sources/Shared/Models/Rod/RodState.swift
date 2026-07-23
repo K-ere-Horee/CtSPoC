@@ -41,6 +41,13 @@ public struct RodState: Codable, Sendable, Equatable {
     /// guidance itself instead of that instruction text living only on Rod — see
     /// `CalibrationStep`'s own doc comment for the design-intent citation.
     public let calibrationStep: CalibrationStep
+    /// Momentary (ADR-117): true for exactly the one `RodState` broadcast triggered by pressing
+    /// Rod's "Next" tutorial button, `false` again immediately after — World reacts to it as an
+    /// edge (like `isCastingArmed`'s own momentary-press handling), not a held state.
+    public let tutorialAdvanceRequested: Bool
+    /// Momentary (ADR-117), same shape as `tutorialAdvanceRequested` but for Rod's "Skip Tutorial"
+    /// button.
+    public let tutorialSkipRequested: Bool
 
     /// Short wire keys (ADR-063). `RodState` is sent on BLE's unreliable `.state` notify path,
     /// which `TransportClient.sendUnreliable(_:)` deliberately never fragments across multiple BLE
@@ -71,6 +78,8 @@ public struct RodState: Codable, Sendable, Equatable {
         case isFishing = "f"
         case isCastingArmed = "ca"
         case calibrationStep = "cal"
+        case tutorialAdvanceRequested = "tad"
+        case tutorialSkipRequested = "tsk"
     }
 
     public init(
@@ -88,7 +97,9 @@ public struct RodState: Codable, Sendable, Equatable {
         castHoldDuration: TimeInterval = 0,
         isFishing: Bool = false,
         isCastingArmed: Bool = false,
-        calibrationStep: CalibrationStep = .idle
+        calibrationStep: CalibrationStep = .idle,
+        tutorialAdvanceRequested: Bool = false,
+        tutorialSkipRequested: Bool = false
     ) {
         self.timestamp = timestamp
         distance = spatial.distance
@@ -108,5 +119,7 @@ public struct RodState: Codable, Sendable, Equatable {
         self.isFishing = isFishing
         self.isCastingArmed = isCastingArmed
         self.calibrationStep = calibrationStep
+        self.tutorialAdvanceRequested = tutorialAdvanceRequested
+        self.tutorialSkipRequested = tutorialSkipRequested
     }
 }

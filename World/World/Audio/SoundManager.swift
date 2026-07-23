@@ -62,6 +62,9 @@ final class SoundManager {
             case .ambienceLake: return 0.35
             case .fishInterestedLoop, .reelLoop: return 0.5
             case .idle, .reelFight: return 0.3
+            // ADR-120: cut 50% from the shared 0.85 default per direct request ("kurangi volume
+            // catch_splash by 50%").
+            case .catchSplash: return 0.425
             default: return 0.85
             }
         }

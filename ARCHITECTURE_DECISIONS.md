@@ -11,6 +11,303 @@ to revise them.
 
 ------------------------------------------------------------------------
 
+# ADR-120 --- Three Notes: 1.5x Run Speed, Bluefin Orientation Fix, Catch-Splash Volume
+
+## Decision
+
+Three independent, directly-requested fixes:
+
+**1. All fish run speed x1.5.** `FishFightConfig.basePullSpeed` (the shared `resistance == 0`
+floor every species' `fishPullSpeed` multiplies against) raised 0.25 -> 0.375. Since
+`fishPullSpeed = basePullSpeed * (1 + resistance * pullSpeedResistanceMultiplier)`, scaling only
+the common factor `basePullSpeed` multiplies the *entire* output by exactly 1.5x for every species
+uniformly, leaving ADR-119's per-species differentiation (`pullSpeedResistanceMultiplier`)
+untouched — matching "multiply semua fish run speed by 1.5x" literally rather than reinterpreting
+it as a per-species change.
+
+**2. Bluefin Tuna catch-cutscene orientation fixed.** Reported: "bluefin tuna kebalik orientasinya
+waktu fish catch" (Bluefin Tuna's orientation is reversed during the fish catch). Root cause:
+`catchCutsceneFishOrientation` assumes every species' head sits at local `-Y` (the export
+convention ADR-118 confirmed via each species' own `Source_Log.md`) — if Bluefin's actual asset
+instead has its head at local `+Y` (the opposite), the shared mapping sends it to world `-Y`
+(down), i.e. head-down. `FishSpecies` gains `catchOrientationFlipped: Bool` (default `false`,
+`true` only for Bluefin Tuna); `WorldViewModel` gains a per-catch `catchCutsceneOrientationFlipped`
+flag, set in `beginCatchCutscene(from:)` from the caught species, and
+`catchCutsceneFishOrientation` negates its local-Y-target mapping when set, recomputing the
+dorsal-axis target from whichever sign is active (not hardcoding it) so the result stays a proper,
+non-mirrored rotation either way — verified offline (determinant ≈ 1, orthonormal columns, for
+both the flipped and unflipped case). This is a best-effort fix for the most common class of
+"reversed" orientation bug (a head/tail axis swap); if Bluefin's actual defect turns out to be a
+different kind of flip (e.g. a left-right mirror), this specific fix won't resolve it and needs a
+live screenshot to re-diagnose.
+
+**3. Catch-splash volume cut 50%.** `SoundManager.Sound.catchSplash` gets its own
+`defaultVolume` case (was falling through to the shared `0.85` default alongside most other
+one-shot SFX) — now `0.425`.
+
+## Rationale
+
+Requested directly, three short notes in one message: "multiply semua fish run speed by 1.5x";
+"bluefin tuna kebalik orientasinya waktu fish catch"; "kurangi volume catch_splash by 50%".
+
+## Status
+
+Accepted — verified via `swift build` (Shared, macOS), `xcrun swiftc -typecheck -DDEBUG` against
+the full `World/World` file list (clean, one pre-existing unrelated warning), the orientation
+quaternion's validity confirmed offline for both the flipped and unflipped case (proper rotation,
+determinant ≈ 1), a real unsigned `xcodebuild -scheme World` build (BUILD SUCCEEDED), a launch/
+`ps`-confirmed-running/quit with no crash, and `git diff --check` clean. **Not verified**: the felt
+1.5x speed change on a live device, whether Bluefin Tuna's orientation is now actually correct (the
+fix targets the most likely cause, not a confirmed-via-screenshot one), or the catch-splash volume
+level in context against other SFX — all three need a live playtest, especially the orientation fix
+given its "best guess without a screenshot" status.
+
+------------------------------------------------------------------------
+
+# ADR-119 --- Fight Speed Now Scales by Species/Size on Both Sides; Species-Based Progress HUD
+
+## Decision
+
+Two related changes, both scoped to difficulty/progression now that ADR-118 gave every species
+real, differentiated `resistance` values.
+
+**1. Fish fight speed rebalance.** `resistance` (`species.resistance * sizeRatio`, ADR-030) already
+drove `fishPullSpeed` (the idle-drift/tug-of-war speed) and `effectiveFishPullRate` (tension drain
+rate), but `pullSpeedResistanceMultiplier` (1.8) produced only a modest spread (~70% faster at the
+Grouper-vs-Marlin extremes) and — more importantly — `reelPullSpeed` (how fast *reeling in* moves
+the fish) had **zero** species dependency at all, purely a function of `lineTension`. That's the
+side of the fight the player actually spends their input on, so a Grouper and a Marlin reeled in
+identically despite the fish's own pull speed differing. Two fixes in `FishFightConfig`/
+`FishFightController`:
+- `pullSpeedResistanceMultiplier` raised 1.8 -> 2.6 (the shared `resistance == 0` floor,
+  `basePullSpeed`, is untouched, so the easiest fish still feels the same — only the top of the
+  scale stretches further: ~95% faster at the same extremes instead of ~70%).
+- New `reelSpeedResistanceDrag` (0.45) and `minimumReelSpeedFactor` (0.5, a hard floor so reeling
+  never becomes literally impossible): `reelPullSpeed` is now the existing tension-scaled base,
+  multiplied by `max(minimumReelSpeedFactor, 1 - resistance * reelSpeedResistanceDrag)`. Both sides
+  of the tug-of-war now scale with the same `resistance` driver.
+
+**2. Species-based progress HUD, replacing the tier-based badge.** `FishSpecies` gains
+`catchTarget: Int` (flat per tier — small 5, medium 4, big 3, boss 1 — mirroring
+`ProgressionStore`'s own "rarer tier, fewer needed" shape, not independently tuned per species).
+`FishRecordStore` gains a persisted per-species catch *count* (`catchCountBySpeciesID`, distinct
+from its existing best-weight tracking and from `ProgressionStore`'s tier-level counts),
+incremented on every catch via `recordCatch(speciesID:weight:)`, exposed as
+`catchCount(for:)`/cleared via a new `resetCounts()`. `FishFightController.resetProgression()` now
+calls both `progressionStore.reset()` and `recordStore.resetCounts()` together, so the species
+checklist and tier unlocks reset in lockstep, not independently.
+
+`FishCounterBadgeView` (the old single "1/5 to next tier" tier-based badge, top-center) is deleted
+outright — superseded, not disabled-in-place, since the user's own framing was an explicit
+replacement ("progressionnya diganti"), not a not-yet-working mechanic. New `SpeciesProgressView`
+("FISH LOG") lists every `FishCatalog.all` species with a `caught/target` row (green once complete),
+in catalog order (small -> medium -> big -> boss) so every species is visible from the start, not
+only once unlocked — doubling as a preview of what's ahead. `ContentView` floats it top-leading
+(free since ADR-105 moved the fps/connection card to bottom-leading), building its entries from
+`FishCatalog.all` + `fishFight.catchCount(forSpeciesID:)` fresh on every render — piggybacking on
+whatever `@Published` change on `fishFight` already triggered the re-render (e.g. `caughtCount`),
+no dedicated change-tracking of its own needed.
+
+## Rationale
+
+Requested directly: "balance lagi dong fish run speed nya, masa speed lari marlin sama grouper
+sama? harusnya ada difficulty scale berdasarkan ukuran dan jenis ikan. I trust you dengan
+penilaiannya. Also, progressionnya diganti jangan pake standar Fish A Fish B lagi, tapi sesuai
+jenis ikan aja. Tampilin di sebelah kiri as a little stats gitu, udah nangkep ikan jenis apa
+berapa, dan target setiap ikan berapa" (rebalance the fish run speed — why is Marlin's speed the
+same as Grouper's? There should be a difficulty scale based on the fish's size and species; I trust
+your judgment on it. Also, change the progression display to stop using the Fish A/Fish B standard
+— go by actual species instead. Show it on the left as a small stats box: which species caught how
+many, and each fish's target). The "I trust you" on the speed values specifically was taken as
+license to pick concrete multiplier numbers rather than asking for exact targets.
+
+## Status
+
+Accepted — verified via `swift build` (Shared, macOS), `xcrun swiftc -typecheck -DDEBUG` against
+the full `World/World` file list (clean, one pre-existing unrelated warning), a real unsigned
+`xcodebuild -scheme World` build (BUILD SUCCEEDED), an offscreen `NSHostingView` render of
+`SpeciesProgressView` with sample data (visually confirmed: readable, correctly turns a completed
+entry green, fits without crowding), a launch/`ps`-confirmed-running/quit with no crash, and
+`git diff --check` clean. **Not verified**: the actual felt difference in fight speed between a
+Grouper and a Marlin/Scott on a live device, or the species-progress HUD's real in-game position/
+legibility against the live 3D scene (only checked in isolation, not composited over gameplay) —
+both need an actual play session to confirm the numbers landed where intended.
+
+------------------------------------------------------------------------
+
+# ADR-118 --- Eight Real Fish Species Replace the Four Placeholders; Sailfish Is Scott
+
+## Decision
+
+Pulled every `Caught`-state `.usdz` export from `K-ere-Horee/blender-assets`'s `FishAssets/`
+(via `gh api`, since the GitHub Contents API's base64 response has a size limit these 1-5 MB files
+exceed — used each entry's `download_url` with `curl` instead, then verified every download's
+byte size matched the API's reported size and its `file` magic bytes as a real zip/USDZ archive
+before touching the project). 8 of the repo's 10 species have a `.usdz` Caught export; Clownfish
+and Blue Tang (`Fish01`/`Fish02`) don't — `.glb` only, confirmed both in the actual directory
+listing and in the repo's own `APP_TEAM_HANDOFF.md` ("already known-excluded from the app... no
+`.usdz` export at all") — so those two are excluded, exactly matching the request's own "hanya yang
+`.usdz` (kan kalo glb ga bisa di load)" (only the `.usdz` ones, since `.glb` can't be loaded).
+Copied into `World/World/Assets/FishCaught/` alongside the already-integrated
+`mekong_catfish_caught.usdz` (byte-identical to the repo's own `MekongCatfish_Caught.usdz` —
+confirmed by size, not re-downloaded): `marlin_caught.usdz`, `bluefin_tuna_caught.usdz`,
+`giant_trevally_caught.usdz`, `yellowfin_tuna_caught.usdz`, `skipjack_tuna_caught.usdz`,
+`grouper_caught.usdz`, `sailfish_caught.usdz`.
+
+`FishSpecies` (Shared) gains `assetName: String` and `authoredLength: Float` — the latter sourced
+from each species' own `Documentation/Source_Log.md` (the actual meters its mesh was scaled to at
+export, e.g. Sailfish: "Rescaled to 2.72 m"), not `Scientific_Validation.md`'s "Model Length" field
+(an earlier design target that isn't always what shipped — confirmed by cross-checking: Mekong
+Giant Catfish's `Scientific_Validation.md` says "Model Length: 3.0 m" but its `Source_Log.md`, and
+the actually-integrated asset's own already-documented behavior in this codebase, says 2.0 m).
+
+`FishCatalog.all` (World) replaces `fish_a`/`fish_b`/`fish_c`/`scott` with 8 real species, weight/
+length ranges built from each one's `Scientific_Validation.md` (real-world max/common length,
+scaled to a plausible catchable range — weight data was only documented for some species; the rest
+use commonly-known figures for that species, not invented). Tiered by real-world size/weight, the
+one rule carried forward from the placeholder data's own stated policy (higher tier = harder):
+`small` = Grouper, Skipjack Tuna; `medium` = Giant Trevally, Yellowfin Tuna; `big` = Mekong Giant
+Catfish, Bluefin Tuna, Blue Marlin; `boss` = Sailfish, **kept the established display name `"Scott"`**
+— per "jadiin `Sailfish` as Scott the ultimate boss," the Sailfish species/asset now *is* the boss
+encounter the rest of the game already narratively calls Scott (title screen, tutorial's "Scott has
+appeared. Catch him!", mascot art), not a separate, differently-named entry.
+
+`FishCatchResult` (World) gains `speciesID: String` (populated from `FishSpecies.id` at
+`FishFightController.resolve(outcome:)`) — the stable lookup key the catch cutscene needs; the
+existing `speciesName` stays display-only.
+
+`WorldViewModel`: the old single `caughtFishEntity`/`caughtFishAuthoredLength` (hardcoded to
+Mekong Giant Catfish, loaded and scaled against that one asset regardless of which species'
+placeholder stats actually got rolled) become `caughtFishEntitiesByID: [String: Entity]` — one
+entity per `FishCatalog.all` species with a loadable asset, all loaded up front in
+`makeSceneEntity()` for the same reason ADR-068 originally loaded Mekong eagerly (avoid a load
+stall on first catch — now first catch *of a given species*, not just the first catch overall).
+`beginCatchCutscene(from:)` looks up `fishFight.lastCatchResult?.speciesID` against both
+`FishCatalog.all` (for `authoredLength`) and the entity dictionary, and points the (unchanged,
+generic) rest of the cutscene machinery at whichever entity/length actually matches. A missing
+lookup (no result yet, or that species' asset failed to load) falls back to animating `hookEntity`
+alone, same as the pre-ADR-068 behavior this always had for a load failure.
+
+`caughtFishHeadOffset` (the fixed 1.15 m nose-offset constant, previously measured only against
+Mekong's 2.0 m asset) becomes a `var`, recomputed per catch as `caughtFishHeadOffsetRatio *
+<that species' authoredLength>` — Mekong's own measured ratio (1.15 / 2.0 = 0.575) applied
+uniformly to the other 7 species as an average-fish-proportions approximation, explicitly flagged
+as needing the same kind of live on-device tuning Mekong's own value took several rounds (ADR-072
+through ADR-075) to land on. The fixed cutscene orientation (`catchCutsceneFishOrientation`) is
+applied unchanged to whichever species is active — every species' own `Source_Log.md` documents
+the same "length along local Y (head at −Y), dorsal along local Z" export convention Mekong uses,
+though only Mekong's axes were independently re-verified here (`unzip`+`usdcat` on the actual
+file); the other 7 are taken on the source repo's documentation, not re-verified the same way.
+
+## Rationale
+
+Requested directly: "sekarang cek dong repository https://github.com/K-ere-Horee/blender-assets/
+tree/main under /FishAssets. Itu kan banyak fish nya, ambil semua fish untuk yang `caught`, tapi
+hanya yang .usdz (kan kalo glb ga bisa di load). Terus, isi ulang fish model sesuai nama fishes
+nya, dan jadiin `Sailfish` as Scott the ultimate boss" (check the blender-assets repo's FishAssets
+folder — there are many fish there; grab all of them for the `caught` variant, but only the
+`.usdz` ones since `.glb` can't be loaded. Then, repopulate the fish model data to match the real
+fish names, and make Sailfish the ultimate boss, Scott). `FishSpecies`' own doc comment already
+flagged this exact gap ("Asset/mesh selection is intentionally not part of this model yet; it will
+be added once 3D fish assets exist") — this is that follow-through, now that real assets exist.
+
+## Status
+
+Accepted — every downloaded file's byte size verified against the GitHub API's reported size and
+its magic bytes confirmed as a real zip archive before use; the existing Mekong asset confirmed
+byte-identical to the repo's current version rather than blindly trusted. Verified via `swift
+build` (Shared, macOS), `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list
+(clean, one pre-existing unrelated warning), a real unsigned `xcodebuild -scheme World` build
+(BUILD SUCCEEDED), confirmed all 8 `*_caught.usdz` files present in the built `.app`'s Resources
+(the `PBXFileSystemSynchronizedRootGroup` picked them up automatically, no `.pbxproj` edits
+needed), and a launch with console output checked for load errors/warnings — clean, no crash.
+**Not verified**: the actual visual result of any of the 7 newly-wired species' catch cutscene —
+correct orientation, scale, head-offset, and whether each asset's own export quality holds up
+on-device (the source repo's own `APP_TEAM_HANDOFF.md` flags several `Preview`-state export issues
+across species, e.g. Giant Trevally still confirmed broken as of that document's last update, mesh
+normals/UV issues on Bluefin/Yellowfin/Skipjack/Grouper at various stages of being fixed — that
+document is explicitly scoped to `Preview/` state, not `Caught/`, so those specific defects may not
+carry over, but the underlying per-species export-consistency concerns it raises could). Sailfish
+was noted in that same document as "already confirmed correct on-device" and explicitly excluded
+from that cleanup work, but that confirmation was also for `Preview` state, not `Caught` — the boss
+encounter's actual in-game look is not yet independently confirmed here either. Every species
+needs a live playtest to catch/observe before this can be called done, the same way Mekong's own
+integration took multiple ADR rounds (068, 069, 070, 071, 072, 073, 074, 075) of live-screenshot
+iteration to get right. Open device-validation gap — larger than most, given the number of new
+assets involved.
+
+------------------------------------------------------------------------
+
+# ADR-117 --- Tutorial Rebuilt: Once Per Progression Cycle, Centered, Rod-Driven Buttons
+
+## Decision
+
+Three changes to the first-run tutorial (`TutorialView`/`WorldViewModel`/Rod), replacing its
+tap-anywhere-on-World, shown-every-session design entirely:
+
+1. **Shown once per progression cycle, not on every "Start Fishing."** A new persisted
+   `WorldViewModel.hasSeenTutorial` (`UserDefaults`, mirroring `hasSeenOnboarding`'s own pattern)
+   gates the tutorial's auto-show in `handleState(_:)` — `isFishing`'s rising edge only sets
+   `isShowingTutorial = true` when `!hasSeenTutorial`. `resetProgression()` clears the flag, so the
+   tutorial plays again from the top exactly when progress resets ("lakuin aja tutorial di awal
+   ketika reset progress"), not on every subsequent session in between.
+
+2. **Centered on screen.** `TutorialView` drops its `topLeading`-anchored `ZStack` + fixed
+   `.padding(.leading, 24).padding(.top, 32)` for a default-centered `ZStack` (plus a light
+   `Color.black.opacity(0.25)` scrim, new — needed now that the bubble floats mid-screen over a
+   busier part of the live 3D scene than the corner it used to occupy) — "pastiin informasinya
+   tampil di tengah layar."
+
+3. **Advanced/skipped by real, labeled buttons on Rod, not tapping World.** `TutorialView` is now a
+   pure display view (`stepIndex: Int` parameter only) — no local `@State`, no `onTapGesture`, no
+   `onFinished` closure; `WorldViewModel.tutorialStepIndex` (new `@Published`) is the single source
+   of truth for both which step renders and what's mirrored to Rod. The advance/skip signal flows
+   Rod -> World over a small protocol addition:
+   - `RodState` (Shared) gains two momentary `Bool` fields, `tutorialAdvanceRequested`/
+     `tutorialSkipRequested` — true for exactly the one state broadcast a button press triggers,
+     false again immediately after (same shape as `isCastingArmed`'s edge, simpler since there's no
+     server round-trip to wait for).
+   - `RodViewModel` gains `advanceTutorial()`/`skipTutorial()` (guarded by a new `isTutorialActive`,
+     itself mirrored from World) and a matching "Next"/"Skip Tutorial" button pair in
+     `ContentView.tutorialControls`, shown only while `isTutorialActive`.
+   - `WorldViewModel.handleState(_:)` detects the rising edge of each flag (comparing against the
+     previous `rodState`'s value, same pattern as `wasFishing`) and calls a new
+     `advanceTutorialStep()` (advances, or dismisses on the last step) / `dismissTutorial()`.
+   - `NetworkMessage` (Shared) gains a new World -> Rod case, `tutorialState(isActive: Bool,
+     stepIndex: Int, stepCount: Int)`, reliable delivery — sent by a new
+     `WorldViewModel.sendTutorialState()` on every visibility/step change, so Rod always knows
+     whether to show its tutorial controls and what step count to display. Added to both switch
+     sites over `NetworkMessage` that were exhaustive without a `default` (`TransportClient.send(_:)`
+     and `RodViewModel.handle(_:)`); `WorldViewModel.handle(_:)` already used `default: break` and
+     needed no change (World only sends this case, never receives it).
+   - `TutorialView.steps`/`TutorialStep` moved from file-private to `TutorialView`-scoped/internal,
+     so `WorldViewModel` can read `TutorialView.steps.count` as the single shared source of truth
+     for step-count logic on both the advance-vs-dismiss decision and the count sent to Rod.
+
+## Rationale
+
+Requested directly: "tutorial kan sekarang masih rancu, alias cuma click click doang dan setiap end
+fishing -> start fishing, selalu berulang. instead of that, lakuin aja tutorial di awal ketika reset
+progress, dan pastiin informasinya tampil di tengah layar. tambahin button di 'Rod' khusus untuk
+tutorial, yaitu 'Next' atau 'Skip Tutorial'" (the tutorial is still confusing — it's just click-click
+and it repeats every end-fishing -> start-fishing cycle. Instead, run the tutorial at the very start
+when progress resets, and make sure the info shows centered on screen. Add a dedicated tutorial
+button on Rod — "Next" or "Skip Tutorial"). All three parts of the request map directly to the three
+changes above.
+
+## Status
+
+Accepted — verified via `swift build` (Shared, macOS), a from-scratch `Shared` build for
+`arm64-apple-ios17.0-simulator` plus `xcrun swiftc -typecheck` against the full `Rod/Rod` file list
+(clean), `xcrun swiftc -typecheck -DDEBUG` against the full `World/World` file list (clean, only a
+pre-existing unrelated warning), a real unsigned `xcodebuild -scheme World` build (BUILD SUCCEEDED),
+a real unsigned `xcodebuild -scheme Rod -sdk iphonesimulator` build (BUILD SUCCEEDED), and a World
+launch/`ps`-confirmed-running/quit with no crash. `git diff --check` clean. Not verified: an actual
+live session exercising the full Rod-button -> World-tutorial-advance round trip over real BLE,
+which needs a paired physical Rod device. Open device-validation gap.
+
+------------------------------------------------------------------------
+
 # ADR-116 --- Min Cast Distance Added; Cast Meter's Zone Colors Now Calculate Themselves
 
 ## Decision
