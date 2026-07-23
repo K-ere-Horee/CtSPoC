@@ -68,13 +68,6 @@ struct ContentView: View {
                 }
             }
 
-            // ADR-087: ported from `feat/ui-slice`'s `RootView`, which showed this directly over
-            // `ContentView()` the instant "Start Fishing" was first pressed — same trigger here
-            // (`isShowingTutorial` flips true alongside `screen = .playing` in `handleState(_:)`),
-            // just reachable through this screen's own overlay `ZStack` instead of a separate router.
-            if viewModel.screen == .playing, viewModel.isShowingTutorial {
-                TutorialView(stepIndex: viewModel.tutorialStepIndex)
-            }
         }
     }
 
@@ -88,7 +81,6 @@ struct ContentView: View {
                 .ignoresSafeArea()
 
             CalibrationGuidanceView(step: viewModel.rodState.calibrationStep)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
                 .shadow(radius: 24)
         }
     }
@@ -180,7 +172,17 @@ struct ContentView: View {
                     // top edge ("biar ga terlalu nempel ke atas"). ADR-119: `FishCounterBadgeView`
                     // (the old tier-based "1/5" badge) no longer lives here — replaced by
                     // `SpeciesProgressView`, floating top-leading instead.
+                    // ADR-135: `TutorialView` mounts as this same VStack's first element while
+                    // showing — "cast meter dan line tension harus dibawah tutorial asset" — so it
+                    // stacks directly above `CastMeterView`/`LineTensionView` instead of floating as
+                    // an independent overlay. Removing it (once `isShowingTutorial` goes false)
+                    // needs no separate "restore position" step — the two meters are simply back to
+                    // being this VStack's first elements on their own.
                     VStack {
+                        if viewModel.screen == .playing, viewModel.isShowingTutorial {
+                            TutorialView(stepIndex: viewModel.tutorialStepIndex)
+                        }
+
                         CastMeterView(
                             castSolution: viewModel.rodState.castSolution,
                             power: viewModel.rodState.castPower,

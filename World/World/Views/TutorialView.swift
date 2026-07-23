@@ -10,98 +10,50 @@
 import SwiftUI
 
 struct TutorialStep {
-    let text: String
-    let illustration: String?
+    let illustration: String
 }
 
-/// ADR-117: centered, pure-display overlay — no local `@State`, no tap gesture. Rod drives
-/// `stepIndex` via `NetworkMessage.tutorialState`/`WorldViewModel.tutorialStepIndex`, replacing the
-/// old tap-anywhere-on-World-to-advance interaction ("cuma click click doang") with real "Next"/
-/// "Skip Tutorial" buttons living on the device the player is actually holding. Also only shown
-/// once per progression cycle now (`WorldViewModel.handleState(_:)`'s `hasSeenTutorial` gate,
-/// reset by `resetProgression()`) instead of on every "Start Fishing."
+/// ADR-135: image-only content, no positioning of its own — `ContentView` mounts this as the first
+/// element of the same top-center `VStack` `CastMeterView`/`LineTensionView` already live in
+/// (rather than as an independent overlay), so the tutorial artwork sits directly above those two
+/// meters while showing, and they fall back to that VStack's normal top slot on their own the
+/// instant `isShowingTutorial` goes false — no separate "restore position" logic needed. No text,
+/// no card/bubble chrome, no local `@State`, no tap gesture. Every step gates on a real gameplay
+/// moment rather than a manual "Next" press, except `.intro` (still Rod's "Next"/"Skip Intro"
+/// buttons) — see `WorldViewModel`'s `TutorialStepKind`/`advanceTutorial(to:)` for the full state
+/// machine. Only shown once per progression cycle (`WorldViewModel.handleState(_:)`'s
+/// `hasSeenTutorial` gate, reset by `resetProgression()`) instead of on every "Start Fishing."
 struct TutorialView: View {
-    /// Every step's copy, in order — the single source of truth for both this view's rendering and
-    /// `WorldViewModel`'s step-count/advance-vs-dismiss logic, so the two can never drift apart.
+    /// Every step's illustration, in order — the single source of truth for both this view's
+    /// rendering and `WorldViewModel`'s `TutorialStepKind` (whose raw values are indices into this
+    /// array), so the two can never drift apart. Loose `World/World/Assets/Tutorials/*.png` files
+    /// (loaded via `bundleImage(_:)`, not an asset-catalog `Image(_:)`), one per step.
     static let steps: [TutorialStep] = [
-        TutorialStep(
-            text: "To catch the fish, you must throw your rod. But first, you must connect the rod with your phone.",
-            illustration: nil
-        ),
-        TutorialStep(
-            text: "Press the “Calibrate” button on your phone!",
-            illustration: nil
-        ),
-        TutorialStep(
-            text: "Pull back your phone slightly, then flick forward!",
-            illustration: "HandTutor"
-        ),
-        TutorialStep(
-            text: "Wait for a fish to bite!",
-            illustration: nil
-        ),
-        TutorialStep(
-            text: "Gotchaa!!!",
-            illustration: "HandTutor"
-        ),
-        TutorialStep(
-            text: "Well done! Continue your journey to claim more fish and rewards.",
-            illustration: nil
-        ),
+        TutorialStep(illustration: "tutorial_1_intro"),
+        TutorialStep(illustration: "tutorial_2_start_cast"),
+        TutorialStep(illustration: "tutorial_3_cast"),
+        TutorialStep(illustration: "tutorial_4_wait"),
+        TutorialStep(illustration: "tutorial_5_reel_fight"),
+        TutorialStep(illustration: "tutorial_6_end"),
     ]
 
     let stepIndex: Int
-    private let labelWidth: CGFloat = 569
+
+    /// ADR-134: "resize x2 semua" — double the width the artwork rendered at before this pass (was
+    /// 340, now 680) now that it's the only thing on screen rather than sharing a bubble with text.
+    private static let illustrationWidth: CGFloat = 680
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.25)
-                .ignoresSafeArea()
+        if steps.indices.contains(stepIndex) {
+            bundleImage(steps[stepIndex].illustration)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: Self.illustrationWidth)
                 .allowsHitTesting(false)
-
-            if steps.indices.contains(stepIndex) {
-                bubble(for: steps[stepIndex])
-                    .allowsHitTesting(false)
-            }
         }
     }
 
     private var steps: [TutorialStep] { Self.steps }
-
-    /// Fish-overlapping-label bubble, fixed to `labelWidth` with the text
-    /// wrapping to fit inside it.
-    private func bubble(for step: TutorialStep) -> some View {
-        ZStack(alignment: .leading) {
-            VStack(alignment: .center, spacing: 10) {
-                Text(step.text)
-                    .font(.fredoka(18))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let illustration = step.illustration {
-                    Image(illustration)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(height: 56)
-                }
-            }
-            .padding(.leading, 66)
-            .padding(.trailing, 24)
-            .padding(.vertical, 20)
-            .frame(width: labelWidth, alignment: .center)
-            .background(
-                RoundedRectangle(cornerRadius: 15)
-                    .fill(Color(hex: "3B2818").opacity(0.81))
-            )
-            .padding(.leading, 70)
-
-            Image("FrameIcon")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 120, height: 140)
-        }
-    }
 }
 
 #Preview {

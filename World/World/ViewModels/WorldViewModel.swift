@@ -421,6 +421,15 @@ final class WorldViewModel: ObservableObject {
     private var hookVelocity = SIMD3<Float>.zero
     private var castLaunchPosition = SIMD3<Float>.zero
     private var pendingCastSolution: CastSolution?
+    /// ADR-134: which named moment of the gameplay-gated tutorial is active — index into
+    /// `TutorialView.steps`, named here for readability at every gating call site below. Step
+    /// `.intro` still advances via Rod's own buttons; every later step auto-advances from a real
+    /// gameplay event, live, with no pause — "waktu aku nge cast dari tutorial, harusnya langsung
+    /// cast aja... gausah ada pause menu itu."
+    private enum TutorialStepKind: Int {
+        case intro, startCast, cast, waitForBite, reelFight, end
+    }
+    private var currentTutorialStep: TutorialStepKind? { TutorialStepKind(rawValue: tutorialStepIndex) }
     /// Last tension band sent to Rod (ADR-039); `nil` outside a fight. See `syncTensionBand()`.
     private var lastSentTensionBand: FishFightController.TensionBand?
     private var hasStarted = false
@@ -572,19 +581,14 @@ final class WorldViewModel: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: hasSeenTutorialKey) }
     }
 
-    /// Rod's "Next" button reaching the tutorial's last step advances straight to dismissal —
-    /// mirrors `TutorialView`'s own old `advance()` logic, just driven from Rod's edge instead of
-    /// a local tap gesture.
-    private func advanceTutorialStep() {
-        if tutorialStepIndex < TutorialView.steps.count - 1 {
-            tutorialStepIndex += 1
-            sendTutorialState()
-        } else {
-            dismissTutorial()
-        }
+    /// ADR-134: single choke point for every tutorial-step transition except `dismissTutorial()`
+    /// itself.
+    private func advanceTutorial(to step: TutorialStepKind) {
+        tutorialStepIndex = step.rawValue
+        sendTutorialState()
     }
 
-    /// Reaching the tutorial's last "Next" press, or Rod's "Skip Tutorial" button at any step.
+    /// Reaching step `.end` and completing it (pressing "Start Casting" again, or ending fishing).
     /// Persists `hasSeenTutorial` so it doesn't auto-show again until `resetProgression()`.
     func dismissTutorial() {
         isShowingTutorial = false
@@ -868,6 +872,13 @@ final class WorldViewModel: ObservableObject {
         // mid-cutscene, permanently blocking `idle` (and everything else) from ever restarting —
         // "ketika balik ke main menu, idle ga ke play lagi."
         sounds.catchCutsceneEnded()
+        // ADR-133: reaching step `.end` and then ending fishing completes the tutorial (marks
+        // `hasSeenTutorial`), same as pressing "Start Casting" again there (`handleState(_:)`).
+        // Anywhere earlier than `.end`, ending fishing just hides the tutorial without marking it
+        // seen — the plain `isShowingTutorial = false` below already covers that early-exit case.
+        if isShowingTutorial, currentTutorialStep == .end {
+            dismissTutorial()
+        }
         isShowingTutorial = false
         fishFight.resetForNewCast()
         setHookPhase(.idle)
@@ -879,6 +890,11 @@ final class WorldViewModel: ObservableObject {
         hookPhase = phase
         sounds.handlePhaseChange(phase)
         Task { await send(.hookPhase(phase)) }
+
+        // ADR-134: step `.waitForBite` auto-advances the instant a fish is actually hooked.
+        if isShowingTutorial, phase == .fishOnHook, currentTutorialStep == .waitForBite {
+            advanceTutorial(to: .reelFight)
+        }
     }
 
     private func tick(deltaTime: Float) {
@@ -1051,6 +1067,12 @@ final class WorldViewModel: ObservableObject {
             hookEntity?.isEnabled = false
             setHookPhase(.idle)
             emit(.lineBreak)
+        }
+        // ADR-135: a failed fight during the tutorial loops back to `.startCast` — "kalo gagal ya
+        // balik lagi ke tutorial_2_start_cast" — instead of leaving `.reelFight`'s artwork up with
+        // nothing left to do; the player just casts and fights again.
+        if isShowingTutorial, currentTutorialStep == .reelFight {
+            advanceTutorial(to: .startCast)
         }
     }
 
@@ -1310,6 +1332,11 @@ final class WorldViewModel: ObservableObject {
                 // set (not just this one new ID) so a dropped send can't permanently desync Rod's
                 // local copy from World's.
                 Task { await send(.caughtSpecies(fishFight.caughtSpeciesIDs)) }
+                // ADR-135: tutorial_6_end only shows on an actual successful catch — "tutorial_6_end
+                // hanya muncul ketika berhasil caught fish."
+                if isShowingTutorial, currentTutorialStep == .reelFight {
+                    advanceTutorial(to: .end)
+                }
             } else {
                 hookEntity.isEnabled = false
             }
@@ -1620,6 +1647,7 @@ final class WorldViewModel: ObservableObject {
         let wasFishing = rodState.isFishing
         let wasTutorialAdvanceRequested = rodState.tutorialAdvanceRequested
         let wasTutorialSkipRequested = rodState.tutorialSkipRequested
+        let wasCastingArmed = rodState.isCastingArmed
         rodState = state
         if let solution = state.castSolution, state.action == .casting {
             pendingCastSolution = solution
@@ -1648,14 +1676,42 @@ final class WorldViewModel: ObservableObject {
             returnToMenu()
         }
 
-        // ADR-117: Rod's "Next"/"Skip Tutorial" buttons — momentary edges, mirroring how
-        // `isCastingArmed`'s own press is detected elsewhere. Guarded by `isShowingTutorial` so a
-        // stray edge after dismissal (e.g. a queued press landing just after the last step) is a
-        // no-op, matching `advanceTutorial()`/`skipTutorial()`'s own Rod-side guard.
-        if isShowingTutorial, state.tutorialAdvanceRequested, !wasTutorialAdvanceRequested {
-            advanceTutorialStep()
+        // ADR-134: step `.intro` is the only step still driven by Rod's own buttons — both "Next"
+        // and "Skip Intro" advance it the same way (there's nothing within the intro text itself
+        // to skip past separately), landing on `.startCast`. Every later step advances from a real
+        // gameplay event instead (below), so these two edges are ignored outside `.intro`.
+        if isShowingTutorial, currentTutorialStep == .intro {
+            if state.tutorialAdvanceRequested, !wasTutorialAdvanceRequested {
+                advanceTutorial(to: .startCast)
+            }
+            if state.tutorialSkipRequested, !wasTutorialSkipRequested {
+                advanceTutorial(to: .startCast)
+            }
         }
-        if isShowingTutorial, state.tutorialSkipRequested, !wasTutorialSkipRequested {
+
+        // ADR-134: step `.startCast` auto-advances the instant the player arms a cast on Rod
+        // ("tunggu user press 'start casting' di Rod").
+        if isShowingTutorial, currentTutorialStep == .startCast, state.isCastingArmed, !wasCastingArmed {
+            advanceTutorial(to: .cast)
+        }
+
+        // ADR-134: step `.cast` — the moment a full valid cast resolves (`pendingCastSolution` set
+        // above), advance straight to `.waitForBite` with no pause/freeze — casting proceeds live
+        // exactly as it would outside the tutorial ("langsung cast aja, gausah ada pause menu
+        // itu"); `tick(deltaTime:)`'s own `.idle` branch launches the hook on the very next frame.
+        if isShowingTutorial, currentTutorialStep == .cast, pendingCastSolution != nil {
+            advanceTutorial(to: .waitForBite)
+        }
+
+        // ADR-135: step `.reelFight` no longer advances on reel motion at all — the fight just
+        // plays out normally while its artwork stays up; `.end` only shows on an actual catch
+        // (the tutorial hook right after `emit(.catchFish)` above), and a failed fight loops back
+        // to `.startCast` (the tutorial hook inside `resolveFightFailure(_:)`) instead.
+
+        // ADR-134: step `.end` — pressing "Start Casting" again (same edge `.startCast` gates,
+        // just a different current step) finishes the tutorial for good, mirroring how ending
+        // fishing here does the same via `returnToMenu()` above.
+        if isShowingTutorial, currentTutorialStep == .end, state.isCastingArmed, !wasCastingArmed {
             dismissTutorial()
         }
     }

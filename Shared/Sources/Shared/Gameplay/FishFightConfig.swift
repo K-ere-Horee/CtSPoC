@@ -56,7 +56,8 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
     /// 0.25 -> **0.375** (ADR-120, "multiply semua fish run speed by 1.5x") — since every species'
     /// `fishPullSpeed` shares this same floor term multiplicatively, scaling only this uniformly
     /// raises *every* species' run speed by exactly 1.5x while leaving `pullSpeedResistanceMultiplier`
-    /// (ADR-119's per-species differentiation) untouched.
+    /// (ADR-119's per-species differentiation) untouched. Cut 25% -> **0.28125** ("tune sedikit fish
+    /// pull speed nya, reduce by 25%"), same uniform-scaling reasoning as every retune above.
     public var basePullSpeed: Float
     /// How strongly `resistance` scales `fishPullSpeed` on top of `basePullSpeed`:
     /// `fishPullSpeed = basePullSpeed * (1 + resistance * pullSpeedResistanceMultiplier)`. Same
@@ -130,18 +131,22 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
     /// `dangerHigh` (the near-snap red edge). At/above this, `reelPullSpeed` is always
     /// `reelPullSpeedDanger`; between `reelSpeedSafeTension` and this it interpolates linearly.
     public var reelSpeedDangerTension: Float
-    /// m/s per full (1.0) `RodState.reelSpeed` input while `lineTension` is in the safe zone.
-    /// Launched at `0.5`, way too small — reported directly as "fish reel speed nya kekecilan,
-    /// the gameplay is not even playable now" — corrected to `3.375` (matching the flat constant
-    /// this risk/reward curve replaced), then explicitly retuned to **`2.0`** per direct request
-    /// ("coba base nya 2 m/s instead of 0.5 - 1").
+    /// m/s per full (1.0) `RodState.reelSpeed` input while `lineTension` is in the safe zone —
+    /// covers green *and* both the left yellow and left red bands (everything at/below
+    /// `reelSpeedSafeTension`, which sits well past green's own peak), since there's no reward for
+    /// drifting toward the *low*-tension "losing the fish" edge the way there is for the
+    /// high-tension "snap" edge below. Launched at `0.5`, way too small — reported directly as
+    /// "fish reel speed nya kekecilan, the gameplay is not even playable now" — corrected to
+    /// `3.375` (matching the flat constant this risk/reward curve replaced), then explicitly
+    /// retuned to `2.0` ("coba base nya 2 m/s instead of 0.5 - 1"), then to **`3.0`** ("tingkatin
+    /// pull speed di hijau jadi 3 m/s... buat yang merah dan kuning kiri pull speed nya sama aja
+    /// 3m/s").
     public var reelPullSpeedSafe: Float
-    /// m/s per full `RodState.reelSpeed` input once `lineTension` reaches the danger zone — the
-    /// risk/reward payoff for holding tension near the snap edge instead of backing off to safety
-    /// ("jadi ada reward untuk player yang berani stay di red zone"). Deliberately faster than
-    /// `reelPullSpeedSafe` — explicitly retuned to **`4.0`** alongside `reelPullSpeedSafe`'s own
-    /// move to `2.0` ("dari 2 m/s di area green, naik jadi 4 m/s di area merah"), keeping the same
-    /// 2x ratio between the two.
+    /// m/s per full `RodState.reelSpeed` input once `lineTension` reaches the danger zone (the
+    /// right/high-tension red band) — the risk/reward payoff for holding tension near the snap
+    /// edge instead of backing off to safety ("jadi ada reward untuk player yang berani stay di
+    /// red zone"). Deliberately faster than `reelPullSpeedSafe` — retuned `0.5 -> 4.0` alongside
+    /// `reelPullSpeedSafe`'s own earlier moves, then to **`5.0`** ("merah (kanan) 5 m/s").
     public var reelPullSpeedDanger: Float
     /// ADR-119: how much `resistance` (species x rolled size, same driver as `fishPullSpeed`/
     /// `effectiveFishPullRate`) drags down reel-in speed — `reelPullSpeed *= max
@@ -180,10 +185,10 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
 
     public init(
         initialTension: Float = 0.5,
-        baseFishPullRate: Float = 0.15,
+        baseFishPullRate: Float = 0.13,
         baseReelTensionRate: Float = 0.6,
         pullRateResistanceMultiplier: Float = 3.0,
-        basePullSpeed: Float = 0.375,
+        basePullSpeed: Float = 0.28125,
         pullSpeedResistanceMultiplier: Float = 2.6,
         escapeDistanceAllowance: Float = 6.0,
         escapeAllowanceResistancePenalty: Float = 3.5,
@@ -196,8 +201,8 @@ public struct FishFightConfig: Codable, Sendable, Equatable {
         biteRetryMaxInterval: Float = 1.6,
         reelSpeedSafeTension: Float = 0.7,
         reelSpeedDangerTension: Float = 0.85,
-        reelPullSpeedSafe: Float = 2.0,
-        reelPullSpeedDanger: Float = 4.0,
+        reelPullSpeedSafe: Float = 3.0,
+        reelPullSpeedDanger: Float = 5.0,
         reelSpeedResistanceDrag: Float = 0.45,
         minimumReelSpeedFactor: Float = 0.5,
         tensionBandMediumThreshold: Float = 0.55,

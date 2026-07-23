@@ -10506,3 +10506,241 @@ could never restart for the rest of the session.
 - `git diff --check` clean.
 - Not run: an actual live-session repro (end fishing mid-cutscene, confirm `idle` resumes at the
   main menu) — needs a real play session.
+
+## Fix: Calibration Guidance, Rod's Connection Badge, and Main Menu's Destructive Actions Now Follow the Shared Card Language (ADR-132)
+
+Date: 2026-07-23.
+
+Reported directly: "ketika calibrate di main menu, design nya masih aneh (alias ga ngikutin bahasa
+design). Also, tulisan 'streaming' di main menu jangan ijo gitu, kasih background yang sama kek yg
+coklat coklat. terus dua tulisan bawah yang merah (forget sama reset), itu kasih background, ukuran
+kecil aja tapi sampingan." Clarified on ask: the "streaming" text is Rod's home-screen connection
+status (under "Catch the Scott"), not World's own connection readout, which already had a card.
+
+### World: CalibrationGuidanceView
+
+- Added the shared dark-card + white-border background (`Color(red: 0.16, green: 0.12, blue:
+  0.09)` + white `.stroke`), matching `ContentView.panelColor`/`CatchCutsceneView.panelColor`.
+  Previously had no background at all.
+
+### World: ContentView
+
+- `recalibrationOverlay` drops its now-redundant `.background(.regularMaterial, in:
+  RoundedRectangle(cornerRadius: 20))` wrapper — `CalibrationGuidanceView` now supplies its own
+  card, so this avoided a double-background.
+
+### Rod: ContentView
+
+- Connection-status text under the title no longer colors green when streaming / secondary
+  otherwise — same text at every state, now in a small capsule using the same dark-card color +
+  white border World's HUD uses throughout. New `Self.panelColor` token (Rod had never needed this
+  color before).
+
+### World: MainMenuView
+
+- "Forget Device" and "Reset Progress" moved from two separate bare-red-text lines into a shared
+  `destructiveActionsRow` — both now sit side by side as small background-chip buttons
+  (`SmallDestructiveButtonStyle`: dark-ink + white-border pill, scaled down from
+  `StackedMenuButtonStyle`, no offset "stacked" second rectangle).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-132.
+
+### Verification
+
+- Real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` and `-scheme Rod -sdk
+  iphonesimulator` builds — both `** BUILD SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: live visual confirmation on-device/in-simulator (no screenshots taken this pass) — needs
+  an actual look at the Main Menu and Rod's home screen.
+
+## Feature: Tutorial Rebuilt Again — Six Gameplay-Gated Steps (ADR-133)
+
+Date: 2026-07-23.
+
+Full six-step spec given by name, matching new `tutorial_1_intro.png` ... `tutorial_6_end.png`
+artwork under `World/World/Assets/Tutorials/`: step 1 (intro) still Rod-button-driven ("next" or
+"skip intro"); step 2 waits for "Start Casting"; step 3 pauses the game and requires a valid flick
+cast (with the cast meter visible), freezes briefly on success, then resumes and lets the hook fly;
+step 4 waits for the reel-fight moment; step 5 pauses again and requires at least 2 valid reel
+motions before resuming; step 6 waits for "Start Casting" again or "End Fishing," after which the
+tutorial never auto-shows again this progression cycle.
+
+### World: WorldViewModel
+
+- New private `TutorialStepKind` enum (`.intro`/`.startCast`/`.cast`/`.waitForBite`/`.reelFight`/
+  `.end`, raw values = `TutorialView.steps` indices) and `currentTutorialStep` computed property.
+- New `@Published isTutorialPaused`, `tutorialReelMotionCount`/`tutorialReelMotionTarget` (2),
+  `isTutorialCastGestureCaptured`, `tutorialCastFreezeDuration` (0.8s).
+- `advanceTutorialStep()` replaced by `advanceTutorial(to: TutorialStepKind)` — single choke point
+  that sets the step, resets the reel-motion counter, and derives `isTutorialPaused` from whether
+  the destination is `.cast`/`.reelFight`.
+- `tick(deltaTime:)`: the whole `switch hookPhase` block (hook physics, fish AI, fight timers) is
+  now skipped while `isTutorialPaused` — `updateRodPose()`/`updateCameraFollow()` still run every
+  frame so the rod keeps visually tracking real device motion instead of freezing mid-gesture.
+- `setHookPhase(_:)`: auto-advances `.waitForBite` -> `.reelFight` the instant `.fishOnHook`
+  actually fires.
+- `returnToMenu()`: ending fishing while on `.end` now calls `dismissTutorial()` first (marks
+  `hasSeenTutorial`), same completion path as pressing "Start Casting" again there.
+- `handleState(_:)`: new edge-tracking (`wasCastingArmed`, `wasReeling`) and five new gating blocks
+  — `.intro`'s Next/Skip (repurposed to both land on `.startCast`), `.startCast`'s auto-advance,
+  `.cast`'s freeze-then-advance `Task`, `.reelFight`'s reel-motion counter, `.end`'s
+  start-casting-again dismissal.
+- `dismissTutorial()`: also resets `isTutorialPaused`/`tutorialReelMotionCount`/
+  `isTutorialCastGestureCaptured` for full cleanup.
+
+### World: TutorialView
+
+- `steps` content replaced with the six new gameplay-accurate copy lines, `illustration` now points
+  at the new `tutorial_N_*` filenames.
+- Illustration now loaded via `bundleImage(_:)` (loose `Assets/Tutorials/*.png`, not an asset-catalog
+  entry) instead of `Image(_:)`, and sized by width (`maxWidth: 340`, `.scaledToFit()`) instead of a
+  fixed small height — the new artwork is wide banner-style (~1080-1380px), not a small icon.
+
+### Rod: ContentView
+
+- Tutorial controls (`tutorialControls`) now only render while `tutorialStepIndex == 0` — every
+  later step has no Rod button at all.
+- "Skip Tutorial" renamed to "Skip Intro" and no longer `role: .destructive` — it now does the same
+  thing as "Next" (both just move past the intro text).
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-133.
+
+### Verification
+
+- Fresh `Shared` build (macOS) — clean.
+- Real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` and `-scheme Rod -sdk
+  iphonesimulator` builds — both `** BUILD SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: an actual live playthrough of all six steps end to end (cast-freeze feel, reel-motion
+  count against real motion-classifier noise, `CastMeterView` actually rendering correctly during
+  `.cast`'s pause) — needs a real device session.
+
+## Fix: Tutorial Drops Pause/Freeze Mechanic; Image-Only Overlay; Rod Buttons Restyled (ADR-134)
+
+Date: 2026-07-23.
+
+Requested directly after a first look at ADR-133's tutorial: "for tutorial, ga perlu text ato
+apapun itu lagi. cukup gunakan image asset aja, resize x2 semua, dan posisikan di top centre dari
+layar. terus, waktu aku nge cast dari tutorial, harusnya langsung cast aja deng, gausah ada pause
+menu itu, pun untuk reel (ga perlu valid 2x reel motion dulu, cek aja ketika user nge reel, dari
+pause langsung lanjut gameplay nya). juga tombol next dan skip intro di rod, sesuaiin dengan bahasa
+design yang lain (dua button itu juga ga centre)."
+
+### World: WorldViewModel
+
+- Removed `isTutorialPaused` entirely — `tick(deltaTime:)`'s gameplay `switch` runs unconditionally
+  again.
+- Removed `tutorialReelMotionCount`/`tutorialReelMotionTarget`/`isTutorialCastGestureCaptured`/
+  `tutorialCastFreezeDuration`.
+- `.cast` step now calls `advanceTutorial(to: .waitForBite)` the instant `pendingCastSolution`
+  appears — no delay.
+- `.reelFight` step now calls `advanceTutorial(to: .end)` on the first `.reeling` rising edge, not
+  the second.
+- `advanceTutorial(to:)`/`dismissTutorial()` simplified back down — no more pause-flag/counter
+  bookkeeping.
+
+### World: TutorialView
+
+- `TutorialStep` now just `illustration: String` (no `text`, no longer optional).
+- Body rewritten: no scrim, no card/bubble background, no `FrameIcon` — just the step's artwork,
+  `maxWidth` doubled to 680, positioned top-center instead of screen-center.
+
+### Rod: ContentView
+
+- `tutorialControls`'s two buttons restyled to match `fishingButton`/`startCastingButton`'s
+  existing language (`.bordered`/`.borderedProminent` + `.controlSize(.large)` + full-width
+  `Label`), dropping the old `.thinMaterial` card — both buttons now equal-width and centered as a
+  pair.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-134.
+
+### Verification
+
+- Real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` and `-scheme Rod -sdk
+  iphonesimulator` builds — both `** BUILD SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: a live playthrough of the simplified flow, or the new 680pt-wide top-centered artwork's
+  actual fit/legibility on screen — needs a real device session.
+
+## Fix: `.reelFight` Branches on Catch/Fail; Tutorial Artwork Shares the Meter VStack (ADR-135)
+
+Date: 2026-07-23.
+
+Requested directly: "tutorial_6_end hanya muncul ketika berhasil caught fish, kalo gagal ya balik
+lagi ke tutorial_2_start_cast. terus, cast meter dan line tension harus dibawah tutorial asset
+(jadiin vstack aja) ketika tutorial. once tutorial beres, yaudah balikin lagi cast meter dan line
+tension ke posisi semula."
+
+### World: WorldViewModel
+
+- Removed the `.reelFight -> .end` advance-on-first-reel-motion block from `handleState(_:)` (and
+  its now-unused `wasReeling` edge tracker).
+- `reelHook(deltaTime:)`'s catch-success branch (right after `emit(.catchFish)`) now advances the
+  tutorial to `.end` when on `.reelFight`.
+- `resolveFightFailure(_:)` now advances the tutorial back to `.startCast` when on `.reelFight`,
+  for both `.escaped` and `.lineBreak`.
+
+### World: TutorialView
+
+- Dropped its own positioning (`VStack`/`Spacer`/`.frame(maxWidth: .infinity)`) — now pure content,
+  meant to be mounted inside another layout.
+
+### World: ContentView
+
+- Removed the old standalone `if ... isShowingTutorial { TutorialView(...) }` overlay.
+- `TutorialView(stepIndex:)` now mounts as the first element of the existing top-center `VStack`
+  that already holds `CastMeterView`/`LineTensionView` — tutorial artwork stacks directly above
+  both meters while showing; once `isShowingTutorial` goes false, the meters fall back to that
+  VStack's normal top position on their own, no extra logic needed.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-135.
+
+### Verification
+
+- Real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` and `-scheme Rod -sdk
+  iphonesimulator` builds — both `** BUILD SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: a live playthrough of a full catch and a full failed fight during the tutorial, or how
+  the combined tutorial-artwork-plus-meters VStack actually looks/fits on screen — needs a real
+  device session.
+
+## Tune: Fish Fight Retuned — Fish Pull Speed -25%, Reel Pull Speed 3/5 m/s Safe/Danger (ADR-136)
+
+Date: 2026-07-23.
+
+Requested directly: "tune sedikit fish pull speed nya, reduce by 25%. terus tingkatin pull speed di
+hijau jadi 3 m/s, dan merah (kanan) 5 m/s. buat yang merah dan kuning kiri pull speed nya sama aja
+3m/s."
+
+### Shared: FishFightConfig
+
+- `basePullSpeed`: `0.375 -> 0.28125` (-25%).
+- `reelPullSpeedSafe`: `2.0 -> 3.0` (green + left yellow + left red — everything at/below
+  `reelSpeedSafeTension`).
+- `reelPullSpeedDanger`: `4.0 -> 5.0` (right/high-tension red band).
+- Threshold positions (`reelSpeedSafeTension`/`reelSpeedDangerTension`) untouched.
+
+### World: FishFightController
+
+- Doc comment on `reelPullSpeed` updated to name all three "safe" bands (green + left yellow/red),
+  not just "green," matching the actual behavior more precisely.
+
+### Documentation
+
+- `ARCHITECTURE_DECISIONS.md`: added ADR-136.
+
+### Verification
+
+- Fresh `Shared` build (macOS) — clean.
+- Real unsigned `xcodebuild -workspace CtSPoC.xcworkspace -scheme World` and `-scheme Rod -sdk
+  iphonesimulator` builds — both `** BUILD SUCCEEDED **`.
+- `git diff --check` clean.
+- Not run: actual fight feel on a live device/session at the new speeds — needs a real playtest.
