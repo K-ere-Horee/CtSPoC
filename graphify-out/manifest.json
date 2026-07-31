@@ -1,0 +1,667 @@
+{
+  ".claude/settings.local.json": {
+    "mtime": 1785482786.331296,
+    "ast_hash": "6ee40a73ce3b1c73d6e10bdcdb50d648",
+    "semantic_hash": "6ee40a73ce3b1c73d6e10bdcdb50d648"
+  },
+  "Rod/Rod/Assets.xcassets/AccentColor.colorset/Contents.json": {
+    "mtime": 1784628237.0,
+    "ast_hash": "55019f7265dde0a78318b0807f98e847",
+    "semantic_hash": "55019f7265dde0a78318b0807f98e847"
+  },
+  "Rod/Rod/Assets.xcassets/AppIcon.appiconset/Contents.json": {
+    "mtime": 1784628237.0,
+    "ast_hash": "7061e11032e5288bd03e6a238a847c11",
+    "semantic_hash": "7061e11032e5288bd03e6a238a847c11"
+  },
+  "Rod/Rod/Assets.xcassets/Contents.json": {
+    "mtime": 1784628237.0,
+    "ast_hash": "9deb2ada1cc834bbebf8bbad9c8978a1",
+    "semantic_hash": "9deb2ada1cc834bbebf8bbad9c8978a1"
+  },
+  "Rod/Rod/ContentView.swift": {
+    "mtime": 1784819613.0,
+    "ast_hash": "dca124bfa0c5e577f70ada72d76de089",
+    "semantic_hash": "dca124bfa0c5e577f70ada72d76de089"
+  },
+  "Rod/Rod/Haptics/FishingHaptics.swift": {
+    "mtime": 1784704588.0,
+    "ast_hash": "d310e76fb8d156c4cf267cd62b8debfb",
+    "semantic_hash": "d310e76fb8d156c4cf267cd62b8debfb"
+  },
+  "Rod/Rod/Haptics/HapticManager.swift": {
+    "mtime": 1784703445.0,
+    "ast_hash": "84722928e2bf716c52b366a25b48df29",
+    "semantic_hash": "84722928e2bf716c52b366a25b48df29"
+  },
+  "Rod/Rod/Reality/FishAssetDebugChecker.swift": {
+    "mtime": 1784789415.0,
+    "ast_hash": "75a2d59d297a97a07c5e9008a2c275b5",
+    "semantic_hash": "75a2d59d297a97a07c5e9008a2c275b5"
+  },
+  "Rod/Rod/Reality/FishPreviewARViewContainer.swift": {
+    "mtime": 1784789415.0,
+    "ast_hash": "d5adab55663dd2f529c2ef18325b5efa",
+    "semantic_hash": "d5adab55663dd2f529c2ef18325b5efa"
+  },
+  "Rod/Rod/RodApp.swift": {
+    "mtime": 1784628237.0,
+    "ast_hash": "0cf35feb6468999885fa6f6a2604a2c3",
+    "semantic_hash": "0cf35feb6468999885fa6f6a2604a2c3"
+  },
+  "Rod/Rod/Sensors/MotionManager.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "786fb7fe48ae6f0a5144cd75df7ee90b",
+    "semantic_hash": "786fb7fe48ae6f0a5144cd75df7ee90b"
+  },
+  "Rod/Rod/Sensors/NearbyInteractionManager.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "848db6254fca39579e6c949b1f1b2e6c",
+    "semantic_hash": "848db6254fca39579e6c949b1f1b2e6c"
+  },
+  "Rod/Rod/Transport/CaughtSpeciesStore.swift": {
+    "mtime": 1784789415.0,
+    "ast_hash": "f654107680a4aa6a64f97dce3d1276d3",
+    "semantic_hash": "f654107680a4aa6a64f97dce3d1276d3"
+  },
+  "Rod/Rod/Transport/PairedCentralStore.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "bfe19f0a18de0b8a603122c5b7c35824",
+    "semantic_hash": "bfe19f0a18de0b8a603122c5b7c35824"
+  },
+  "Rod/Rod/Transport/TransportClient.swift": {
+    "mtime": 1784789159.0,
+    "ast_hash": "9eb30676f6bd2257bf86870f399edcee",
+    "semantic_hash": "9eb30676f6bd2257bf86870f399edcee"
+  },
+  "Rod/Rod/ViewModel/FishPreviewViewModel.swift": {
+    "mtime": 1784789415.0,
+    "ast_hash": "57f92064904dfde629c723fa3edb0ae9",
+    "semantic_hash": "57f92064904dfde629c723fa3edb0ae9"
+  },
+  "Rod/Rod/ViewModel/RodViewModel.swift": {
+    "mtime": 1784789159.0,
+    "ast_hash": "031b8a285cbb26c73ecc2cfbbfb72a7a",
+    "semantic_hash": "031b8a285cbb26c73ecc2cfbbfb72a7a"
+  },
+  "Rod/Rod/Views/FishInfoCardView.swift": {
+    "mtime": 1784789159.0,
+    "ast_hash": "acb1bb997c5567361254c2b46f1ac6bf",
+    "semantic_hash": "acb1bb997c5567361254c2b46f1ac6bf"
+  },
+  "Rod/Rod/Views/FishPickerView.swift": {
+    "mtime": 1784789159.0,
+    "ast_hash": "81fa5e4a4241c13f3ec67417c24afd49",
+    "semantic_hash": "81fa5e4a4241c13f3ec67417c24afd49"
+  },
+  "Rod/Rod/Views/FishPreviewView.swift": {
+    "mtime": 1784789415.0,
+    "ast_hash": "26add5475576edf33a6657a2c8f793eb",
+    "semantic_hash": "26add5475576edf33a6657a2c8f793eb"
+  },
+  "Rod/Rod/Views/FishRarity+Presentation.swift": {
+    "mtime": 1784789159.0,
+    "ast_hash": "adab7edba31a1929026abd6c2a8944ab",
+    "semantic_hash": "adab7edba31a1929026abd6c2a8944ab"
+  },
+  "Rod/Rod/Views/MotionDebugView.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "cc3655d45753ad6decdc57995e6885ed",
+    "semantic_hash": "cc3655d45753ad6decdc57995e6885ed"
+  },
+  "Shared/Package.swift": {
+    "mtime": 1784628237.0,
+    "ast_hash": "ca6b495fb381c46a27607487b38a158d",
+    "semantic_hash": "ca6b495fb381c46a27607487b38a158d"
+  },
+  "Shared/Sources/Shared/Debug/MotionDebugDecision.swift": {
+    "mtime": 1784628237.0,
+    "ast_hash": "adb3a89f219e7acfe91029e5ffc92db1",
+    "semantic_hash": "adb3a89f219e7acfe91029e5ffc92db1"
+  },
+  "Shared/Sources/Shared/Debug/MotionDebugRecorder.swift": {
+    "mtime": 1784628237.0,
+    "ast_hash": "4609d6e2fabebd854ac30e3dbfa47674",
+    "semantic_hash": "4609d6e2fabebd854ac30e3dbfa47674"
+  },
+  "Shared/Sources/Shared/Debug/MotionDebugSample.swift": {
+    "mtime": 1784628237.0,
+    "ast_hash": "c302f8af8a87a9869a21933eefe95566",
+    "semantic_hash": "c302f8af8a87a9869a21933eefe95566"
+  },
+  "Shared/Sources/Shared/Gameplay/CastResolver.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "8f09e4616659a67ff5d5829f4c9c65d7",
+    "semantic_hash": "8f09e4616659a67ff5d5829f4c9c65d7"
+  },
+  "Shared/Sources/Shared/Gameplay/FishFightConfig.swift": {
+    "mtime": 1784821060.0,
+    "ast_hash": "09d782ea28b50577b16e090736035f3d",
+    "semantic_hash": "09d782ea28b50577b16e090736035f3d"
+  },
+  "Shared/Sources/Shared/Gameplay/MotionProfile.swift": {
+    "mtime": 1784628237.0,
+    "ast_hash": "28a1c11cf2a22dc4383f5f7b8ac7d702",
+    "semantic_hash": "28a1c11cf2a22dc4383f5f7b8ac7d702"
+  },
+  "Shared/Sources/Shared/Gameplay/RodMotionInterpreter.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "41c60ce59ad1dc432b4608459de9f122",
+    "semantic_hash": "41c60ce59ad1dc432b4608459de9f122"
+  },
+  "Shared/Sources/Shared/Models/Device/ConnectionState.swift": {
+    "mtime": 1784628237.0,
+    "ast_hash": "78bbcb0096304bb75ab4cb4f5f209604",
+    "semantic_hash": "78bbcb0096304bb75ab4cb4f5f209604"
+  },
+  "Shared/Sources/Shared/Models/Device/NetworkMessage.swift": {
+    "mtime": 1784789399.0,
+    "ast_hash": "229a2bd171b1e46359299945b0d1152f",
+    "semantic_hash": "229a2bd171b1e46359299945b0d1152f"
+  },
+  "Shared/Sources/Shared/Models/Gameplay/FishCatalog.swift": {
+    "mtime": 1784789415.0,
+    "ast_hash": "904737cd87f6b0a936867de04810a115",
+    "semantic_hash": "904737cd87f6b0a936867de04810a115"
+  },
+  "Shared/Sources/Shared/Models/Gameplay/FishRarity.swift": {
+    "mtime": 1784789159.0,
+    "ast_hash": "9c31895e141bd496547bb16a5d2475b9",
+    "semantic_hash": "9c31895e141bd496547bb16a5d2475b9"
+  },
+  "Shared/Sources/Shared/Models/Gameplay/FishSpecies.swift": {
+    "mtime": 1784789415.0,
+    "ast_hash": "cf82a865e1cdde2ea435182b938094a4",
+    "semantic_hash": "cf82a865e1cdde2ea435182b938094a4"
+  },
+  "Shared/Sources/Shared/Models/Gameplay/FishingEvent.swift": {
+    "mtime": 1784703259.0,
+    "ast_hash": "74ecd164217e6bb3c4724d664a53dd65",
+    "semantic_hash": "74ecd164217e6bb3c4724d664a53dd65"
+  },
+  "Shared/Sources/Shared/Models/Gameplay/HookPhase.swift": {
+    "mtime": 1784628237.0,
+    "ast_hash": "659797d0fc2db731a99f3534f82327ef",
+    "semantic_hash": "659797d0fc2db731a99f3534f82327ef"
+  },
+  "Shared/Sources/Shared/Models/Rod/CalibrationStep.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "fd0895d1dd06cff1c3b78d9fdf6111f5",
+    "semantic_hash": "fd0895d1dd06cff1c3b78d9fdf6111f5"
+  },
+  "Shared/Sources/Shared/Models/Rod/RodAction.swift": {
+    "mtime": 1784628237.0,
+    "ast_hash": "43743fc123e14015fb4de8ea8986bb84",
+    "semantic_hash": "43743fc123e14015fb4de8ea8986bb84"
+  },
+  "Shared/Sources/Shared/Models/Rod/RodState.swift": {
+    "mtime": 1784786521.0,
+    "ast_hash": "803c8a7a190346870539584c181018d5",
+    "semantic_hash": "803c8a7a190346870539584c181018d5"
+  },
+  "Shared/Sources/Shared/Models/Spatial/SpatialState.swift": {
+    "mtime": 1784628237.0,
+    "ast_hash": "19b75cc83e651795166e775df2914b2e",
+    "semantic_hash": "19b75cc83e651795166e775df2914b2e"
+  },
+  "Shared/Sources/Shared/Models/Spatial/SpatialStatus.swift": {
+    "mtime": 1784628237.0,
+    "ast_hash": "460727bd313397e09b65d238a706816d",
+    "semantic_hash": "460727bd313397e09b65d238a706816d"
+  },
+  "Shared/Sources/Shared/Protocols/BLEFraming.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "583583efab6b3c965cb104123ae25e88",
+    "semantic_hash": "583583efab6b3c965cb104123ae25e88"
+  },
+  "Shared/Sources/Shared/Protocols/Transport.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "b677862c5a333a76db905098bad107ff",
+    "semantic_hash": "b677862c5a333a76db905098bad107ff"
+  },
+  "Shared/Sources/Shared/Spatial/SessionConfiguration.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "0fd9a8ce5b0116f699854f276731e9e2",
+    "semantic_hash": "0fd9a8ce5b0116f699854f276731e9e2"
+  },
+  "World/World/Assets.xcassets/AccentColor.colorset/Contents.json": {
+    "mtime": 1784628237.0,
+    "ast_hash": "55019f7265dde0a78318b0807f98e847",
+    "semantic_hash": "55019f7265dde0a78318b0807f98e847"
+  },
+  "World/World/Assets.xcassets/AppIcon.appiconset/Contents.json": {
+    "mtime": 1784649895.0,
+    "ast_hash": "a6c3f519f94978c247e3404af3ad066b",
+    "semantic_hash": "a6c3f519f94978c247e3404af3ad066b"
+  },
+  "World/World/Assets.xcassets/Contents.json": {
+    "mtime": 1784628237.0,
+    "ast_hash": "9deb2ada1cc834bbebf8bbad9c8978a1",
+    "semantic_hash": "9deb2ada1cc834bbebf8bbad9c8978a1"
+  },
+  "World/World/Assets.xcassets/Image/Contents.json": {
+    "mtime": 1784650995.0,
+    "ast_hash": "9deb2ada1cc834bbebf8bbad9c8978a1",
+    "semantic_hash": "9deb2ada1cc834bbebf8bbad9c8978a1"
+  },
+  "World/World/Assets.xcassets/Image/FrameIcon.imageset/Contents.json": {
+    "mtime": 1784650995.0,
+    "ast_hash": "d0c3a98b3e87da597fd7d59ea68ff45f",
+    "semantic_hash": "d0c3a98b3e87da597fd7d59ea68ff45f"
+  },
+  "World/World/Assets.xcassets/Image/HandTutor.imageset/Contents.json": {
+    "mtime": 1784650995.0,
+    "ast_hash": "2046b9016371b92c0076ae7f0aaf6ebc",
+    "semantic_hash": "2046b9016371b92c0076ae7f0aaf6ebc"
+  },
+  "World/World/Audio/FishingSounds.swift": {
+    "mtime": 1784788322.0,
+    "ast_hash": "1978b5e0585c025820de5545827906f7",
+    "semantic_hash": "1978b5e0585c025820de5545827906f7"
+  },
+  "World/World/Audio/SoundManager.swift": {
+    "mtime": 1784788322.0,
+    "ast_hash": "cd84a449512653cebd653176e74e8c4d",
+    "semantic_hash": "cd84a449512653cebd653176e74e8c4d"
+  },
+  "World/World/ContentView.swift": {
+    "mtime": 1784822930.0,
+    "ast_hash": "e204232904b5aa57dc8fd52b707e2626",
+    "semantic_hash": "e204232904b5aa57dc8fd52b707e2626"
+  },
+  "World/World/Gameplay/FishCatchResult.swift": {
+    "mtime": 1784786521.0,
+    "ast_hash": "a8146b3c75ed9e906f164a6f5aea58ff",
+    "semantic_hash": "a8146b3c75ed9e906f164a6f5aea58ff"
+  },
+  "World/World/Gameplay/FishFightController.swift": {
+    "mtime": 1784822919.0,
+    "ast_hash": "6ac292f8b042dcf9bc3f0f5041c8392e",
+    "semantic_hash": "6ac292f8b042dcf9bc3f0f5041c8392e"
+  },
+  "World/World/Gameplay/FishRecordStore.swift": {
+    "mtime": 1784789159.0,
+    "ast_hash": "27c99b25e3bdce3ceff0b4a090e1d6b5",
+    "semantic_hash": "27c99b25e3bdce3ceff0b4a090e1d6b5"
+  },
+  "World/World/Gameplay/ProgressionStore.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "2a01fa8598516878339a575981ee0559",
+    "semantic_hash": "2a01fa8598516878339a575981ee0559"
+  },
+  "World/World/Reality/EnvironmentSceneBuilder.swift": {
+    "mtime": 1784650995.0,
+    "ast_hash": "5891064a87bb6f1bb6c1848890aed29c",
+    "semantic_hash": "5891064a87bb6f1bb6c1848890aed29c"
+  },
+  "World/World/Reality/FishingLineRope.swift": {
+    "mtime": 1784786521.0,
+    "ast_hash": "3f7f0030111093908c8f1c4e0899a56e",
+    "semantic_hash": "3f7f0030111093908c8f1c4e0899a56e"
+  },
+  "World/World/Reality/RodRigController.swift": {
+    "mtime": 1784786521.0,
+    "ast_hash": "5d5c8a1ceec01bee15306e957ff62b80",
+    "semantic_hash": "5d5c8a1ceec01bee15306e957ff62b80"
+  },
+  "World/World/Reality/WaterMaterial.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "1bc38285ec6640a216ce052b038e71ab",
+    "semantic_hash": "1bc38285ec6640a216ce052b038e71ab"
+  },
+  "World/World/Reality/WaterShader.metal": {
+    "mtime": 1784628237.0,
+    "ast_hash": "2754a6295b763d06d90df1a39813450f",
+    "semantic_hash": "2754a6295b763d06d90df1a39813450f"
+  },
+  "World/World/Support/Theme.swift": {
+    "mtime": 1784650995.0,
+    "ast_hash": "fdebf61ae6aa5d8b482d495c09feb4a7",
+    "semantic_hash": "fdebf61ae6aa5d8b482d495c09feb4a7"
+  },
+  "World/World/Transport/PairedDeviceStore.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "3b19b76f2a947e3c204d6f0f27f63a7b",
+    "semantic_hash": "3b19b76f2a947e3c204d6f0f27f63a7b"
+  },
+  "World/World/Transport/TransportHost.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "de9aca76df1713f067d74ba167128b0a",
+    "semantic_hash": "de9aca76df1713f067d74ba167128b0a"
+  },
+  "World/World/ViewModels/WorldViewModel.swift": {
+    "mtime": 1784820382.0,
+    "ast_hash": "012797a5c00ab72adc802774619d1626",
+    "semantic_hash": "012797a5c00ab72adc802774619d1626"
+  },
+  "World/World/Views/BiteAlertView.swift": {
+    "mtime": 1784725919.0,
+    "ast_hash": "46643927c94a44e621f6825899eb072f",
+    "semantic_hash": "46643927c94a44e621f6825899eb072f"
+  },
+  "World/World/Views/BundleImage.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "f96e0b792175139ad4b03e693fd1a172",
+    "semantic_hash": "f96e0b792175139ad4b03e693fd1a172"
+  },
+  "World/World/Views/CalibrationGuidanceView.swift": {
+    "mtime": 1784816424.0,
+    "ast_hash": "f3849ff6f51099b1b9c8ac1831664b43",
+    "semantic_hash": "f3849ff6f51099b1b9c8ac1831664b43"
+  },
+  "World/World/Views/CastMeterView.swift": {
+    "mtime": 1784786521.0,
+    "ast_hash": "99e0b434d4405825fc4612caa16f5baf",
+    "semantic_hash": "99e0b434d4405825fc4612caa16f5baf"
+  },
+  "World/World/Views/CatchCutsceneView.swift": {
+    "mtime": 1784821344.0,
+    "ast_hash": "1ae95526f6c0cd7231987fc5b6e1a928",
+    "semantic_hash": "1ae95526f6c0cd7231987fc5b6e1a928"
+  },
+  "World/World/Views/CreditsView.swift": {
+    "mtime": 1784823893.0,
+    "ast_hash": "df9ae2388c2c5bbf3856b97cb8b047ef",
+    "semantic_hash": "df9ae2388c2c5bbf3856b97cb8b047ef"
+  },
+  "World/World/Views/LastCatchStatBoxView.swift": {
+    "mtime": 1784723443.0,
+    "ast_hash": "5f21406268294432c21e4b9359cc4e75",
+    "semantic_hash": "5f21406268294432c21e4b9359cc4e75"
+  },
+  "World/World/Views/LineTensionView.swift": {
+    "mtime": 1784788322.0,
+    "ast_hash": "8bed496b655a5a6a2de25ac7adf5a9e3",
+    "semantic_hash": "8bed496b655a5a6a2de25ac7adf5a9e3"
+  },
+  "World/World/Views/LoadingScreenView.swift": {
+    "mtime": 1784702793.0,
+    "ast_hash": "84036b1e22bdb4463113f875a6675af8",
+    "semantic_hash": "84036b1e22bdb4463113f875a6675af8"
+  },
+  "World/World/Views/MainMenuView.swift": {
+    "mtime": 1784816465.0,
+    "ast_hash": "ee5015ce1ee9c0a4b266294698470e7a",
+    "semantic_hash": "ee5015ce1ee9c0a4b266294698470e7a"
+  },
+  "World/World/Views/OnboardingView.swift": {
+    "mtime": 1784649501.0,
+    "ast_hash": "0771fa363e480f6973da6f8c01be4e82",
+    "semantic_hash": "0771fa363e480f6973da6f8c01be4e82"
+  },
+  "World/World/Views/ResultView.swift": {
+    "mtime": 1784786521.0,
+    "ast_hash": "826521f295df2efb3211f23139f681bc",
+    "semantic_hash": "826521f295df2efb3211f23139f681bc"
+  },
+  "World/World/Views/SpeciesProgressView.swift": {
+    "mtime": 1784786521.0,
+    "ast_hash": "258fbfe6a4172c9e06afa80622d7177e",
+    "semantic_hash": "258fbfe6a4172c9e06afa80622d7177e"
+  },
+  "World/World/Views/TutorialView.swift": {
+    "mtime": 1784820264.0,
+    "ast_hash": "44bd47f9874793891c8a5ce16d3cbe5b",
+    "semantic_hash": "44bd47f9874793891c8a5ce16d3cbe5b"
+  },
+  "World/World/WorldApp.swift": {
+    "mtime": 1784649538.0,
+    "ast_hash": "1fc58c0f4e46dcf6106d91bcfcd48576",
+    "semantic_hash": "1fc58c0f4e46dcf6106d91bcfcd48576"
+  },
+  "AGENTS.md": {
+    "mtime": 1784649501.0,
+    "ast_hash": "658180893f8630730a5118599d3d5607",
+    "semantic_hash": "658180893f8630730a5118599d3d5607"
+  },
+  "ARCHITECTURE_DECISIONS.md": {
+    "mtime": 1784824023.0,
+    "ast_hash": "294657af5700d3b34f05edafae8ffb88",
+    "semantic_hash": "294657af5700d3b34f05edafae8ffb88"
+  },
+  "Archive/COMPLETED_SPRINT_ROADMAP.md": {
+    "mtime": 1784649501.0,
+    "ast_hash": "27a08541e3ac742e9a12d02fc1a57810",
+    "semantic_hash": "27a08541e3ac742e9a12d02fc1a57810"
+  },
+  "Archive/README.md": {
+    "mtime": 1784649501.0,
+    "ast_hash": "70d9d59a3acd3a2045d70c59da34e201",
+    "semantic_hash": "70d9d59a3acd3a2045d70c59da34e201"
+  },
+  "Archive/SPATIAL_CONTROLLER_DOCUMENT.md": {
+    "mtime": 1784649501.0,
+    "ast_hash": "de06f21cd85d7867c8d31b8016395529",
+    "semantic_hash": "de06f21cd85d7867c8d31b8016395529"
+  },
+  "Archive/WINDOW_1.md": {
+    "mtime": 1784649501.0,
+    "ast_hash": "63122d7d4c4fca2682f6345c60265ea5",
+    "semantic_hash": "63122d7d4c4fca2682f6345c60265ea5"
+  },
+  "Archive/WINDOW_2.md": {
+    "mtime": 1784649501.0,
+    "ast_hash": "c07a050c0396533108e49b68f60a005f",
+    "semantic_hash": "c07a050c0396533108e49b68f60a005f"
+  },
+  "CHECKPOINT.md": {
+    "mtime": 1784824032.0,
+    "ast_hash": "21b84b21439819be06ff6432c7776368",
+    "semantic_hash": "21b84b21439819be06ff6432c7776368"
+  },
+  "CLAUDE.md": {
+    "mtime": 1784650995.0,
+    "ast_hash": "c6bd4034f14ee5e612560d35c9805e2f",
+    "semantic_hash": "c6bd4034f14ee5e612560d35c9805e2f"
+  },
+  "GAMEPLAY_ARCHITECTURE_V1.md": {
+    "mtime": 1784789159.0,
+    "ast_hash": "349ad13a7c761b795d1ca1ac2daaea90",
+    "semantic_hash": "349ad13a7c761b795d1ca1ac2daaea90"
+  },
+  "SOFTWARE_ARCHITECTURE_DOCUMENT.md": {
+    "mtime": 1784789159.0,
+    "ast_hash": "e25776166d8062f78abf553234bdb149",
+    "semantic_hash": "e25776166d8062f78abf553234bdb149"
+  },
+  "Rod/Rod/Assets.xcassets/AppIcon.appiconset/CTS-Logo 1.png": {
+    "mtime": 1784628237.0,
+    "ast_hash": "06f4ea7eecbb49824094be8c14301203",
+    "semantic_hash": "06f4ea7eecbb49824094be8c14301203"
+  },
+  "Rod/Rod/Assets.xcassets/AppIcon.appiconset/CTS-Logo 2.png": {
+    "mtime": 1784628237.0,
+    "ast_hash": "06f4ea7eecbb49824094be8c14301203",
+    "semantic_hash": "06f4ea7eecbb49824094be8c14301203"
+  },
+  "Rod/Rod/Assets.xcassets/AppIcon.appiconset/CTS-Logo.png": {
+    "mtime": 1784628237.0,
+    "ast_hash": "06f4ea7eecbb49824094be8c14301203",
+    "semantic_hash": "06f4ea7eecbb49824094be8c14301203"
+  },
+  "World/World/Assets.xcassets/AppIcon.appiconset/CTS-Logo.png": {
+    "mtime": 1784628237.0,
+    "ast_hash": "06f4ea7eecbb49824094be8c14301203",
+    "semantic_hash": "06f4ea7eecbb49824094be8c14301203"
+  },
+  "World/World/Assets.xcassets/AppIcon.appiconset/CTS-Logo_128x128.png": {
+    "mtime": 1784628237.0,
+    "ast_hash": "10d854a7b43605038e2ecc531dcdbe10",
+    "semantic_hash": "10d854a7b43605038e2ecc531dcdbe10"
+  },
+  "World/World/Assets.xcassets/AppIcon.appiconset/CTS-Logo_16x16.png": {
+    "mtime": 1784628237.0,
+    "ast_hash": "f4ea1965c1c02a6252f3b1e8c7cd340a",
+    "semantic_hash": "f4ea1965c1c02a6252f3b1e8c7cd340a"
+  },
+  "World/World/Assets.xcassets/AppIcon.appiconset/CTS-Logo_256x256 1.png": {
+    "mtime": 1784628237.0,
+    "ast_hash": "69e40a661e9e4dd6da144248073cd531",
+    "semantic_hash": "69e40a661e9e4dd6da144248073cd531"
+  },
+  "World/World/Assets.xcassets/AppIcon.appiconset/CTS-Logo_256x256.png": {
+    "mtime": 1784628237.0,
+    "ast_hash": "69e40a661e9e4dd6da144248073cd531",
+    "semantic_hash": "69e40a661e9e4dd6da144248073cd531"
+  },
+  "World/World/Assets.xcassets/AppIcon.appiconset/CTS-Logo_32x32 1.png": {
+    "mtime": 1784628237.0,
+    "ast_hash": "a4a54d96d370903b74db73143a29594c",
+    "semantic_hash": "a4a54d96d370903b74db73143a29594c"
+  },
+  "World/World/Assets.xcassets/AppIcon.appiconset/CTS-Logo_32x32.png": {
+    "mtime": 1784628237.0,
+    "ast_hash": "a4a54d96d370903b74db73143a29594c",
+    "semantic_hash": "a4a54d96d370903b74db73143a29594c"
+  },
+  "World/World/Assets.xcassets/AppIcon.appiconset/CTS-Logo_512x512 1.png": {
+    "mtime": 1784628237.0,
+    "ast_hash": "266936e674791ccd33e55b4931a7d992",
+    "semantic_hash": "266936e674791ccd33e55b4931a7d992"
+  },
+  "World/World/Assets.xcassets/AppIcon.appiconset/CTS-Logo_512x512.png": {
+    "mtime": 1784628237.0,
+    "ast_hash": "266936e674791ccd33e55b4931a7d992",
+    "semantic_hash": "266936e674791ccd33e55b4931a7d992"
+  },
+  "World/World/Assets.xcassets/AppIcon.appiconset/CTS-Logo_64x64.png": {
+    "mtime": 1784628237.0,
+    "ast_hash": "cf355f8a0bc07192d8708444517447e4",
+    "semantic_hash": "cf355f8a0bc07192d8708444517447e4"
+  },
+  "World/World/Assets.xcassets/Image/FrameIcon.imageset/frame.png": {
+    "mtime": 1784650995.0,
+    "ast_hash": "820ee2ef921f2059dce96b983e799f5d",
+    "semantic_hash": "820ee2ef921f2059dce96b983e799f5d"
+  },
+  "World/World/Assets.xcassets/Image/HandTutor.imageset/HandTutor.png": {
+    "mtime": 1784650995.0,
+    "ast_hash": "344dee41291c4e285a9d440ef2560e55",
+    "semantic_hash": "344dee41291c4e285a9d440ef2560e55"
+  },
+  "World/World/Assets/Environment/sky_ibl.jpg": {
+    "mtime": 1784628237.0,
+    "ast_hash": "9422748f688e4d5eaa248d8434980495",
+    "semantic_hash": "9422748f688e4d5eaa248d8434980495"
+  },
+  "World/World/Assets/Environment/water_normal.jpg": {
+    "mtime": 1784628237.0,
+    "ast_hash": "4418dde3f6abc21dc32506acf5f5b093",
+    "semantic_hash": "4418dde3f6abc21dc32506acf5f5b093"
+  },
+  "World/World/Assets/Images/fish_sign.png": {
+    "mtime": 1784716594.0,
+    "ast_hash": "9f6c350a21800aa3f78653be8b853e98",
+    "semantic_hash": "9f6c350a21800aa3f78653be8b853e98"
+  },
+  "World/World/Assets/Images/loading_screen.png": {
+    "mtime": 1784649501.0,
+    "ast_hash": "78158ee25cb52861dfbc511ec346aa0a",
+    "semantic_hash": "78158ee25cb52861dfbc511ec346aa0a"
+  },
+  "World/World/Assets/Images/logo_cts.png": {
+    "mtime": 1784649501.0,
+    "ast_hash": "2808ebc83d2412aa219ccb010d901828",
+    "semantic_hash": "2808ebc83d2412aa219ccb010d901828"
+  },
+  "World/World/Assets/Images/main_menu_bg.png": {
+    "mtime": 1784649501.0,
+    "ast_hash": "2660124ce605d8def8247697f7c4e995",
+    "semantic_hash": "2660124ce605d8def8247697f7c4e995"
+  },
+  "World/World/Assets/Images/roll.png": {
+    "mtime": 1784716577.0,
+    "ast_hash": "10c83d8dfaa665d7535bd5af8b725f6f",
+    "semantic_hash": "10c83d8dfaa665d7535bd5af8b725f6f"
+  },
+  "World/World/Assets/Images/scott_yeah.png": {
+    "mtime": 1784725012.0,
+    "ast_hash": "a3028f6735196de5fae6732123b1f2f9",
+    "semantic_hash": "a3028f6735196de5fae6732123b1f2f9"
+  },
+  "World/World/Assets/Tutorials/tutorial_1_intro.png": {
+    "mtime": 1784816953.0,
+    "ast_hash": "d3fc4e194d533750a22cc3fd0b6744c9",
+    "semantic_hash": "d3fc4e194d533750a22cc3fd0b6744c9"
+  },
+  "World/World/Assets/Tutorials/tutorial_2_start_cast.png": {
+    "mtime": 1784816827.0,
+    "ast_hash": "00e8450f6c888a8b25ef69a800fddce0",
+    "semantic_hash": "00e8450f6c888a8b25ef69a800fddce0"
+  },
+  "World/World/Assets/Tutorials/tutorial_3_cast.png": {
+    "mtime": 1784627476.0,
+    "ast_hash": "9e3e5bff6ca2392f6a5f80328e7a05b1",
+    "semantic_hash": "9e3e5bff6ca2392f6a5f80328e7a05b1"
+  },
+  "World/World/Assets/Tutorials/tutorial_4_wait.png": {
+    "mtime": 1784627497.0,
+    "ast_hash": "05e5f13e2589890bde0a5da80260320f",
+    "semantic_hash": "05e5f13e2589890bde0a5da80260320f"
+  },
+  "World/World/Assets/Tutorials/tutorial_5_reel_fight.png": {
+    "mtime": 1784735584.0,
+    "ast_hash": "b9fd49ba4ace2399980c8f6acbaebe42",
+    "semantic_hash": "b9fd49ba4ace2399980c8f6acbaebe42"
+  },
+  "World/World/Assets/Tutorials/tutorial_6_end.png": {
+    "mtime": 1784646419.0,
+    "ast_hash": "2c68d9ad6c8e5e2448c5150614a72a1f",
+    "semantic_hash": "2c68d9ad6c8e5e2448c5150614a72a1f"
+  },
+  "World/World/Assets/SFX/ambience_lake.mp3": {
+    "mtime": 1784649501.0,
+    "ast_hash": "af871749f93a5e9725539f4c6fd36533",
+    "semantic_hash": "af871749f93a5e9725539f4c6fd36533"
+  },
+  "World/World/Assets/SFX/cast_throw.wav": {
+    "mtime": 1784709227.0,
+    "ast_hash": "43bad2d3cdc38857953b7742272dc216",
+    "semantic_hash": "43bad2d3cdc38857953b7742272dc216"
+  },
+  "World/World/Assets/SFX/catch_splash.wav": {
+    "mtime": 1784649501.0,
+    "ast_hash": "53510dfda3b7b090f36fe428d68e32aa",
+    "semantic_hash": "53510dfda3b7b090f36fe428d68e32aa"
+  },
+  "World/World/Assets/SFX/fish_bite.wav": {
+    "mtime": 1784649501.0,
+    "ast_hash": "19fee232283029dc1cb62991bcc3926b",
+    "semantic_hash": "19fee232283029dc1cb62991bcc3926b"
+  },
+  "World/World/Assets/SFX/fish_catched.wav": {
+    "mtime": 1784789159.0,
+    "ast_hash": "d719e3694cec734f067df93def7eca1e",
+    "semantic_hash": "d719e3694cec734f067df93def7eca1e"
+  },
+  "World/World/Assets/SFX/fish_interested_loop.wav": {
+    "mtime": 1784649501.0,
+    "ast_hash": "dac1afcada513a417ef9600b2e5aacc8",
+    "semantic_hash": "dac1afcada513a417ef9600b2e5aacc8"
+  },
+  "World/World/Assets/SFX/hook_splash.wav": {
+    "mtime": 1784649501.0,
+    "ast_hash": "c7945e34feb520c2bebd7e9cb79e90b7",
+    "semantic_hash": "c7945e34feb520c2bebd7e9cb79e90b7"
+  },
+  "World/World/Assets/SFX/idle.wav": {
+    "mtime": 1784649501.0,
+    "ast_hash": "5be71529986029ed96d88b0abf9cdf04",
+    "semantic_hash": "5be71529986029ed96d88b0abf9cdf04"
+  },
+  "World/World/Assets/SFX/reel_fight.wav": {
+    "mtime": 1784649501.0,
+    "ast_hash": "d7ff3a51587fb4c2d789e0af8c2dbd8b",
+    "semantic_hash": "d7ff3a51587fb4c2d789e0af8c2dbd8b"
+  },
+  "World/World/Assets/SFX/reel_loop.wav": {
+    "mtime": 1784649501.0,
+    "ast_hash": "1324a8a24cddb66d1472af60e67a3015",
+    "semantic_hash": "1324a8a24cddb66d1472af60e67a3015"
+  },
+  "World/World/Assets/SFX/ui_click.wav": {
+    "mtime": 1784649501.0,
+    "ast_hash": "bf91f388b4b54fc132dba49fca914607",
+    "semantic_hash": "bf91f388b4b54fc132dba49fca914607"
+  }
+}
